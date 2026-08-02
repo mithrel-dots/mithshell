@@ -249,15 +249,15 @@ scale.control-scale slider {
 }
 
 .tarragon-search {
-  min-height: 38px;
-  padding: 0 12px;
+  min-height: 46px;
+  padding: 0 14px;
   color: @ms_on_surface;
   background: alpha(@ms_surface_low, 0.94);
   border: 1px solid alpha(@ms_outline_variant, 0.34);
   border-radius: 19px;
   box-shadow: none;
   font-family: "Inter", sans-serif;
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .tarragon-search:focus {
@@ -266,24 +266,24 @@ scale.control-scale slider {
 }
 
 .search-status {
-  min-height: 16px;
+  min-height: 19px;
   color: @ms_primary;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 1px;
 }
 
 .search-header-button {
-  min-height: 32px;
-  padding: 0 12px;
+  min-height: 38px;
+  padding: 0 14px;
   color: @ms_on_surface_variant;
   background: alpha(@ms_on_surface, 0.06);
   border: 0;
   border-radius: 16px;
   box-shadow: none;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.8px;
 }
@@ -302,8 +302,8 @@ scale.control-scale slider {
 }
 
 .search-result {
-  min-height: 36px;
-  padding: 4px 9px;
+  min-height: 43px;
+  padding: 5px 11px;
   margin: 1px 0;
   color: @ms_on_surface;
   background: transparent;
@@ -322,7 +322,7 @@ scale.control-scale slider {
 .search-result-title {
   color: @ms_on_surface;
   font-family: "Inter", sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 650;
 }
 
@@ -330,11 +330,11 @@ scale.control-scale slider {
 .search-result-plugin {
   color: alpha(@ms_on_surface_variant, 0.76);
   font-family: "Inter", sans-serif;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .search-preview {
-  padding: 12px;
+  padding: 14px;
   background: alpha(@ms_surface_low, 0.9);
   border: 1px solid alpha(@ms_outline_variant, 0.28);
   border-radius: 18px;
@@ -353,26 +353,26 @@ scale.control-scale slider {
 .search-preview-title {
   color: @ms_on_surface;
   font-family: "Inter", sans-serif;
-  font-size: 16px;
+  font-size: 19px;
   font-weight: 700;
 }
 
 .search-preview-description {
   color: @ms_on_surface_variant;
   font-family: "Inter", sans-serif;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .search-preview-meta {
   color: alpha(@ms_on_surface_variant, 0.72);
   font-family: "JetBrains Mono", monospace;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .search-preview-file-meta {
   color: @ms_primary;
   font-family: "JetBrains Mono", monospace;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -391,25 +391,25 @@ scale.control-scale slider {
 
 .search-preview-text {
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .search-preview-error {
   padding: 16px;
   color: @ms_error;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .search-action {
-  min-height: 30px;
-  padding: 0 10px;
+  min-height: 36px;
+  padding: 0 12px;
   color: @ms_on_surface;
   background: alpha(@ms_on_surface, 0.07);
   border: 1px solid alpha(@ms_outline_variant, 0.24);
   border-radius: 10px;
   box-shadow: none;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .search-action:hover,
@@ -419,8 +419,8 @@ scale.control-scale slider {
 }
 
 .plugin-row {
-  min-height: 52px;
-  padding: 8px 11px;
+  min-height: 62px;
+  padding: 10px 13px;
   margin: 2px 0;
   background: alpha(@ms_surface_low, 0.72);
   border: 1px solid alpha(@ms_outline_variant, 0.2);
@@ -435,21 +435,21 @@ scale.control-scale slider {
 .plugin-name {
   color: @ms_on_surface;
   font-family: "Inter", sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .plugin-description {
   color: @ms_on_surface_variant;
   font-family: "Inter", sans-serif;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .plugin-metadata,
 .plugin-state {
   color: alpha(@ms_on_surface_variant, 0.7);
   font-family: "JetBrains Mono", monospace;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -544,29 +544,29 @@ progressbar.osd-progress progress {
 .scale-medium .media-title { font-size: 14px; }
 .scale-medium .media-clock { min-width: 46px; font-size: 12px; }
 .scale-medium .search-content { padding: 24px; }
-.scale-medium .tarragon-search { min-height: 46px; border-radius: 23px; font-size: 16px; }
-.scale-medium .search-status { font-size: 11px; }
-.scale-medium .search-header-button { min-height: 38px; padding: 0 14px; border-radius: 19px; font-size: 11px; }
-.scale-medium .search-result { min-height: 44px; padding: 5px 11px; border-radius: 16px; }
+.scale-medium .tarragon-search { min-height: 55px; border-radius: 23px; font-size: 19px; }
+.scale-medium .search-status { font-size: 13px; }
+.scale-medium .search-header-button { min-height: 46px; padding: 0 17px; border-radius: 19px; font-size: 13px; }
+.scale-medium .search-result { min-height: 53px; padding: 6px 13px; border-radius: 16px; }
 .scale-medium .search-result-icon { -gtk-icon-size: 27px; }
-.scale-medium .search-result-title { font-size: 14px; }
+.scale-medium .search-result-title { font-size: 17px; }
 .scale-medium .search-result-description,
-.scale-medium .search-result-plugin { font-size: 11px; }
-.scale-medium .search-preview { padding: 14px; border-radius: 22px; }
+.scale-medium .search-result-plugin { font-size: 13px; }
+.scale-medium .search-preview { padding: 17px; border-radius: 22px; }
 .scale-medium .search-preview-icon { -gtk-icon-size: 86px; }
-.scale-medium .search-preview-title { font-size: 19px; }
-.scale-medium .search-preview-description { font-size: 13px; }
-.scale-medium .search-preview-meta { font-size: 10px; }
+.scale-medium .search-preview-title { font-size: 23px; }
+.scale-medium .search-preview-description { font-size: 16px; }
+.scale-medium .search-preview-meta { font-size: 12px; }
 .scale-medium .search-preview-file-meta,
 .scale-medium .search-preview-text,
-.scale-medium .search-preview-error { font-size: 10px; }
-.scale-medium .search-action { min-height: 36px; font-size: 12px; }
-.scale-medium .plugin-row { min-height: 62px; padding: 10px 13px; border-radius: 17px; }
+.scale-medium .search-preview-error { font-size: 12px; }
+.scale-medium .search-action { min-height: 43px; font-size: 14px; }
+.scale-medium .plugin-row { min-height: 74px; padding: 12px 16px; border-radius: 17px; }
 .scale-medium .plugin-icon { -gtk-icon-size: 30px; }
-.scale-medium .plugin-name { font-size: 14px; }
-.scale-medium .plugin-description { font-size: 12px; }
+.scale-medium .plugin-name { font-size: 17px; }
+.scale-medium .plugin-description { font-size: 14px; }
 .scale-medium .plugin-metadata,
-.scale-medium .plugin-state { font-size: 10px; }
+.scale-medium .plugin-state { font-size: 12px; }
 .scale-medium .osd-content { padding: 0 20px; }
 .scale-medium .osd-icon { -gtk-icon-size: 20px; }
 .scale-medium .osd-title { min-width: 82px; font-size: 13px; }
@@ -612,29 +612,29 @@ progressbar.osd-progress progress {
 .scale-large .media-title { font-size: 17px; }
 .scale-large .media-clock { min-width: 55px; font-size: 14px; }
 .scale-large .search-content { padding: 29px; }
-.scale-large .tarragon-search { min-height: 55px; border-radius: 28px; font-size: 19px; }
-.scale-large .search-status { font-size: 13px; }
-.scale-large .search-header-button { min-height: 46px; padding: 0 17px; border-radius: 23px; font-size: 13px; }
-.scale-large .search-result { min-height: 52px; padding: 6px 13px; border-radius: 19px; }
+.scale-large .tarragon-search { min-height: 66px; border-radius: 28px; font-size: 23px; }
+.scale-large .search-status { font-size: 16px; }
+.scale-large .search-header-button { min-height: 55px; padding: 0 20px; border-radius: 23px; font-size: 16px; }
+.scale-large .search-result { min-height: 62px; padding: 7px 16px; border-radius: 19px; }
 .scale-large .search-result-icon { -gtk-icon-size: 32px; }
-.scale-large .search-result-title { font-size: 17px; }
+.scale-large .search-result-title { font-size: 20px; }
 .scale-large .search-result-description,
-.scale-large .search-result-plugin { font-size: 13px; }
-.scale-large .search-preview { padding: 17px; border-radius: 26px; }
+.scale-large .search-result-plugin { font-size: 16px; }
+.scale-large .search-preview { padding: 20px; border-radius: 26px; }
 .scale-large .search-preview-icon { -gtk-icon-size: 104px; }
-.scale-large .search-preview-title { font-size: 23px; }
-.scale-large .search-preview-description { font-size: 16px; }
-.scale-large .search-preview-meta { font-size: 12px; }
+.scale-large .search-preview-title { font-size: 28px; }
+.scale-large .search-preview-description { font-size: 19px; }
+.scale-large .search-preview-meta { font-size: 14px; }
 .scale-large .search-preview-file-meta,
 .scale-large .search-preview-text,
-.scale-large .search-preview-error { font-size: 12px; }
-.scale-large .search-action { min-height: 43px; font-size: 14px; }
-.scale-large .plugin-row { min-height: 75px; padding: 12px 16px; border-radius: 20px; }
+.scale-large .search-preview-error { font-size: 14px; }
+.scale-large .search-action { min-height: 52px; font-size: 17px; }
+.scale-large .plugin-row { min-height: 90px; padding: 14px 19px; border-radius: 20px; }
 .scale-large .plugin-icon { -gtk-icon-size: 36px; }
-.scale-large .plugin-name { font-size: 17px; }
-.scale-large .plugin-description { font-size: 14px; }
+.scale-large .plugin-name { font-size: 20px; }
+.scale-large .plugin-description { font-size: 17px; }
 .scale-large .plugin-metadata,
-.scale-large .plugin-state { font-size: 12px; }
+.scale-large .plugin-state { font-size: 14px; }
 .scale-large .osd-content { padding: 0 25px; }
 .scale-large .osd-icon { -gtk-icon-size: 25px; }
 .scale-large .osd-title { min-width: 99px; font-size: 16px; }

@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-const WINDOW_WIDTH: i32 = 760;
+const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 40;
 const MEDIA_HEIGHT: i32 = 40;
@@ -31,8 +31,10 @@ const DASHBOARD_WIDTH: i32 = 440;
 const DASHBOARD_HEIGHT: i32 = 370;
 const OSD_WIDTH: i32 = 292;
 const OSD_HEIGHT: i32 = 44;
-const SEARCH_WIDTH: i32 = 720;
-const SEARCH_HEIGHT: i32 = 560;
+const SEARCH_WIDTH: i32 = 820;
+const SEARCH_HEIGHT: i32 = 620;
+const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
+const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
 
 #[derive(Debug, Clone, Copy)]
 struct Metrics {
@@ -1153,31 +1155,35 @@ impl IslandWindow {
             }
         });
 
-        let search_keys = gtk::EventControllerKey::new();
+        // Attached to the window itself (not a specific view) so Escape closes
+        // whatever overlay currently holds keyboard focus -- the launcher today,
+        // and any future keyboard-focused widget that extends `close()`.
+        let overlay_keys = gtk::EventControllerKey::new();
+        overlay_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        search_keys.connect_key_pressed(move |_, key, _, _| {
+        overlay_keys.connect_key_pressed(move |_, key, _, _| {
             let Some(island) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
+            let results_active = island.search_open.get()
+                && island.search_stack.visible_child_name().as_deref() == Some("results");
             match key {
                 gdk::Key::Escape => {
-                    island.search_open.set(false);
-                    island.dashboard_open.set(true);
-                    island.reconcile_view();
+                    island.close();
                     glib::Propagation::Stop
                 }
-                gdk::Key::Down => {
+                gdk::Key::Down if results_active => {
                     island.move_search_selection(1);
                     glib::Propagation::Stop
                 }
-                gdk::Key::Up => {
+                gdk::Key::Up if results_active => {
                     island.move_search_selection(-1);
                     glib::Propagation::Stop
                 }
                 _ => glib::Propagation::Proceed,
             }
         });
-        self.search.add_controller(search_keys);
+        self.window.add_controller(overlay_keys);
 
         for workspaces in [&self.compact_workspaces, &self.media_workspaces] {
             let scroll = gtk::EventControllerScroll::new(
@@ -1858,11 +1864,12 @@ fn search_view(metrics: Metrics) -> SearchWidgets {
     results_scroller.add_css_class("search-results-scroll");
     results_scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     results_scroller.set_vexpand(true);
+    results_scroller.set_size_request(metrics.spacing(SEARCH_RESULTS_MIN_WIDTH), -1);
     results_scroller.set_child(Some(&results));
 
     let preview = gtk::Box::new(Orientation::Vertical, metrics.spacing(9));
     preview.add_css_class("search-preview");
-    preview.set_size_request(metrics.spacing(236), -1);
+    preview.set_size_request(metrics.spacing(SEARCH_PREVIEW_MIN_WIDTH), -1);
     let preview_title = gtk::Label::new(Some("Select a result"));
     preview_title.add_css_class("search-preview-title");
     preview_title.set_halign(Align::Start);
