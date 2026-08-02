@@ -44,6 +44,9 @@ pub enum IpcCommand {
     Open {
         monitor: MonitorTarget,
     },
+    Search {
+        monitor: MonitorTarget,
+    },
     Close {
         monitor: MonitorTarget,
     },

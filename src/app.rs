@@ -17,8 +17,11 @@ use crate::{
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
     media,
+    preview::{self, PreviewEvent, PreviewRequest},
     state::{AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot},
-    system, theme,
+    system,
+    tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
+    theme,
     ui::{self, IslandActions, IslandWindow},
 };
 
@@ -56,6 +59,9 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
             monitor: MonitorTarget::parse(&args.monitor)?,
         },
         Command::Open(args) => IpcCommand::Open {
+            monitor: MonitorTarget::parse(&args.monitor)?,
+        },
+        Command::Search(args) => IpcCommand::Search {
             monitor: MonitorTarget::parse(&args.monitor)?,
         },
         Command::Close(args) => IpcCommand::Close {
@@ -185,12 +191,19 @@ struct Controller {
     system: RefCell<SystemSnapshot>,
     media: RefCell<Option<MediaState>>,
     visualizer: RefCell<media::VisualizerLevels>,
+    tarragon_connected: Cell<bool>,
+    tarragon_snapshot: RefCell<Option<TarragonSnapshot>>,
+    tarragon_status: RefCell<Option<TarragonStatus>>,
     pending_volume: Cell<Option<u8>>,
     islands: RefCell<HashMap<String, Rc<IslandWindow>>>,
     animations: bool,
     theme_sender: Sender<Result<Palette, String>>,
+    tarragon_sender: Sender<TarragonCommand>,
+    preview_sender: Sender<PreviewRequest>,
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
+    tarragon_listener: Option<thread::JoinHandle<()>>,
+    preview_listener: Option<thread::JoinHandle<()>>,
 }
 
 impl Controller {
@@ -212,6 +225,10 @@ impl Controller {
         let media_listener = media::start_listener(media_sender);
         let (visualizer_sender, visualizer_receiver) = async_channel::bounded(2);
         let visualizer_listener = media::start_visualizer(visualizer_sender);
+        let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
+        let (tarragon_sender, tarragon_listener) = tarragon::start_listener(tarragon_event_sender);
+        let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
+        let (preview_sender, preview_listener) = preview::start_loader(preview_event_sender);
 
         let controller = Rc::new(Self {
             application: application.clone(),
@@ -224,12 +241,19 @@ impl Controller {
             system: RefCell::new(SystemSnapshot::default()),
             media: RefCell::new(None),
             visualizer: RefCell::new([0; media::VISUALIZER_BARS]),
+            tarragon_connected: Cell::new(false),
+            tarragon_snapshot: RefCell::new(None),
+            tarragon_status: RefCell::new(None),
             pending_volume: Cell::new(None),
             islands: RefCell::new(HashMap::new()),
             animations,
             theme_sender,
+            tarragon_sender,
+            preview_sender,
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
+            tarragon_listener: Some(tarragon_listener),
+            preview_listener: Some(preview_listener),
         });
 
         let (ipc_sender, ipc_receiver) = async_channel::unbounded();
@@ -248,6 +272,8 @@ impl Controller {
         controller.attach_audio(audio_receiver);
         controller.attach_media(media_receiver);
         controller.attach_visualizer(visualizer_receiver);
+        controller.attach_tarragon(tarragon_event_receiver);
+        controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
 
         Ok(controller)
@@ -392,6 +418,87 @@ impl Controller {
         });
     }
 
+    fn attach_tarragon(self: &Rc<Self>, receiver: Receiver<TarragonEvent>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(event) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                match event {
+                    TarragonEvent::Connection { connected, message } => {
+                        controller.tarragon_connected.set(connected);
+                        if !connected {
+                            *controller.tarragon_snapshot.borrow_mut() = None;
+                        }
+                        for island in controller.islands.borrow().values() {
+                            island.update_tarragon_connection(connected, message.as_deref());
+                        }
+                        if let Some(message) = message {
+                            warn!("{message}");
+                        }
+                    }
+                    TarragonEvent::Results(snapshot) => {
+                        for island in controller.islands.borrow().values() {
+                            island.update_tarragon_results(&snapshot);
+                        }
+                        *controller.tarragon_snapshot.borrow_mut() = Some(snapshot);
+                    }
+                    TarragonEvent::Status(status) => {
+                        for island in controller.islands.borrow().values() {
+                            island.update_tarragon_status(&status);
+                        }
+                        *controller.tarragon_status.borrow_mut() = Some(status);
+                    }
+                    TarragonEvent::Reload { success, message } => {
+                        for island in controller.islands.borrow().values() {
+                            island.update_tarragon_reload(success, &message);
+                        }
+                        if success {
+                            let _ = controller.tarragon_sender.try_send(TarragonCommand::Status);
+                            info!("TarraGon: {message}");
+                        } else {
+                            warn!("TarraGon reload failed: {message}");
+                        }
+                    }
+                    TarragonEvent::Error(message) => {
+                        for island in controller.islands.borrow().values() {
+                            island.update_tarragon_reload(false, &message);
+                        }
+                        warn!("TarraGon protocol error: {message}");
+                    }
+                    TarragonEvent::Selection { success, message } => {
+                        for island in controller.islands.borrow().values() {
+                            island.update_tarragon_selection(success, &message);
+                        }
+                        if success {
+                            info!("TarraGon: {message}");
+                        } else {
+                            warn!("TarraGon action failed: {message}");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn attach_preview(self: &Rc<Self>, receiver: Receiver<PreviewEvent>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(event) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                if let Err(error) = &event.result {
+                    warn!("preview for {} failed: {error}", event.monitor);
+                }
+                if let Some(island) = controller.islands.borrow().get(&event.monitor) {
+                    island.apply_file_preview(event.generation, event.result);
+                }
+            }
+        });
+    }
+
     fn attach_theme(self: &Rc<Self>, receiver: Receiver<Result<Palette, String>>) {
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
@@ -435,6 +542,15 @@ impl Controller {
                 }
                 Ok(Response::ok("dashboard opened"))
             }
+            IpcCommand::Search { monitor } => {
+                if !self.tarragon_connected.get() {
+                    bail!("TarraGon is not connected");
+                }
+                for island in self.target_islands(&monitor)? {
+                    island.open_search();
+                }
+                Ok(Response::ok("TarraGon search opened"))
+            }
             IpcCommand::Close { monitor } => {
                 for island in self.target_islands(&monitor)? {
                     island.close();
@@ -477,6 +593,11 @@ impl Controller {
                     "hyprland": &*self.hyprland.borrow(),
                     "system": &*self.system.borrow(),
                     "media": &*self.media.borrow(),
+                    "tarragon": {
+                        "connected": self.tarragon_connected.get(),
+                        "results": self.tarragon_snapshot.borrow().as_ref().map_or(0, |snapshot| snapshot.list.len()),
+                        "plugins": self.tarragon_status.borrow().as_ref().map_or(0, |status| status.plugins.len()),
+                    },
                     "palette": &*self.palette.borrow(),
                 });
                 Ok(Response::with_data("daemon is running", data))
@@ -672,6 +793,31 @@ impl Controller {
                     }
                 });
             });
+            let tarragon_sender = self.tarragon_sender.clone();
+            let search = Rc::new(move |text: String| {
+                let _ = tarragon_sender.try_send(TarragonCommand::Query(text));
+            });
+            let tarragon_sender = self.tarragon_sender.clone();
+            let select = Rc::new(move |selection| {
+                let _ = tarragon_sender.try_send(TarragonCommand::Select(selection));
+            });
+            let tarragon_sender = self.tarragon_sender.clone();
+            let tarragon_status = Rc::new(move || {
+                let _ = tarragon_sender.try_send(TarragonCommand::Status);
+            });
+            let tarragon_sender = self.tarragon_sender.clone();
+            let tarragon_reload = Rc::new(move || {
+                let _ = tarragon_sender.try_send(TarragonCommand::Reload);
+            });
+            let preview_sender = self.preview_sender.clone();
+            let preview_monitor = connector.clone();
+            let load_preview = Rc::new(move |generation: u64, path: String| {
+                let _ = preview_sender.try_send(PreviewRequest {
+                    monitor: preview_monitor.clone(),
+                    generation,
+                    path: PathBuf::from(path),
+                });
+            });
             let palette = self.palette.borrow();
             let island = IslandWindow::new(
                 &self.application,
@@ -683,6 +829,11 @@ impl Controller {
                     switch_workspace,
                     set_volume,
                     set_brightness,
+                    search,
+                    select,
+                    tarragon_status,
+                    tarragon_reload,
+                    load_preview,
                 },
                 self.animations,
             );
@@ -691,6 +842,13 @@ impl Controller {
             island.update_media(self.media.borrow().as_ref());
             island.update_visualizer(*self.visualizer.borrow());
             island.update_palette(&theme::source_label(&self.theme_config.borrow().source));
+            island.update_tarragon_connection(self.tarragon_connected.get(), None);
+            if let Some(snapshot) = self.tarragon_snapshot.borrow().as_ref() {
+                island.update_tarragon_results(snapshot);
+            }
+            if let Some(status) = self.tarragon_status.borrow().as_ref() {
+                island.update_tarragon_status(status);
+            }
             self.islands.borrow_mut().insert(connector, island);
         }
 
@@ -717,6 +875,19 @@ impl Controller {
         }
         for island in self.islands.borrow().values() {
             island.update_shell_config(&shell_config, self.animations);
+        }
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.tarragon_sender.close();
+        self.preview_sender.close();
+        if let Some(listener) = self.tarragon_listener.take() {
+            let _ = listener.join();
+        }
+        if let Some(listener) = self.preview_listener.take() {
+            let _ = listener.join();
         }
     }
 }

@@ -32,6 +32,9 @@ pub enum Command {
     /// Open the dashboard.
     Open(MonitorArgs),
 
+    /// Open the TarraGon search frontend.
+    Search(MonitorArgs),
+
     /// Collapse the island.
     Close(MonitorArgs),
 

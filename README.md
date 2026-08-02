@@ -28,6 +28,14 @@ available, media metadata still works and the visualizer remains at rest.
 The dashboard reads `/sys/class/backlight` directly and hides the control when
 no backlight exists.
 
+[TarraGon](https://github.com/iMithrellas/tarragon) is optional. When its user
+service is running, Mithshell exposes its configured search plugins through an
+embedded launcher.
+
+`ffmpeg` and `ffmpegthumbnailer` are optional rich-preview dependencies. They
+provide video metadata and cached thumbnails; image and highlighted text
+previews work without them.
+
 ## Build
 
 ```sh
@@ -70,6 +78,9 @@ Use `monitors = ["*"]` to display one island on every connected output. Run
 `mithshell reload` after changing the file. Unknown output names are logged and
 do not silently fall back to another monitor.
 
+The island uses the top layer in every view, matching Quickshell's default for
+panels and keeping it visible across regular and special workspaces.
+
 Media width is content-driven and capped as a multiple of compact width:
 
 ```toml
@@ -94,6 +105,34 @@ player's desktop icon, title, and Cava's live PipeWire spectrum in the middle.
 Paused or stopped players return the pill to its normal compact state, and
 `playerctld` mirrors are ignored. MPRIS queries run on a dedicated GLib context
 so an unresponsive player cannot block GTK rendering.
+
+### TarraGon search
+
+The dashboard's search button opens a larger keyboard-focused TarraGon frontend
+around 20% down the monitor, clamped to remain on-screen. It includes the
+complete ranked result list, path-based
+image previews, Tree-sitter highlighted and scrollable source previews, cached
+video thumbnails, file/media metadata, score and frecency metadata, every
+result action, aggregate plugin progress/errors/timings, loaded-plugin
+inventory, status refresh, and daemon reload. Result and plugin metadata come
+directly from TarraGon, so newly installed plugins work without Mithshell
+changes.
+
+Mithshell reconnects to `/tmp/tarragon-ui.sock` automatically and displays an
+offline state when TarraGon is unavailable. Start TarraGon separately:
+
+```sh
+systemctl --user enable --now tarragon.service
+mithshell search --monitor focused
+```
+
+The current TarraGon checkout provides applications, files, calculator, web
+search, and other installed plugins. Wallpaper and clipboard history will
+appear in the same UI once corresponding TarraGon plugins are installed.
+
+See [`docs/tarragon.md`](docs/tarragon.md) for controls, every represented
+protocol field, plugin lifecycle semantics, previews, reload/detach behavior,
+and current backend limitations.
 
 ### Material You
 
@@ -132,6 +171,7 @@ The daemon listens on a user-only Unix socket at
 ```sh
 mithshell toggle --monitor focused
 mithshell open --monitor DP-2
+mithshell search --monitor focused
 mithshell close --monitor all
 
 mithshell osd volume --value 60

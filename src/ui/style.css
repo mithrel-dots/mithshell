@@ -225,7 +225,7 @@ scale.control-scale slider {
 }
 
 .media-app-icon {
-  -gtk-icon-size: 16px;
+  -gtk-icon-size: 18px;
 }
 
 .media-clock {
@@ -242,6 +242,223 @@ scale.control-scale slider {
   font-family: "Inter", "Rubik", sans-serif;
   font-size: 12px;
   font-weight: 650;
+}
+
+.search-content {
+  padding: 20px;
+}
+
+.tarragon-search {
+  min-height: 38px;
+  padding: 0 12px;
+  color: @ms_on_surface;
+  background: alpha(@ms_surface_low, 0.94);
+  border: 1px solid alpha(@ms_outline_variant, 0.34);
+  border-radius: 19px;
+  box-shadow: none;
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+}
+
+.tarragon-search:focus {
+  border-color: alpha(@ms_primary, 0.78);
+  box-shadow: 0 0 0 2px alpha(@ms_primary, 0.12);
+}
+
+.search-status {
+  min-height: 16px;
+  color: @ms_primary;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.search-header-button {
+  min-height: 32px;
+  padding: 0 12px;
+  color: @ms_on_surface_variant;
+  background: alpha(@ms_on_surface, 0.06);
+  border: 0;
+  border-radius: 16px;
+  box-shadow: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+
+.search-header-button:hover,
+.search-header-button:checked {
+  color: @ms_on_primary;
+  background: @ms_primary;
+}
+
+.search-results,
+.plugin-list,
+.search-results-scroll,
+.search-results-scroll > viewport {
+  background: transparent;
+}
+
+.search-result {
+  min-height: 36px;
+  padding: 4px 9px;
+  margin: 1px 0;
+  color: @ms_on_surface;
+  background: transparent;
+  border-radius: 13px;
+}
+
+.search-result:hover,
+.search-result:selected {
+  background: alpha(@ms_primary, 0.13);
+}
+
+.search-result-icon {
+  -gtk-icon-size: 22px;
+}
+
+.search-result-title {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.search-result-description,
+.search-result-plugin {
+  color: alpha(@ms_on_surface_variant, 0.76);
+  font-family: "Inter", sans-serif;
+  font-size: 9px;
+}
+
+.search-preview {
+  padding: 12px;
+  background: alpha(@ms_surface_low, 0.9);
+  border: 1px solid alpha(@ms_outline_variant, 0.28);
+  border-radius: 18px;
+}
+
+.search-preview-picture {
+  background: alpha(black, 0.2);
+  border-radius: 13px;
+}
+
+.search-preview-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 72px;
+}
+
+.search-preview-title {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.search-preview-description {
+  color: @ms_on_surface_variant;
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+}
+
+.search-preview-meta {
+  color: alpha(@ms_on_surface_variant, 0.72);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 8px;
+}
+
+.search-preview-file-meta {
+  color: @ms_primary;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.search-preview-text-scroll,
+.search-preview-text-scroll > viewport,
+.search-preview-text,
+.search-preview-text text {
+  color: @ms_on_surface;
+  background: alpha(black, 0.2);
+}
+
+.search-preview-text-scroll {
+  border: 1px solid alpha(@ms_outline_variant, 0.22);
+  border-radius: 12px;
+}
+
+.search-preview-text {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+}
+
+.search-preview-error {
+  padding: 16px;
+  color: @ms_error;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+}
+
+.search-action {
+  min-height: 30px;
+  padding: 0 10px;
+  color: @ms_on_surface;
+  background: alpha(@ms_on_surface, 0.07);
+  border: 1px solid alpha(@ms_outline_variant, 0.24);
+  border-radius: 10px;
+  box-shadow: none;
+  font-size: 10px;
+}
+
+.search-action:hover,
+.search-action.default {
+  color: @ms_on_primary;
+  background: @ms_primary;
+}
+
+.plugin-row {
+  min-height: 52px;
+  padding: 8px 11px;
+  margin: 2px 0;
+  background: alpha(@ms_surface_low, 0.72);
+  border: 1px solid alpha(@ms_outline_variant, 0.2);
+  border-radius: 14px;
+}
+
+.plugin-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 25px;
+}
+
+.plugin-name {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.plugin-description {
+  color: @ms_on_surface_variant;
+  font-family: "Inter", sans-serif;
+  font-size: 10px;
+}
+
+.plugin-metadata,
+.plugin-state {
+  color: alpha(@ms_on_surface_variant, 0.7);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.plugin-state.available { color: @ms_primary; }
+.plugin-state.error { color: @ms_error; }
+
+.search-result-plugin {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 700;
 }
 
 .osd-content {
@@ -323,9 +540,33 @@ progressbar.osd-progress progress {
 .scale-medium scale.control-scale slider { min-width: 18px; min-height: 18px; margin: -6px; }
 .scale-medium .palette-chip { min-width: 29px; min-height: 8px; }
 .scale-medium .media-content { padding: 0 22px; }
-.scale-medium .media-app-icon { -gtk-icon-size: 19px; }
+.scale-medium .media-app-icon { -gtk-icon-size: 22px; }
 .scale-medium .media-title { font-size: 14px; }
 .scale-medium .media-clock { min-width: 46px; font-size: 12px; }
+.scale-medium .search-content { padding: 24px; }
+.scale-medium .tarragon-search { min-height: 46px; border-radius: 23px; font-size: 16px; }
+.scale-medium .search-status { font-size: 11px; }
+.scale-medium .search-header-button { min-height: 38px; padding: 0 14px; border-radius: 19px; font-size: 11px; }
+.scale-medium .search-result { min-height: 44px; padding: 5px 11px; border-radius: 16px; }
+.scale-medium .search-result-icon { -gtk-icon-size: 27px; }
+.scale-medium .search-result-title { font-size: 14px; }
+.scale-medium .search-result-description,
+.scale-medium .search-result-plugin { font-size: 11px; }
+.scale-medium .search-preview { padding: 14px; border-radius: 22px; }
+.scale-medium .search-preview-icon { -gtk-icon-size: 86px; }
+.scale-medium .search-preview-title { font-size: 19px; }
+.scale-medium .search-preview-description { font-size: 13px; }
+.scale-medium .search-preview-meta { font-size: 10px; }
+.scale-medium .search-preview-file-meta,
+.scale-medium .search-preview-text,
+.scale-medium .search-preview-error { font-size: 10px; }
+.scale-medium .search-action { min-height: 36px; font-size: 12px; }
+.scale-medium .plugin-row { min-height: 62px; padding: 10px 13px; border-radius: 17px; }
+.scale-medium .plugin-icon { -gtk-icon-size: 30px; }
+.scale-medium .plugin-name { font-size: 14px; }
+.scale-medium .plugin-description { font-size: 12px; }
+.scale-medium .plugin-metadata,
+.scale-medium .plugin-state { font-size: 10px; }
 .scale-medium .osd-content { padding: 0 20px; }
 .scale-medium .osd-icon { -gtk-icon-size: 20px; }
 .scale-medium .osd-title { min-width: 82px; font-size: 13px; }
@@ -367,9 +608,33 @@ progressbar.osd-progress progress {
 .scale-large scale.control-scale slider { min-width: 22px; min-height: 22px; margin: -7px; }
 .scale-large .palette-chip { min-width: 35px; min-height: 10px; }
 .scale-large .media-content { padding: 0 26px; }
-.scale-large .media-app-icon { -gtk-icon-size: 23px; }
+.scale-large .media-app-icon { -gtk-icon-size: 26px; }
 .scale-large .media-title { font-size: 17px; }
 .scale-large .media-clock { min-width: 55px; font-size: 14px; }
+.scale-large .search-content { padding: 29px; }
+.scale-large .tarragon-search { min-height: 55px; border-radius: 28px; font-size: 19px; }
+.scale-large .search-status { font-size: 13px; }
+.scale-large .search-header-button { min-height: 46px; padding: 0 17px; border-radius: 23px; font-size: 13px; }
+.scale-large .search-result { min-height: 52px; padding: 6px 13px; border-radius: 19px; }
+.scale-large .search-result-icon { -gtk-icon-size: 32px; }
+.scale-large .search-result-title { font-size: 17px; }
+.scale-large .search-result-description,
+.scale-large .search-result-plugin { font-size: 13px; }
+.scale-large .search-preview { padding: 17px; border-radius: 26px; }
+.scale-large .search-preview-icon { -gtk-icon-size: 104px; }
+.scale-large .search-preview-title { font-size: 23px; }
+.scale-large .search-preview-description { font-size: 16px; }
+.scale-large .search-preview-meta { font-size: 12px; }
+.scale-large .search-preview-file-meta,
+.scale-large .search-preview-text,
+.scale-large .search-preview-error { font-size: 12px; }
+.scale-large .search-action { min-height: 43px; font-size: 14px; }
+.scale-large .plugin-row { min-height: 75px; padding: 12px 16px; border-radius: 20px; }
+.scale-large .plugin-icon { -gtk-icon-size: 36px; }
+.scale-large .plugin-name { font-size: 17px; }
+.scale-large .plugin-description { font-size: 14px; }
+.scale-large .plugin-metadata,
+.scale-large .plugin-state { font-size: 12px; }
 .scale-large .osd-content { padding: 0 25px; }
 .scale-large .osd-icon { -gtk-icon-size: 25px; }
 .scale-large .osd-title { min-width: 99px; font-size: 16px; }
