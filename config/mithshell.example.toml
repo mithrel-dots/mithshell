@@ -1,0 +1,25 @@
+[shell]
+# Use ["*"] for every connected output, or list exact Hyprland output names.
+monitors = ["*"]
+top_margin = 6
+exclusive_zone = 48
+animation_ms = 280
+# 0 selects an automatic scale from each monitor's logical width.
+scale = 0
+
+[media]
+# Maximum media-pill width as a multiple of the compact pill width.
+max_width_factor = 1.8
+
+[theme]
+mode = "dark"
+variant = "tonal-spot"
+
+[theme.source]
+kind = "color"
+value = "#9aa7ff"
+
+# To extract the Material You source color from a wallpaper instead:
+# [theme.source]
+# kind = "image"
+# path = "/home/you/Pictures/wallpaper.jpg"

@@ -1,0 +1,10 @@
+pub mod app;
+pub mod cli;
+pub mod config;
+pub mod hyprland;
+pub mod ipc;
+pub mod media;
+pub mod state;
+pub mod system;
+pub mod theme;
+pub mod ui;

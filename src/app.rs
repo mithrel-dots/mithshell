@@ -1,0 +1,722 @@
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    rc::Rc,
+    thread,
+};
+
+use anyhow::{Context, Result, bail};
+use async_channel::{Receiver, Sender};
+use gtk::{Application, CssProvider, gdk, gio, glib, prelude::*};
+use log::{error, info, warn};
+
+use crate::{
+    cli::{self, Cli, Command, ThemeCommand, ThemeModeArg},
+    config::{self, AppConfig, ThemeMode, ThemeSource},
+    hyprland::{self, HyprlandUpdate},
+    ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
+    media,
+    state::{AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot},
+    system, theme,
+    ui::{self, IslandActions, IslandWindow},
+};
+
+pub fn run(cli: Cli) -> Result<()> {
+    let socket_path = ipc::socket_path(cli.socket)?;
+    match cli.command {
+        Command::Daemon {
+            config,
+            no_animations,
+        } => run_daemon(socket_path, config, !no_animations),
+        command => run_client(socket_path, command),
+    }
+}
+
+fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
+    let (request, print_json) = command_request(command)?;
+    let response = ipc::send(&socket_path, &request)?;
+    if print_json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    } else {
+        println!("{}", response.message);
+    }
+    if !response.ok {
+        bail!(response.message);
+    }
+    Ok(())
+}
+
+fn command_request(command: Command) -> Result<(Request, bool)> {
+    let mut json = false;
+    let command = match command {
+        Command::Toggle(args) => IpcCommand::Toggle {
+            monitor: MonitorTarget::parse(&args.monitor)?,
+        },
+        Command::Open(args) => IpcCommand::Open {
+            monitor: MonitorTarget::parse(&args.monitor)?,
+        },
+        Command::Close(args) => IpcCommand::Close {
+            monitor: MonitorTarget::parse(&args.monitor)?,
+        },
+        Command::Osd {
+            kind,
+            value,
+            timeout,
+            monitor,
+        } => IpcCommand::Osd {
+            monitor: MonitorTarget::parse(&monitor.monitor)?,
+            kind: match kind {
+                cli::OsdKind::Volume => OsdKind::Volume,
+                cli::OsdKind::Brightness => OsdKind::Brightness,
+                cli::OsdKind::Workspace => OsdKind::Workspace,
+            },
+            value,
+            timeout_ms: timeout,
+        },
+        Command::Reload => IpcCommand::Reload,
+        Command::Status { json: print_json } => {
+            json = print_json;
+            IpcCommand::Status
+        }
+        Command::Theme { command } => match command {
+            ThemeCommand::Set {
+                image,
+                color,
+                mode,
+                persist,
+            } => {
+                let source = if let Some(path) = image {
+                    let path = config::expand_home(path);
+                    let path = path.canonicalize().with_context(|| {
+                        format!("failed to resolve theme image {}", path.display())
+                    })?;
+                    ThemeSource::Image { path }
+                } else {
+                    ThemeSource::Color {
+                        value: color.context("--image or --color is required")?,
+                    }
+                };
+                IpcCommand::ThemeSet {
+                    source,
+                    mode: mode.map(theme_mode),
+                    persist,
+                }
+            }
+            ThemeCommand::Mode { mode, persist } => IpcCommand::ThemeMode {
+                mode: theme_mode(mode),
+                persist,
+            },
+            ThemeCommand::Current { json: print_json } => {
+                json = print_json;
+                IpcCommand::ThemeCurrent
+            }
+            ThemeCommand::Reset => IpcCommand::ThemeReset,
+        },
+        Command::Daemon { .. } => bail!("daemon command cannot be sent over IPC"),
+    };
+    Ok((Request::new(command), json))
+}
+
+fn theme_mode(mode: ThemeModeArg) -> ThemeMode {
+    match mode {
+        ThemeModeArg::Dark => ThemeMode::Dark,
+        ThemeModeArg::Light => ThemeMode::Light,
+    }
+}
+
+fn run_daemon(
+    socket_path: PathBuf,
+    config_override: Option<PathBuf>,
+    animations: bool,
+) -> Result<()> {
+    let config_path = config::config_path(config_override)?;
+    let config = AppConfig::load(&config_path)?;
+    ipc::prepare_runtime_socket(&socket_path)?;
+
+    let application = Application::builder()
+        .application_id("dev.mithrel.mithshell")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let controller_holder = Rc::new(RefCell::new(None::<Rc<Controller>>));
+    let activate_holder = controller_holder.clone();
+    application.connect_activate(move |application| {
+        if activate_holder.borrow().is_some() {
+            return;
+        }
+        match Controller::new(
+            application,
+            config_path.clone(),
+            config.clone(),
+            socket_path.clone(),
+            animations,
+        ) {
+            Ok(controller) => {
+                controller.clone().start();
+                *activate_holder.borrow_mut() = Some(controller);
+            }
+            Err(error) => {
+                error!("failed to start mithshell: {error:#}");
+                application.quit();
+            }
+        }
+    });
+
+    // Clap already consumed the process arguments; keep GTK from parsing daemon flags again.
+    let status = application.run_with_args(&["mithshell"]);
+    controller_holder.borrow_mut().take();
+    if status == glib::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        bail!("GTK application exited with {status:?}")
+    }
+}
+
+struct Controller {
+    application: Application,
+    config_path: PathBuf,
+    config: RefCell<AppConfig>,
+    theme_config: RefCell<crate::config::ThemeConfig>,
+    palette: RefCell<Palette>,
+    css_provider: CssProvider,
+    hyprland: RefCell<HyprlandSnapshot>,
+    system: RefCell<SystemSnapshot>,
+    media: RefCell<Option<MediaState>>,
+    visualizer: RefCell<media::VisualizerLevels>,
+    pending_volume: Cell<Option<u8>>,
+    islands: RefCell<HashMap<String, Rc<IslandWindow>>>,
+    animations: bool,
+    theme_sender: Sender<Result<Palette, String>>,
+    _media_listener: thread::JoinHandle<()>,
+    _visualizer_listener: thread::JoinHandle<()>,
+}
+
+impl Controller {
+    fn new(
+        application: &Application,
+        config_path: PathBuf,
+        config: AppConfig,
+        socket_path: PathBuf,
+        animations: bool,
+    ) -> Result<Rc<Self>> {
+        let mut initial_theme = config.theme.clone();
+        if let Some(theme_override) = theme::load_override()? {
+            theme::apply_override(&mut initial_theme, theme_override);
+        }
+        let fallback = theme::generate(&crate::config::ThemeConfig::default())?;
+        let css_provider = ui::install_styles(&fallback);
+        let (theme_sender, theme_receiver) = async_channel::unbounded();
+        let (media_sender, media_receiver) = async_channel::unbounded();
+        let media_listener = media::start_listener(media_sender);
+        let (visualizer_sender, visualizer_receiver) = async_channel::bounded(2);
+        let visualizer_listener = media::start_visualizer(visualizer_sender);
+
+        let controller = Rc::new(Self {
+            application: application.clone(),
+            config_path,
+            config: RefCell::new(config),
+            theme_config: RefCell::new(initial_theme),
+            palette: RefCell::new(fallback),
+            css_provider,
+            hyprland: RefCell::new(HyprlandSnapshot::default()),
+            system: RefCell::new(SystemSnapshot::default()),
+            media: RefCell::new(None),
+            visualizer: RefCell::new([0; media::VISUALIZER_BARS]),
+            pending_volume: Cell::new(None),
+            islands: RefCell::new(HashMap::new()),
+            animations,
+            theme_sender,
+            _media_listener: media_listener,
+            _visualizer_listener: visualizer_listener,
+        });
+
+        let (ipc_sender, ipc_receiver) = async_channel::unbounded();
+        ipc::start_server(socket_path, ipc_sender)?;
+        controller.attach_ipc(ipc_receiver);
+
+        let (hypr_sender, hypr_receiver) = async_channel::unbounded();
+        hyprland::start_listener(hypr_sender);
+        controller.attach_hyprland(hypr_receiver);
+
+        let (system_sender, system_receiver) = async_channel::unbounded();
+        system::start_poller(system_sender);
+        controller.attach_system(system_receiver);
+        let (audio_sender, audio_receiver) = async_channel::unbounded();
+        system::start_audio_listener(audio_sender);
+        controller.attach_audio(audio_receiver);
+        controller.attach_media(media_receiver);
+        controller.attach_visualizer(visualizer_receiver);
+        controller.attach_theme(theme_receiver);
+
+        Ok(controller)
+    }
+
+    fn start(self: Rc<Self>) {
+        self.reconcile_monitors();
+        self.generate_theme(self.theme_config.borrow().clone());
+
+        if let Some(display) = gdk::Display::default() {
+            let monitors = display.monitors();
+            let weak = Rc::downgrade(&self);
+            monitors.connect_items_changed(move |_, _, _, _| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.reconcile_monitors();
+                }
+            });
+        }
+        info!(
+            "mithshell started with config {}",
+            self.config_path.display()
+        );
+    }
+
+    fn attach_ipc(self: &Rc<Self>, receiver: Receiver<IncomingRequest>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(incoming) = receiver.recv().await {
+                let response = weak.upgrade().map_or_else(
+                    || Response::error("daemon is shutting down"),
+                    |controller| controller.handle_command(incoming.request.command),
+                );
+                let _ = incoming.respond_to.send(response);
+            }
+        });
+    }
+
+    fn attach_hyprland(self: &Rc<Self>, receiver: Receiver<HyprlandUpdate>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(update) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                match update {
+                    HyprlandUpdate::Snapshot(snapshot) => {
+                        for island in controller.islands.borrow().values() {
+                            island.update_hyprland(&snapshot);
+                        }
+                        *controller.hyprland.borrow_mut() = snapshot;
+                    }
+                    HyprlandUpdate::Unavailable(message) => warn!("Hyprland IPC: {message}"),
+                }
+            }
+        });
+    }
+
+    fn attach_system(self: &Rc<Self>, receiver: Receiver<SystemSnapshot>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(snapshot) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                for island in controller.islands.borrow().values() {
+                    island.update_system(&snapshot);
+                }
+                *controller.system.borrow_mut() = snapshot;
+            }
+        });
+    }
+
+    fn attach_audio(self: &Rc<Self>, receiver: Receiver<AudioState>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(audio) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                let suppress_osd = controller.pending_volume.get() == Some(audio.percent);
+                if suppress_osd {
+                    controller.pending_volume.set(None);
+                }
+                let snapshot = {
+                    let mut system = controller.system.borrow_mut();
+                    system.audio = Some(audio);
+                    system.clone()
+                };
+                for island in controller.islands.borrow().values() {
+                    island.update_system(&snapshot);
+                }
+
+                if suppress_osd {
+                    continue;
+                }
+                match controller.target_islands(&MonitorTarget::Focused) {
+                    Ok(islands) => {
+                        for island in islands {
+                            island.show_osd(OsdState {
+                                kind: OsdKind::Volume,
+                                value: audio.percent,
+                                muted: audio.muted,
+                                timeout_ms: 1_500,
+                            });
+                        }
+                    }
+                    Err(error) => warn!("cannot show volume OSD: {error:#}"),
+                }
+            }
+        });
+    }
+
+    fn attach_media(self: &Rc<Self>, receiver: Receiver<Option<MediaState>>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(state) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                for island in controller.islands.borrow().values() {
+                    island.update_media(state.as_ref());
+                }
+                *controller.media.borrow_mut() = state;
+            }
+        });
+    }
+
+    fn attach_visualizer(self: &Rc<Self>, receiver: Receiver<media::VisualizerLevels>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(levels) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                if controller.media.borrow().is_some() {
+                    for island in controller.islands.borrow().values() {
+                        island.update_visualizer(levels);
+                    }
+                }
+                *controller.visualizer.borrow_mut() = levels;
+            }
+        });
+    }
+
+    fn attach_theme(self: &Rc<Self>, receiver: Receiver<Result<Palette, String>>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(result) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                match result {
+                    Ok(palette) => {
+                        ui::update_styles(&controller.css_provider, &palette);
+                        for island in controller.islands.borrow().values() {
+                            island.update_palette(&palette.source);
+                        }
+                        *controller.palette.borrow_mut() = palette;
+                    }
+                    Err(message) => warn!("theme generation failed: {message}"),
+                }
+            }
+        });
+    }
+
+    fn handle_command(self: &Rc<Self>, command: IpcCommand) -> Response {
+        match self.try_handle_command(command) {
+            Ok(response) => response,
+            Err(error) => Response::error(format!("{error:#}")),
+        }
+    }
+
+    fn try_handle_command(self: &Rc<Self>, command: IpcCommand) -> Result<Response> {
+        match command {
+            IpcCommand::Toggle { monitor } => {
+                let targets = self.target_islands(&monitor)?;
+                for island in targets {
+                    island.toggle();
+                }
+                Ok(Response::ok("dashboard toggled"))
+            }
+            IpcCommand::Open { monitor } => {
+                for island in self.target_islands(&monitor)? {
+                    island.open();
+                }
+                Ok(Response::ok("dashboard opened"))
+            }
+            IpcCommand::Close { monitor } => {
+                for island in self.target_islands(&monitor)? {
+                    island.close();
+                }
+                Ok(Response::ok("island collapsed"))
+            }
+            IpcCommand::Osd {
+                monitor,
+                kind,
+                value,
+                timeout_ms,
+            } => {
+                let value = value.unwrap_or_else(|| self.current_osd_value(kind));
+                let muted = kind == OsdKind::Volume
+                    && self.system.borrow().audio.is_some_and(|audio| audio.muted);
+                for island in self.target_islands(&monitor)? {
+                    island.show_osd(OsdState {
+                        kind,
+                        value,
+                        muted,
+                        timeout_ms,
+                    });
+                }
+                Ok(Response::ok(format!("{kind:?} OSD shown")))
+            }
+            IpcCommand::Reload => {
+                self.reload_config()?;
+                Ok(Response::ok("configuration reloaded"))
+            }
+            IpcCommand::Status => {
+                let windows: serde_json::Map<String, serde_json::Value> = self
+                    .islands
+                    .borrow()
+                    .iter()
+                    .map(|(name, island)| (name.clone(), island.debug_state()))
+                    .collect();
+                let data = serde_json::json!({
+                    "config": self.config_path,
+                    "windows": windows,
+                    "hyprland": &*self.hyprland.borrow(),
+                    "system": &*self.system.borrow(),
+                    "media": &*self.media.borrow(),
+                    "palette": &*self.palette.borrow(),
+                });
+                Ok(Response::with_data("daemon is running", data))
+            }
+            IpcCommand::ThemeSet {
+                source,
+                mode,
+                persist,
+            } => {
+                let mut theme_config = self.theme_config.borrow().clone();
+                theme_config.source = source;
+                if let Some(mode) = mode {
+                    theme_config.mode = mode;
+                }
+                if persist {
+                    theme::persist(&theme::ThemeOverride {
+                        source: theme_config.source.clone(),
+                        mode: theme_config.mode,
+                    })?;
+                }
+                *self.theme_config.borrow_mut() = theme_config.clone();
+                self.generate_theme(theme_config);
+                Ok(Response::ok("theme generation started"))
+            }
+            IpcCommand::ThemeMode { mode, persist } => {
+                let mut theme_config = self.theme_config.borrow().clone();
+                theme_config.mode = mode;
+                if persist {
+                    theme::persist(&theme::ThemeOverride {
+                        source: theme_config.source.clone(),
+                        mode,
+                    })?;
+                }
+                *self.theme_config.borrow_mut() = theme_config.clone();
+                self.generate_theme(theme_config);
+                Ok(Response::ok("theme mode updated"))
+            }
+            IpcCommand::ThemeCurrent => Ok(Response::with_data(
+                "active palette",
+                serde_json::to_value(&*self.palette.borrow())?,
+            )),
+            IpcCommand::ThemeReset => {
+                theme::clear_override()?;
+                let base = AppConfig::load(&self.config_path)?.theme;
+                *self.theme_config.borrow_mut() = base.clone();
+                self.generate_theme(base);
+                Ok(Response::ok("theme override reset"))
+            }
+        }
+    }
+
+    fn current_osd_value(&self, kind: OsdKind) -> u8 {
+        match kind {
+            OsdKind::Volume => self.system.borrow().audio.map_or(0, |audio| audio.percent),
+            OsdKind::Brightness => self
+                .system
+                .borrow()
+                .brightness
+                .as_ref()
+                .map_or(0, |brightness| brightness.percent),
+            OsdKind::Workspace => self
+                .hyprland
+                .borrow()
+                .focused_monitor()
+                .map_or(0, |monitor| monitor.active_workspace.id.clamp(0, 100) as u8),
+        }
+    }
+
+    fn target_islands(&self, target: &MonitorTarget) -> Result<Vec<Rc<IslandWindow>>> {
+        let islands = self.islands.borrow();
+        let names: Vec<String> = match target {
+            MonitorTarget::All => islands.keys().cloned().collect(),
+            MonitorTarget::Named(name) => vec![name.clone()],
+            MonitorTarget::Focused => {
+                let name = self
+                    .hyprland
+                    .borrow()
+                    .focused_monitor()
+                    .map(|monitor| monitor.name.clone())
+                    .or_else(|| islands.keys().next().cloned())
+                    .context("no island output is available")?;
+                vec![name]
+            }
+        };
+        let targets: Vec<_> = names
+            .iter()
+            .filter_map(|name| islands.get(name).cloned())
+            .collect();
+        if targets.is_empty() {
+            bail!("no configured island matches target {target:?}");
+        }
+        Ok(targets)
+    }
+
+    fn reload_config(self: &Rc<Self>) -> Result<()> {
+        let config = AppConfig::load(&self.config_path)?;
+        let mut theme_config = config.theme.clone();
+        if let Some(theme_override) = theme::load_override()? {
+            theme::apply_override(&mut theme_config, theme_override);
+        }
+        *self.config.borrow_mut() = config;
+        *self.theme_config.borrow_mut() = theme_config.clone();
+        for island in self.islands.borrow_mut().drain().map(|(_, island)| island) {
+            island.destroy();
+        }
+        self.reconcile_monitors();
+        self.generate_theme(theme_config);
+        Ok(())
+    }
+
+    fn generate_theme(&self, config: crate::config::ThemeConfig) {
+        let sender = self.theme_sender.clone();
+        thread::spawn(move || {
+            let result = theme::generate(&config)
+                .and_then(|palette| {
+                    theme::export_palette(&palette)?;
+                    Ok(palette)
+                })
+                .map_err(|error| format!("{error:#}"));
+            let _ = sender.send_blocking(result);
+        });
+    }
+
+    fn reconcile_monitors(self: &Rc<Self>) {
+        let Some(display) = gdk::Display::default() else {
+            warn!("no GDK display is available");
+            return;
+        };
+        let model = display.monitors();
+        let app_config = self.config.borrow().clone();
+        let shell_config = app_config.shell.clone();
+        let mut available = HashSet::new();
+
+        for index in 0..model.n_items() {
+            let Some(monitor) = model.item(index).and_downcast::<gdk::Monitor>() else {
+                continue;
+            };
+            let Some(connector) = monitor.connector().map(|value| value.to_string()) else {
+                warn!("ignoring output without a connector name");
+                continue;
+            };
+            available.insert(connector.clone());
+            if !shell_config.shows_on(&connector) || self.islands.borrow().contains_key(&connector)
+            {
+                continue;
+            }
+
+            let weak = Rc::downgrade(self);
+            let switch_workspace = Rc::new(move |monitor: &str, workspace: i64| {
+                let monitor = monitor.to_owned();
+                let dispatch_monitor = monitor.clone();
+                thread::spawn(move || {
+                    if let Err(error) = hyprland::switch_workspace(&dispatch_monitor, workspace) {
+                        warn!("failed to switch workspace: {error:#}");
+                    }
+                });
+                if let Some(controller) = weak.upgrade() {
+                    let percent = workspace.clamp(0, 100) as u8;
+                    if let Some(island) = controller.islands.borrow().get(&monitor) {
+                        island.show_osd(OsdState {
+                            kind: OsdKind::Workspace,
+                            value: percent,
+                            muted: false,
+                            timeout_ms: 900,
+                        });
+                    }
+                }
+            });
+
+            let weak = Rc::downgrade(self);
+            let set_volume = Rc::new(move |value: u8| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.pending_volume.set(Some(value));
+                    let weak = Rc::downgrade(&controller);
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(1), move || {
+                        if let Some(controller) = weak.upgrade()
+                            && controller.pending_volume.get() == Some(value)
+                        {
+                            controller.pending_volume.set(None);
+                        }
+                    });
+                }
+                thread::spawn(move || {
+                    if let Err(error) = system::set_volume(value) {
+                        warn!("failed to set volume: {error:#}");
+                    }
+                });
+            });
+            let set_brightness = Rc::new(move |value: u8| {
+                thread::spawn(move || {
+                    if let Err(error) = system::set_brightness(value) {
+                        warn!("failed to set brightness: {error:#}");
+                    }
+                });
+            });
+            let palette = self.palette.borrow();
+            let island = IslandWindow::new(
+                &self.application,
+                &monitor,
+                connector.clone(),
+                &app_config,
+                &palette,
+                IslandActions {
+                    switch_workspace,
+                    set_volume,
+                    set_brightness,
+                },
+                self.animations,
+            );
+            island.update_hyprland(&self.hyprland.borrow());
+            island.update_system(&self.system.borrow());
+            island.update_media(self.media.borrow().as_ref());
+            island.update_visualizer(*self.visualizer.borrow());
+            island.update_palette(&theme::source_label(&self.theme_config.borrow().source));
+            self.islands.borrow_mut().insert(connector, island);
+        }
+
+        let to_remove: Vec<_> = self
+            .islands
+            .borrow()
+            .keys()
+            .filter(|name| !available.contains(*name) || !shell_config.shows_on(name))
+            .cloned()
+            .collect();
+        for name in to_remove {
+            if let Some(island) = self.islands.borrow_mut().remove(&name) {
+                island.destroy();
+            }
+        }
+        for requested in shell_config
+            .monitors
+            .iter()
+            .filter(|name| name.as_str() != "*")
+        {
+            if !available.contains(requested) {
+                warn!("configured monitor `{requested}` is not connected");
+            }
+        }
+        for island in self.islands.borrow().values() {
+            island.update_shell_config(&shell_config, self.animations);
+        }
+    }
+}

@@ -1,0 +1,376 @@
+window.mithshell-window,
+window.mithshell-window > contents,
+window.mithshell-dismiss,
+window.mithshell-dismiss > contents {
+  background: transparent;
+  box-shadow: none;
+}
+
+.island-surface {
+  background: alpha(@ms_surface, 0.96);
+  border: 1px solid alpha(@ms_outline_variant, 0.48);
+  border-radius: 28px;
+  box-shadow: 0 16px 38px alpha(black, 0.48), inset 0 1px alpha(white, 0.055);
+}
+
+.compact-content {
+  padding: 0 15px;
+}
+
+.compact-clock {
+  color: @ms_on_surface;
+  font-family: "Inter", "Rubik", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.compact-battery,
+.compact-workspace {
+  color: @ms_on_surface_variant;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workspace-dot {
+  min-width: 7px;
+  min-height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: alpha(@ms_on_surface_variant, 0.28);
+  box-shadow: none;
+}
+
+.workspace-dot.occupied {
+  background: alpha(@ms_on_surface_variant, 0.72);
+}
+
+.workspace-dot.active {
+  min-width: 19px;
+  background: @ms_primary;
+}
+
+.dashboard-content {
+  padding: 24px;
+}
+
+.eyebrow {
+  color: @ms_primary;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+}
+
+.hero-time {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 32px;
+  font-weight: 650;
+  font-feature-settings: "tnum";
+  letter-spacing: -1px;
+}
+
+.hero-date,
+.muted-label {
+  color: alpha(@ms_on_surface_variant, 0.82);
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+}
+
+.battery-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  background: alpha(@ms_surface_container, 0.9);
+  border: 1px solid alpha(@ms_outline_variant, 0.26);
+}
+
+.battery-chip label {
+  color: @ms_on_surface;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.active-card,
+.controls-card {
+  background: alpha(@ms_surface_low, 0.92);
+  border: 1px solid alpha(@ms_outline_variant, 0.28);
+  border-radius: 20px;
+}
+
+.active-card {
+  padding: 13px 15px;
+}
+
+.active-title {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.workspace-button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: alpha(@ms_on_surface_variant, 0.68);
+  background: transparent;
+  border: 0;
+  border-radius: 14px;
+  box-shadow: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workspace-button:hover {
+  color: @ms_on_surface;
+  background: alpha(@ms_on_surface, 0.08);
+}
+
+.workspace-button.occupied {
+  color: @ms_on_surface;
+  background: alpha(@ms_surface_high, 0.76);
+}
+
+.workspace-button.active {
+  color: @ms_on_primary;
+  background: @ms_primary;
+}
+
+.controls-card {
+  padding: 9px 14px;
+}
+
+.control-row {
+  min-height: 37px;
+}
+
+.control-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 16px;
+}
+
+.control-value {
+  min-width: 38px;
+  color: @ms_on_surface_variant;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+scale.control-scale {
+  padding: 0;
+}
+
+scale.control-scale trough {
+  min-height: 5px;
+  border-radius: 99px;
+  background: alpha(@ms_outline_variant, 0.35);
+}
+
+scale.control-scale highlight {
+  min-height: 5px;
+  border-radius: 99px;
+  background: @ms_primary;
+}
+
+scale.control-scale slider {
+  min-width: 15px;
+  min-height: 15px;
+  margin: -5px;
+  border: 0;
+  border-radius: 99px;
+  background: @ms_on_surface;
+  box-shadow: 0 2px 8px alpha(black, 0.34);
+}
+
+.palette-chip {
+  min-width: 24px;
+  min-height: 7px;
+  border-radius: 99px;
+}
+
+.palette-chip.primary { background: @ms_primary; }
+.palette-chip.secondary { background: @ms_secondary; }
+.palette-chip.tertiary { background: @ms_tertiary; }
+
+.close-button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: @ms_on_surface_variant;
+  background: alpha(@ms_on_surface, 0.06);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.close-button:hover {
+  color: @ms_on_surface;
+  background: alpha(@ms_on_surface, 0.12);
+}
+
+.media-content {
+  padding: 0 18px;
+}
+
+.media-visualizer {
+  color: alpha(@ms_primary, 0.82);
+  opacity: 0.72;
+}
+
+.media-app-icon {
+  -gtk-icon-size: 16px;
+}
+
+.media-clock {
+  min-width: 38px;
+  color: @ms_on_surface_variant;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.media-title {
+  color: @ms_on_surface;
+  font-family: "Inter", "Rubik", sans-serif;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.osd-content {
+  padding: 0 17px;
+}
+
+.osd-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 17px;
+}
+
+.osd-title {
+  min-width: 68px;
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.osd-value {
+  min-width: 31px;
+  color: @ms_on_surface_variant;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+progressbar.osd-progress trough {
+  min-height: 5px;
+  border-radius: 99px;
+  background: alpha(@ms_outline_variant, 0.35);
+}
+
+progressbar.osd-progress progress {
+  min-height: 5px;
+  border-radius: 99px;
+  background: @ms_primary;
+}
+
+.unavailable {
+  opacity: 0.38;
+}
+
+/* GTK output scaling is often left at 1 on 4K Hyprland setups. These density
+ * classes keep text and controls proportional to the scaled layer surface. */
+.scale-medium .island-surface {
+  border-radius: 34px;
+  box-shadow: 0 20px 46px alpha(black, 0.5), inset 0 1px alpha(white, 0.055);
+}
+
+.scale-medium .compact-content { padding: 0 18px; }
+.scale-medium .compact-clock { font-size: 16px; }
+.scale-medium .compact-battery,
+.scale-medium .compact-workspace { font-size: 12px; }
+.scale-medium .workspace-dot { min-width: 9px; min-height: 9px; }
+.scale-medium .workspace-dot.active { min-width: 23px; }
+.scale-medium .dashboard-content { padding: 29px; }
+.scale-medium .eyebrow { font-size: 11px; letter-spacing: 1.4px; }
+.scale-medium .hero-time { font-size: 38px; }
+.scale-medium .hero-date,
+.scale-medium .muted-label { font-size: 13px; }
+.scale-medium .battery-chip { min-height: 38px; padding: 0 14px; border-radius: 19px; }
+.scale-medium .battery-chip label { font-size: 13px; }
+.scale-medium .active-card,
+.scale-medium .controls-card { border-radius: 24px; }
+.scale-medium .active-card { padding: 16px 18px; }
+.scale-medium .active-title { font-size: 17px; }
+.scale-medium .workspace-button,
+.scale-medium .close-button { min-width: 34px; min-height: 34px; border-radius: 17px; }
+.scale-medium .workspace-button { font-size: 12px; }
+.scale-medium .controls-card { padding: 11px 17px; }
+.scale-medium .control-row { min-height: 44px; }
+.scale-medium .control-icon { -gtk-icon-size: 19px; }
+.scale-medium .control-value { min-width: 46px; font-size: 12px; }
+.scale-medium scale.control-scale trough,
+.scale-medium scale.control-scale highlight,
+.scale-medium progressbar.osd-progress trough,
+.scale-medium progressbar.osd-progress progress { min-height: 6px; }
+.scale-medium scale.control-scale slider { min-width: 18px; min-height: 18px; margin: -6px; }
+.scale-medium .palette-chip { min-width: 29px; min-height: 8px; }
+.scale-medium .media-content { padding: 0 22px; }
+.scale-medium .media-app-icon { -gtk-icon-size: 19px; }
+.scale-medium .media-title { font-size: 14px; }
+.scale-medium .media-clock { min-width: 46px; font-size: 12px; }
+.scale-medium .osd-content { padding: 0 20px; }
+.scale-medium .osd-icon { -gtk-icon-size: 20px; }
+.scale-medium .osd-title { min-width: 82px; font-size: 13px; }
+.scale-medium .osd-value { min-width: 37px; font-size: 12px; }
+
+.scale-large .island-surface {
+  border-radius: 41px;
+  box-shadow: 0 23px 55px alpha(black, 0.52), inset 0 1px alpha(white, 0.055);
+}
+
+.scale-large .compact-content { padding: 0 22px; }
+.scale-large .compact-clock { font-size: 19px; }
+.scale-large .compact-battery,
+.scale-large .compact-workspace { font-size: 14px; }
+.scale-large .workspace-dot { min-width: 10px; min-height: 10px; }
+.scale-large .workspace-dot.active { min-width: 28px; }
+.scale-large .dashboard-content { padding: 35px; }
+.scale-large .eyebrow { font-size: 13px; letter-spacing: 1.7px; }
+.scale-large .hero-time { font-size: 46px; }
+.scale-large .hero-date,
+.scale-large .muted-label { font-size: 16px; }
+.scale-large .battery-chip { min-height: 46px; padding: 0 17px; border-radius: 23px; }
+.scale-large .battery-chip label { font-size: 16px; }
+.scale-large .active-card,
+.scale-large .controls-card { border-radius: 29px; }
+.scale-large .active-card { padding: 19px 22px; }
+.scale-large .active-title { font-size: 20px; }
+.scale-large .workspace-button,
+.scale-large .close-button { min-width: 41px; min-height: 41px; border-radius: 21px; }
+.scale-large .workspace-button { font-size: 14px; }
+.scale-large .controls-card { padding: 13px 20px; }
+.scale-large .control-row { min-height: 54px; }
+.scale-large .control-icon { -gtk-icon-size: 23px; }
+.scale-large .control-value { min-width: 55px; font-size: 14px; }
+.scale-large scale.control-scale trough,
+.scale-large scale.control-scale highlight,
+.scale-large progressbar.osd-progress trough,
+.scale-large progressbar.osd-progress progress { min-height: 7px; }
+.scale-large scale.control-scale slider { min-width: 22px; min-height: 22px; margin: -7px; }
+.scale-large .palette-chip { min-width: 35px; min-height: 10px; }
+.scale-large .media-content { padding: 0 26px; }
+.scale-large .media-app-icon { -gtk-icon-size: 23px; }
+.scale-large .media-title { font-size: 17px; }
+.scale-large .media-clock { min-width: 55px; font-size: 14px; }
+.scale-large .osd-content { padding: 0 25px; }
+.scale-large .osd-icon { -gtk-icon-size: 25px; }
+.scale-large .osd-title { min-width: 99px; font-size: 16px; }
+.scale-large .osd-value { min-width: 45px; font-size: 14px; }
