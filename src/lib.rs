@@ -11,3 +11,4 @@ pub mod system;
 pub mod tarragon;
 pub mod theme;
 pub mod ui;
+pub mod weather;

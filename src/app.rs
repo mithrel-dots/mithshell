@@ -19,11 +19,14 @@ use crate::{
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
     latency, media,
     preview::{self, PreviewEvent, PreviewRequest},
-    state::{AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot},
+    state::{
+        AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot, WeatherState,
+    },
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
     theme,
     ui::{self, IslandActions, IslandWindow},
+    weather,
 };
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -343,6 +346,7 @@ struct Controller {
     hyprland: RefCell<HyprlandSnapshot>,
     system: RefCell<SystemSnapshot>,
     media: RefCell<Option<MediaState>>,
+    weather: RefCell<Option<WeatherState>>,
     visualizer: RefCell<media::VisualizerLevels>,
     tarragon_connected: Cell<bool>,
     tarragon_snapshot: RefCell<Option<TarragonSnapshot>>,
@@ -355,6 +359,7 @@ struct Controller {
     preview_sender: Sender<PreviewRequest>,
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
+    _weather_listener: thread::JoinHandle<()>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
     _gtk_css_watcher: Option<thread::JoinHandle<()>>,
@@ -381,6 +386,8 @@ impl Controller {
         let media_listener = media::start_listener(media_sender);
         let (visualizer_sender, visualizer_receiver) = async_channel::bounded(2);
         let visualizer_listener = media::start_visualizer(visualizer_sender);
+        let (weather_sender, weather_receiver) = async_channel::unbounded();
+        let weather_listener = weather::start_poller(weather_sender);
         let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
         let (tarragon_sender, tarragon_listener) = tarragon::start_listener(tarragon_event_sender);
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
@@ -399,6 +406,7 @@ impl Controller {
             hyprland: RefCell::new(HyprlandSnapshot::default()),
             system: RefCell::new(SystemSnapshot::default()),
             media: RefCell::new(None),
+            weather: RefCell::new(None),
             visualizer: RefCell::new([0; media::VISUALIZER_BARS]),
             tarragon_connected: Cell::new(false),
             tarragon_snapshot: RefCell::new(None),
@@ -411,6 +419,7 @@ impl Controller {
             preview_sender,
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
+            _weather_listener: weather_listener,
             tarragon_listener: Some(tarragon_listener),
             preview_listener: Some(preview_listener),
             _gtk_css_watcher: gtk_css_watcher,
@@ -431,6 +440,7 @@ impl Controller {
         system::start_audio_listener(audio_sender);
         controller.attach_audio(audio_receiver);
         controller.attach_media(media_receiver);
+        controller.attach_weather(weather_receiver);
         controller.attach_visualizer(visualizer_receiver);
         controller.attach_tarragon(tarragon_event_receiver);
         controller.attach_preview(preview_event_receiver);
@@ -559,6 +569,21 @@ impl Controller {
                     island.update_media(state.as_ref());
                 }
                 *controller.media.borrow_mut() = state;
+            }
+        });
+    }
+
+    fn attach_weather(self: &Rc<Self>, receiver: Receiver<WeatherState>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(state) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                for island in controller.islands.borrow().values() {
+                    island.update_weather(Some(&state));
+                }
+                *controller.weather.borrow_mut() = Some(state);
             }
         });
     }
@@ -811,6 +836,7 @@ impl Controller {
                     "hyprland": &*self.hyprland.borrow(),
                     "system": &*self.system.borrow(),
                     "media": &*self.media.borrow(),
+                    "weather": &*self.weather.borrow(),
                     "tarragon": {
                         "connected": self.tarragon_connected.get(),
                         "results": self.tarragon_snapshot.borrow().as_ref().map_or(0, |snapshot| snapshot.list.len()),
@@ -1113,6 +1139,7 @@ impl Controller {
             island.update_hyprland(&self.hyprland.borrow());
             island.update_system(&self.system.borrow());
             island.update_media(self.media.borrow().as_ref());
+            island.update_weather(self.weather.borrow().as_ref());
             island.update_visualizer(*self.visualizer.borrow());
             island.update_palette(&theme::source_label(&self.theme_config.borrow().source));
             island.update_tarragon_connection(self.tarragon_connected.get(), None);

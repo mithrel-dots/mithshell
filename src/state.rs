@@ -110,6 +110,47 @@ pub struct BatteryState {
     pub status: String,
 }
 
+/// A coarse weather condition, used to pick which placeholder pixel-art
+/// illustration a forecast entry is drawn with. Deliberately broader than
+/// wttr.in's underlying WWO condition codes -- the icon set is illustrative
+/// placeholder art, not a precise per-code library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum WeatherCondition {
+    Clear,
+    PartlyCloudy,
+    Cloudy,
+    Fog,
+    Drizzle,
+    Rain,
+    Sleet,
+    Snow,
+    Thunder,
+    Wind,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WeatherDay {
+    /// ISO `YYYY-MM-DD`, as reported by wttr.in.
+    pub date: String,
+    pub weekday: String,
+    /// `None` for padded placeholder days beyond what wttr.in's free tier
+    /// actually reports (see `weather::pad_forecast`).
+    pub max_c: Option<i32>,
+    pub min_c: Option<i32>,
+    pub condition: WeatherCondition,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WeatherState {
+    pub location: String,
+    pub current_c: i32,
+    pub condition: WeatherCondition,
+    pub description: String,
+    pub days: Vec<WeatherDay>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Palette {
     pub source: String,

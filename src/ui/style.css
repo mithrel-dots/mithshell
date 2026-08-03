@@ -569,6 +569,75 @@ progressbar.osd-progress progress {
   background: @ms_primary;
 }
 
+.weather-content {
+  padding: 22px;
+}
+
+.weather-location {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.weather-hero-temp {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 30px;
+  font-weight: 650;
+  font-feature-settings: "tnum";
+}
+
+.weather-description {
+  color: alpha(@ms_on_surface_variant, 0.85);
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+}
+
+.weather-day-card {
+  padding: 10px 6px;
+  background: alpha(@ms_surface_low, 0.9);
+  border: 1px solid alpha(@ms_outline_variant, 0.26);
+  border-radius: 16px;
+}
+
+.weather-day-label {
+  color: @ms_primary;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+}
+
+.weather-day-high {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.weather-day-low {
+  color: alpha(@ms_on_surface_variant, 0.75);
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+  font-feature-settings: "tnum";
+}
+
+calendar.weather-calendar {
+  padding: 10px;
+  color: @ms_on_surface;
+  background: alpha(@ms_surface_low, 0.9);
+  border: 1px solid alpha(@ms_outline_variant, 0.26);
+  border-radius: 18px;
+}
+
+calendar.weather-calendar label.day-number:selected {
+  color: @ms_on_primary;
+  background: @ms_primary;
+  border-radius: 8px;
+}
+
 .unavailable {
   opacity: 0.38;
 }
@@ -650,6 +719,15 @@ progressbar.osd-progress progress {
 .scale-medium .osd-icon { -gtk-icon-size: 20px; }
 .scale-medium .osd-title { min-width: 82px; font-size: 13px; }
 .scale-medium .osd-value { min-width: 37px; font-size: 12px; }
+.scale-medium .weather-content { padding: 27px; }
+.scale-medium .weather-location { font-size: 22px; }
+.scale-medium .weather-hero-temp { font-size: 36px; }
+.scale-medium .weather-description { font-size: 15px; }
+.scale-medium .weather-day-card { padding: 12px 8px; border-radius: 19px; }
+.scale-medium .weather-day-label { font-size: 12px; }
+.scale-medium .weather-day-high { font-size: 15px; }
+.scale-medium .weather-day-low { font-size: 13px; }
+.scale-medium calendar.weather-calendar { padding: 12px; border-radius: 22px; }
 
 .scale-large .island-surface {
   border-radius: 41px;
@@ -726,3 +804,12 @@ progressbar.osd-progress progress {
 .scale-large .osd-icon { -gtk-icon-size: 25px; }
 .scale-large .osd-title { min-width: 99px; font-size: 16px; }
 .scale-large .osd-value { min-width: 45px; font-size: 14px; }
+.scale-large .weather-content { padding: 32px; }
+.scale-large .weather-location { font-size: 26px; }
+.scale-large .weather-hero-temp { font-size: 42px; }
+.scale-large .weather-description { font-size: 17px; }
+.scale-large .weather-day-card { padding: 14px 10px; border-radius: 22px; }
+.scale-large .weather-day-label { font-size: 14px; }
+.scale-large .weather-day-high { font-size: 17px; }
+.scale-large .weather-day-low { font-size: 15px; }
+.scale-large calendar.weather-calendar { padding: 14px; border-radius: 26px; }

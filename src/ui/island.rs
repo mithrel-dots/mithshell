@@ -17,7 +17,10 @@ use crate::{
     ipc::OsdKind,
     media::{VISUALIZER_BARS, VisualizerLevels},
     preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData},
-    state::{HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot},
+    state::{
+        HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot, WeatherCondition,
+        WeatherDay, WeatherState,
+    },
     tarragon::{
         TarragonPlugin, TarragonPluginState, TarragonSelection, TarragonSnapshot, TarragonStatus,
     },
@@ -30,13 +33,17 @@ const MEDIA_HEIGHT: i32 = 32;
 const DASHBOARD_WIDTH: i32 = 440;
 // Tall enough for the header, the media player card, the current-window
 // card, workspaces, volume/brightness controls, and the palette footer.
-const DASHBOARD_HEIGHT: i32 = 480;
+const DASHBOARD_HEIGHT: i32 = 400;
 const OSD_WIDTH: i32 = 292;
 const OSD_HEIGHT: i32 = 36;
 const SEARCH_WIDTH: i32 = 820;
 const SEARCH_HEIGHT: i32 = 620;
 const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
 const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
+// Kept comfortably under SEARCH_HEIGHT/SEARCH_WIDTH, which size the shared
+// Fixed container every view is centered inside of.
+const WEATHER_WIDTH: i32 = 560;
+const WEATHER_HEIGHT: i32 = 580;
 /// Minimum spacing between dispatched queries.
 ///
 /// This throttles on the leading edge: the first keystroke after an idle
@@ -66,6 +73,8 @@ struct Metrics {
     search_width: i32,
     search_height: i32,
     search_y: i32,
+    weather_width: i32,
+    weather_height: i32,
 }
 
 impl Metrics {
@@ -93,6 +102,8 @@ impl Metrics {
             search_width: scaled(SEARCH_WIDTH, scale),
             search_height,
             search_y,
+            weather_width: scaled(WEATHER_WIDTH, scale),
+            weather_height: scaled(WEATHER_HEIGHT, scale),
         }
     }
 
@@ -141,6 +152,7 @@ enum View {
     Media,
     Dashboard,
     Search,
+    Weather,
     Osd,
 }
 
@@ -174,6 +186,11 @@ impl Geometry {
                 height: f64::from(metrics.search_height),
                 y: f64::from(metrics.search_y),
             },
+            View::Weather => Self {
+                width: f64::from(metrics.weather_width),
+                height: f64::from(metrics.weather_height),
+                y: 0.0,
+            },
             View::Osd => Self {
                 width: f64::from(metrics.osd_width),
                 height: f64::from(metrics.osd_height),
@@ -191,6 +208,19 @@ impl Geometry {
     }
 }
 
+/// Buttons owned by `dashboard_view`/`search_view`/`weather_view` that need
+/// click handlers wired up centrally in `connect_interactions`. Grouped into
+/// one struct instead of separate parameters purely to keep that function's
+/// signature manageable.
+struct OverlayButtons<'a> {
+    close_button: &'a gtk::Button,
+    search_button: &'a gtk::Button,
+    weather_button: &'a gtk::Button,
+    search_back_button: &'a gtk::Button,
+    search_reload_button: &'a gtk::Button,
+    weather_back_button: &'a gtk::Button,
+}
+
 pub struct IslandWindow {
     monitor_name: String,
     metrics: Metrics,
@@ -203,6 +233,7 @@ pub struct IslandWindow {
     media: gtk::CenterBox,
     dashboard: gtk::Box,
     search: gtk::Box,
+    weather: gtk::Box,
     osd: gtk::Box,
     compact_workspaces: gtk::Box,
     compact_clock: gtk::Label,
@@ -266,9 +297,21 @@ pub struct IslandWindow {
     osd_title: gtk::Label,
     osd_progress: gtk::ProgressBar,
     osd_value: gtk::Label,
+    weather_location: gtk::Label,
+    weather_hero_icon: gtk::DrawingArea,
+    weather_hero_temp: gtk::Label,
+    weather_hero_description: gtk::Label,
+    weather_status: gtk::Label,
+    weather_forecast_row: gtk::Box,
+    /// Every currently displayed condition icon (the hero icon plus one per
+    /// forecast day), so a live theme change can redraw them all in place
+    /// instead of waiting for the next scheduled forecast refresh.
+    weather_icons: RefCell<Vec<gtk::DrawingArea>>,
+    latest_weather: RefCell<Option<WeatherState>>,
     current_view: Cell<View>,
     dashboard_open: Cell<bool>,
     search_open: Cell<bool>,
+    weather_open: Cell<bool>,
     search_connected: Cell<bool>,
     search_generation: Cell<u64>,
     preview_generation: Cell<u64>,
@@ -414,6 +457,17 @@ impl IslandWindow {
         osd.set_opacity(0.0);
         osd.set_visible(false);
 
+        let weather_widgets = weather_view(metrics);
+        content.put(
+            &weather_widgets.root,
+            f64::from((metrics.search_width - metrics.weather_width) / 2),
+            0.0,
+        );
+        weather_widgets.root.set_opacity(0.0);
+        weather_widgets.root.set_visible(false);
+        draw_weather_condition(&weather_widgets.hero_icon, WeatherCondition::Unknown);
+        let weather_icons = RefCell::new(vec![weather_widgets.hero_icon.clone()]);
+
         let island = Rc::new(Self {
             monitor_name,
             metrics,
@@ -426,6 +480,7 @@ impl IslandWindow {
             media: media_widgets.root,
             dashboard: dashboard_widgets.root,
             search: search_widgets.root,
+            weather: weather_widgets.root,
             osd,
             compact_workspaces,
             compact_clock,
@@ -486,9 +541,18 @@ impl IslandWindow {
             osd_title,
             osd_progress,
             osd_value,
+            weather_location: weather_widgets.location,
+            weather_hero_icon: weather_widgets.hero_icon,
+            weather_hero_temp: weather_widgets.hero_temp,
+            weather_hero_description: weather_widgets.hero_description,
+            weather_status: weather_widgets.status,
+            weather_forecast_row: weather_widgets.forecast_row,
+            weather_icons,
+            latest_weather: RefCell::new(None),
             current_view: Cell::new(View::Compact),
             dashboard_open: Cell::new(false),
             search_open: Cell::new(false),
+            weather_open: Cell::new(false),
             search_connected: Cell::new(false),
             search_generation: Cell::new(0),
             preview_generation: Cell::new(0),
@@ -519,10 +583,14 @@ impl IslandWindow {
         });
 
         island.connect_interactions(
-            &dashboard_widgets.close_button,
-            &dashboard_widgets.search_button,
-            &search_widgets.back_button,
-            &search_widgets.reload_button,
+            OverlayButtons {
+                close_button: &dashboard_widgets.close_button,
+                search_button: &dashboard_widgets.search_button,
+                weather_button: &dashboard_widgets.weather_button,
+                search_back_button: &search_widgets.back_button,
+                search_reload_button: &search_widgets.reload_button,
+                weather_back_button: &weather_widgets.back_button,
+            },
             &dismiss_area,
         );
         island.start_clock();
@@ -565,13 +633,14 @@ impl IslandWindow {
             "dashboard_opacity": self.dashboard.opacity(),
             "search_visible": self.search.is_visible(),
             "search_connected": self.search_connected.get(),
+            "weather_visible": self.weather.is_visible(),
             "osd_visible": self.osd.is_visible(),
             "osd_opacity": self.osd.opacity(),
         })
     }
 
     pub fn toggle(self: &Rc<Self>) {
-        if self.dashboard_open.get() || self.search_open.get() {
+        if self.dashboard_open.get() || self.search_open.get() || self.weather_open.get() {
             self.close();
         } else {
             self.open();
@@ -581,6 +650,7 @@ impl IslandWindow {
     pub fn open(self: &Rc<Self>) {
         self.clear_osd();
         self.search_open.set(false);
+        self.weather_open.set(false);
         self.dashboard_open.set(true);
         self.reconcile_view();
     }
@@ -588,10 +658,52 @@ impl IslandWindow {
     pub fn close(self: &Rc<Self>) {
         self.dashboard_open.set(false);
         self.search_open.set(false);
+        self.weather_open.set(false);
         self.search_action_generation
             .set(self.search_action_generation.get().wrapping_add(1));
         self.clear_osd();
         self.reconcile_view();
+    }
+
+    /// Switches the island to the weather forecast view. Mirrors
+    /// `open_search`'s shape: clears any other overlay flag first so the
+    /// views stay mutually exclusive, then hands off to `reconcile_view`.
+    pub fn open_weather(self: &Rc<Self>) {
+        self.clear_osd();
+        self.dashboard_open.set(false);
+        self.search_open.set(false);
+        self.weather_open.set(true);
+        if self.latest_weather.borrow().is_none() {
+            self.weather_status.set_label("FETCHING FORECAST");
+        }
+        self.reconcile_view();
+    }
+
+    /// Renders a forecast pushed by `Controller::attach_weather`, or `None`
+    /// when a fetch failed and there is nothing cached yet.
+    pub fn update_weather(&self, state: Option<&WeatherState>) {
+        let Some(state) = state else {
+            if self.latest_weather.borrow().is_none() {
+                self.weather_status.set_label("WEATHER UNAVAILABLE");
+            }
+            return;
+        };
+        self.weather_location.set_label(&state.location);
+        self.weather_hero_temp
+            .set_label(&format!("{}°", state.current_c));
+        self.weather_hero_description.set_label(&state.description);
+        draw_weather_condition(&self.weather_hero_icon, state.condition);
+        self.weather_status.set_label("UPDATED  //  WTTR.IN");
+
+        clear_box(&self.weather_forecast_row);
+        let mut icons = vec![self.weather_hero_icon.clone()];
+        for day in &state.days {
+            let (card, icon) = weather_day_card(day, self.metrics);
+            icons.push(icon);
+            self.weather_forecast_row.append(&card);
+        }
+        *self.weather_icons.borrow_mut() = icons;
+        *self.latest_weather.borrow_mut() = Some(state.clone());
     }
 
     pub fn update_tarragon_connection(&self, connected: bool, message: Option<&str>) {
@@ -1199,6 +1311,11 @@ impl IslandWindow {
 
     pub fn update_palette(&self, source: &str) {
         self.theme_source.set_label(source);
+        // Custom Cairo drawing doesn't get redrawn automatically just
+        // because a CSS provider swapped colors underneath it.
+        for icon in self.weather_icons.borrow().iter() {
+            icon.queue_draw();
+        }
     }
 
     pub fn update_shell_config(&self, config: &ShellConfig, animations_enabled: bool) {
@@ -1215,14 +1332,15 @@ impl IslandWindow {
         self.window.close();
     }
 
-    fn connect_interactions(
-        self: &Rc<Self>,
-        close_button: &gtk::Button,
-        search_button: &gtk::Button,
-        search_back_button: &gtk::Button,
-        search_reload_button: &gtk::Button,
-        dismiss_area: &gtk::Box,
-    ) {
+    fn connect_interactions(self: &Rc<Self>, buttons: OverlayButtons<'_>, dismiss_area: &gtk::Box) {
+        let OverlayButtons {
+            close_button,
+            search_button,
+            weather_button,
+            search_back_button,
+            search_reload_button,
+            weather_back_button,
+        } = buttons;
         let click = GestureClick::new();
         let weak = Rc::downgrade(self);
         click.connect_released(move |gesture, _, _, _| {
@@ -1256,6 +1374,22 @@ impl IslandWindow {
         search_back_button.connect_clicked(move |_| {
             if let Some(island) = weak.upgrade() {
                 island.search_open.set(false);
+                island.dashboard_open.set(true);
+                island.reconcile_view();
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        weather_button.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.open_weather();
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        weather_back_button.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.weather_open.set(false);
                 island.dashboard_open.set(true);
                 island.reconcile_view();
             }
@@ -1571,6 +1705,7 @@ impl IslandWindow {
     pub fn open_search(self: &Rc<Self>) {
         self.clear_osd();
         self.dashboard_open.set(false);
+        self.weather_open.set(false);
         self.search_open.set(true);
         self.search_plugin_toggle.set_active(false);
         self.search_stack.set_visible_child_name("results");
@@ -1748,6 +1883,8 @@ impl IslandWindow {
             View::Osd
         } else if self.search_open.get() {
             View::Search
+        } else if self.weather_open.get() {
+            View::Weather
         } else if self.dashboard_open.get() {
             View::Dashboard
         } else if self.media_playing.get() {
@@ -1802,7 +1939,7 @@ impl IslandWindow {
             return;
         }
         self.current_view.set(view);
-        if matches!(view, View::Dashboard | View::Search) {
+        if matches!(view, View::Dashboard | View::Search | View::Weather) {
             self.dismiss_window.present();
             self.window.present();
         } else {
@@ -1813,11 +1950,13 @@ impl IslandWindow {
         self.media.set_visible(true);
         self.dashboard.set_visible(true);
         self.search.set_visible(true);
+        self.weather.set_visible(true);
         self.osd.set_visible(true);
         self.compact.set_can_target(view == View::Compact);
         self.media.set_can_target(view == View::Media);
         self.dashboard.set_can_target(view == View::Dashboard);
         self.search.set_can_target(view == View::Search);
+        self.weather.set_can_target(view == View::Weather);
         self.osd.set_can_target(false);
         self.window.set_keyboard_mode(if view == View::Search {
             KeyboardMode::Exclusive
@@ -1840,6 +1979,7 @@ impl IslandWindow {
             self.media.opacity(),
             self.dashboard.opacity(),
             self.search.opacity(),
+            self.weather.opacity(),
             self.osd.opacity(),
         ];
         let weak = Rc::downgrade(self);
@@ -1870,12 +2010,13 @@ impl IslandWindow {
         });
     }
 
-    fn apply_content_opacity(&self, target: View, progress: f64, start: [f64; 5]) {
+    fn apply_content_opacity(&self, target: View, progress: f64, start: [f64; 6]) {
         let progress = 1.0 - (1.0 - progress).powi(3);
         let compact_target = if target == View::Compact { 1.0 } else { 0.0 };
         let media_target = if target == View::Media { 1.0 } else { 0.0 };
         let dashboard_target = if target == View::Dashboard { 1.0 } else { 0.0 };
         let search_target = if target == View::Search { 1.0 } else { 0.0 };
+        let weather_target = if target == View::Weather { 1.0 } else { 0.0 };
         let osd_target = if target == View::Osd { 1.0 } else { 0.0 };
         self.compact
             .set_opacity(lerp(start[0], compact_target, progress));
@@ -1885,7 +2026,9 @@ impl IslandWindow {
             .set_opacity(lerp(start[2], dashboard_target, progress));
         self.search
             .set_opacity(lerp(start[3], search_target, progress));
-        self.osd.set_opacity(lerp(start[4], osd_target, progress));
+        self.weather
+            .set_opacity(lerp(start[4], weather_target, progress));
+        self.osd.set_opacity(lerp(start[5], osd_target, progress));
     }
 
     fn finish_view(&self, view: View) {
@@ -1894,6 +2037,7 @@ impl IslandWindow {
         self.media.set_visible(view == View::Media);
         self.dashboard.set_visible(view == View::Dashboard);
         self.search.set_visible(view == View::Search);
+        self.weather.set_visible(view == View::Weather);
         self.osd.set_visible(view == View::Osd);
         self.compact
             .set_opacity(if view == View::Compact { 1.0 } else { 0.0 });
@@ -1903,6 +2047,8 @@ impl IslandWindow {
             .set_opacity(if view == View::Dashboard { 1.0 } else { 0.0 });
         self.search
             .set_opacity(if view == View::Search { 1.0 } else { 0.0 });
+        self.weather
+            .set_opacity(if view == View::Weather { 1.0 } else { 0.0 });
         self.osd
             .set_opacity(if view == View::Osd { 1.0 } else { 0.0 });
     }
@@ -2400,6 +2546,7 @@ struct DashboardWidgets {
     brightness_scale: gtk::Scale,
     brightness_value: gtk::Label,
     theme_source: gtk::Label,
+    weather_button: gtk::Button,
     search_button: gtk::Button,
     close_button: gtk::Button,
 }
@@ -2441,8 +2588,13 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
     search_button.add_css_class("close-button");
     search_button.set_tooltip_text(Some("Search with TarraGon"));
     search_button.set_valign(Align::Center);
+    let weather_button = gtk::Button::from_icon_name("weather-clear-symbolic");
+    weather_button.add_css_class("close-button");
+    weather_button.set_tooltip_text(Some("Weather forecast"));
+    weather_button.set_valign(Align::Center);
     header.append(&heading);
     header.append(&battery_chip);
+    header.append(&weather_button);
     header.append(&search_button);
     header.append(&close_button);
     root.append(&header);
@@ -2591,6 +2743,7 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
         brightness_scale,
         brightness_value,
         theme_source,
+        weather_button,
         search_button,
         close_button,
     }
@@ -2613,6 +2766,333 @@ fn control_row(icon: &str, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Sca
     row.append(&scale);
     row.append(&value);
     (row, scale, value)
+}
+
+struct WeatherWidgets {
+    root: gtk::Box,
+    back_button: gtk::Button,
+    location: gtk::Label,
+    hero_icon: gtk::DrawingArea,
+    hero_temp: gtk::Label,
+    hero_description: gtk::Label,
+    status: gtk::Label,
+    forecast_row: gtk::Box,
+}
+
+fn weather_view(metrics: Metrics) -> WeatherWidgets {
+    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(14));
+    root.set_size_request(metrics.weather_width, metrics.weather_height);
+    root.add_css_class("weather-content");
+    root.set_valign(Align::Start);
+
+    let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(12));
+    let back_button = gtk::Button::from_icon_name("go-previous-symbolic");
+    back_button.add_css_class("close-button");
+    back_button.set_tooltip_text(Some("Back to dashboard"));
+    back_button.set_valign(Align::Center);
+
+    let heading = gtk::Box::new(Orientation::Vertical, 0);
+    heading.set_hexpand(true);
+    heading.set_valign(Align::Center);
+    let eyebrow = gtk::Label::new(Some("WEATHER  //  WTTR.IN"));
+    eyebrow.add_css_class("eyebrow");
+    eyebrow.set_halign(Align::Start);
+    let location = gtk::Label::new(Some("Locating..."));
+    location.add_css_class("weather-location");
+    location.set_halign(Align::Start);
+    location.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    heading.append(&eyebrow);
+    heading.append(&location);
+
+    let hero_icon = weather_icon_area("weather-hero-icon", metrics.spacing(44));
+    let hero_temp = gtk::Label::new(Some("--°"));
+    hero_temp.add_css_class("weather-hero-temp");
+    hero_temp.set_valign(Align::Center);
+
+    header.append(&back_button);
+    header.append(&heading);
+    header.append(&hero_icon);
+    header.append(&hero_temp);
+    root.append(&header);
+
+    let hero_description = gtk::Label::new(Some("Waiting for the forecast"));
+    hero_description.add_css_class("weather-description");
+    hero_description.set_halign(Align::Start);
+    root.append(&hero_description);
+
+    let status = gtk::Label::new(Some("FETCHING FORECAST"));
+    status.add_css_class("search-status");
+    status.set_halign(Align::Start);
+    root.append(&status);
+
+    let forecast_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    forecast_row.set_homogeneous(true);
+    root.append(&forecast_row);
+
+    let calendar = gtk::Calendar::new();
+    calendar.add_css_class("weather-calendar");
+    calendar.set_hexpand(true);
+    calendar.set_vexpand(true);
+    root.append(&calendar);
+
+    WeatherWidgets {
+        root,
+        back_button,
+        location,
+        hero_icon,
+        hero_temp,
+        hero_description,
+        status,
+        forecast_row,
+    }
+}
+
+/// Builds a card for one day of the forecast: weekday, a placeholder
+/// condition icon, and the high/low temperatures.
+fn weather_day_card(day: &WeatherDay, metrics: Metrics) -> (gtk::Box, gtk::DrawingArea) {
+    let card = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
+    card.add_css_class("weather-day-card");
+    card.set_halign(Align::Center);
+
+    let weekday = gtk::Label::new(Some(short_weekday(&day.weekday)));
+    weekday.add_css_class("weather-day-label");
+
+    let icon = weather_icon_area("weather-day-icon", metrics.spacing(30));
+    draw_weather_condition(&icon, day.condition);
+
+    let high = gtk::Label::new(Some(&format_temp(day.max_c)));
+    high.add_css_class("weather-day-high");
+    let low = gtk::Label::new(Some(&format_temp(day.min_c)));
+    low.add_css_class("weather-day-low");
+
+    card.append(&weekday);
+    card.append(&icon);
+    card.append(&high);
+    card.append(&low);
+    (card, icon)
+}
+
+/// Formats a forecast temperature, or `--°` for padded placeholder days
+/// that have no real reading (see `weather::pad_forecast`).
+fn format_temp(value: Option<i32>) -> String {
+    value.map_or_else(|| "--°".to_owned(), |value| format!("{value}°"))
+}
+
+/// First three letters of a weekday name (all of `weekday_label`'s output
+/// is ASCII, so byte slicing is safe).
+fn short_weekday(weekday: &str) -> &str {
+    &weekday[..weekday.len().min(3)]
+}
+
+/// Bare drawing area for a placeholder weather icon; the actual pixels are
+/// (re)drawn by `draw_weather_condition`.
+fn weather_icon_area(css_class: &str, size: i32) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("weather-icon");
+    area.add_css_class(css_class);
+    area.set_content_width(size);
+    area.set_content_height(size);
+    area
+}
+
+/// 8x8 placeholder pixel-art grids, one per `WeatherCondition`. Cell values
+/// select which looked-up theme color fills that pixel: 0 is empty, 1 is the
+/// warm accent (`ms_tertiary`), 2 is the cloud body (`ms_on_surface_variant`),
+/// 3 is a fine outline/fog tone (`ms_outline`), and 4 is the cool accent
+/// (`ms_primary`) used for rain/snow marks. These are intentionally simple,
+/// blocky placeholders rather than a polished icon set.
+type PixelGrid = [[u8; 8]; 8];
+
+const GRID_CLEAR: PixelGrid = [
+    [0, 0, 1, 0, 0, 1, 0, 0],
+    [0, 0, 0, 1, 1, 0, 0, 0],
+    [1, 0, 1, 1, 1, 1, 0, 1],
+    [0, 1, 1, 1, 1, 1, 1, 0],
+    [0, 1, 1, 1, 1, 1, 1, 0],
+    [1, 0, 1, 1, 1, 1, 0, 1],
+    [0, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 1, 0, 0, 1, 0, 0],
+];
+
+const GRID_PARTLY_CLOUDY: PixelGrid = [
+    [0, 1, 1, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 0, 0, 0, 0],
+    [0, 1, 1, 0, 0, 2, 2, 0],
+    [0, 0, 0, 2, 2, 2, 2, 2],
+    [0, 0, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_CLOUDY: PixelGrid = [
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 2, 2, 2, 0, 0, 0],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_FOG: PixelGrid = [
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 3, 3, 3, 3, 3, 0, 0],
+    [3, 3, 3, 3, 3, 3, 3, 0],
+    [0, 3, 3, 3, 3, 3, 0, 0],
+    [3, 3, 3, 3, 3, 3, 3, 0],
+    [0, 3, 3, 3, 3, 3, 0, 0],
+    [3, 3, 3, 3, 3, 3, 3, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_DRIZZLE: PixelGrid = [
+    [0, 0, 2, 2, 2, 0, 0, 0],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 0, 4, 0, 4, 0, 4, 0],
+    [0, 0, 0, 4, 0, 4, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_RAIN: PixelGrid = [
+    [0, 0, 2, 2, 2, 0, 0, 0],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 4, 0, 4, 0, 4, 0, 4],
+    [4, 0, 4, 0, 4, 0, 4, 0],
+    [0, 4, 0, 4, 0, 4, 0, 4],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_SLEET: PixelGrid = [
+    [0, 0, 2, 2, 2, 0, 0, 0],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 4, 0, 1, 0, 4, 0, 1],
+    [0, 0, 1, 0, 4, 0, 1, 0],
+    [0, 1, 0, 4, 0, 1, 0, 4],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_SNOW: PixelGrid = [
+    [0, 0, 2, 2, 2, 0, 0, 0],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 1, 0, 1, 0, 1, 0, 1],
+    [0, 0, 1, 0, 1, 0, 1, 0],
+    [0, 1, 0, 1, 0, 1, 0, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_THUNDER: PixelGrid = [
+    [0, 0, 2, 2, 2, 0, 0, 0],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [2, 2, 2, 2, 2, 2, 2, 2],
+    [0, 2, 2, 2, 2, 2, 2, 0],
+    [0, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 1, 1, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0, 0, 0],
+];
+
+const GRID_WIND: PixelGrid = [
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 3, 3, 3, 3, 3, 0, 0],
+    [0, 0, 0, 0, 0, 0, 3, 0],
+    [3, 3, 3, 3, 3, 3, 0, 0],
+    [0, 0, 0, 3, 0, 0, 0, 0],
+    [0, 3, 3, 3, 3, 3, 3, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const GRID_UNKNOWN: PixelGrid = [
+    [0, 0, 3, 3, 3, 0, 0, 0],
+    [0, 3, 0, 0, 0, 3, 0, 0],
+    [0, 0, 0, 0, 0, 3, 0, 0],
+    [0, 0, 0, 3, 3, 0, 0, 0],
+    [0, 0, 0, 3, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 3, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+fn weather_pixel_grid(condition: WeatherCondition) -> &'static PixelGrid {
+    match condition {
+        WeatherCondition::Clear => &GRID_CLEAR,
+        WeatherCondition::PartlyCloudy => &GRID_PARTLY_CLOUDY,
+        WeatherCondition::Cloudy => &GRID_CLOUDY,
+        WeatherCondition::Fog => &GRID_FOG,
+        WeatherCondition::Drizzle => &GRID_DRIZZLE,
+        WeatherCondition::Rain => &GRID_RAIN,
+        WeatherCondition::Sleet => &GRID_SLEET,
+        WeatherCondition::Snow => &GRID_SNOW,
+        WeatherCondition::Thunder => &GRID_THUNDER,
+        WeatherCondition::Wind => &GRID_WIND,
+        WeatherCondition::Unknown => &GRID_UNKNOWN,
+    }
+}
+
+/// Sets (or replaces) `area`'s draw function to render `condition`'s
+/// placeholder pixel-art icon, recolored from the active theme's
+/// `@ms_*` colors each time it draws.
+///
+/// `StyleContext::lookup_color` has been deprecated since GTK 4.10 with no
+/// direct replacement for resolving a named color to RGBA outside of a
+/// stylesheet; it remains the only way to recolor custom Cairo drawing from
+/// the active theme, and continues to function correctly (see the same
+/// rationale in `theme::generate_gtk_from_style_context`).
+#[allow(deprecated)]
+fn draw_weather_condition(area: &gtk::DrawingArea, condition: WeatherCondition) {
+    area.set_draw_func(move |area, context, width, height| {
+        let style = area.style_context();
+        let lookup = |name: &str, fallback: (f64, f64, f64, f64)| -> (f64, f64, f64, f64) {
+            style.lookup_color(name).map_or(fallback, |rgba| {
+                (
+                    f64::from(rgba.red()),
+                    f64::from(rgba.green()),
+                    f64::from(rgba.blue()),
+                    f64::from(rgba.alpha()),
+                )
+            })
+        };
+        let accent = lookup("ms_tertiary", (0.98, 0.85, 0.45, 1.0));
+        let body = lookup("ms_on_surface_variant", (0.68, 0.68, 0.74, 1.0));
+        let outline = lookup("ms_outline", (0.5, 0.5, 0.56, 1.0));
+        let cool = lookup("ms_primary", (0.4, 0.6, 0.92, 1.0));
+
+        let size = f64::from(width.min(height));
+        let cell = size / 8.0;
+        let offset_x = (f64::from(width) - size) / 2.0;
+        let offset_y = (f64::from(height) - size) / 2.0;
+        for (row, cells) in weather_pixel_grid(condition).iter().enumerate() {
+            for (col, value) in cells.iter().enumerate() {
+                let color = match value {
+                    1 => accent,
+                    2 => body,
+                    3 => outline,
+                    4 => cool,
+                    _ => continue,
+                };
+                context.set_source_rgba(color.0, color.1, color.2, color.3);
+                context.rectangle(
+                    offset_x + col as f64 * cell,
+                    offset_y + row as f64 * cell,
+                    cell.ceil(),
+                    cell.ceil(),
+                );
+                let _ = context.fill();
+            }
+        }
+    });
+    area.queue_draw();
 }
 
 fn osd_view(
