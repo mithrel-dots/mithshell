@@ -247,6 +247,7 @@ mithshell theme set --image ~/Pictures/wallpaper.jpg --persist
 mithshell theme set --color '#8aadf4'
 mithshell theme mode dark --persist
 mithshell theme current --json
+mithshell theme palette
 mithshell theme reset
 ```
 
@@ -254,7 +255,20 @@ Targets can be `focused`, `all`, or an exact configured output. Persistent
 theme commands write an override to `$XDG_STATE_HOME/mithshell/theme.toml`;
 `theme reset` removes it and reapplies the main configuration.
 
+`theme palette` prints each `@ms_*` role as a color swatch next to its name
+and hex value (colored when stdout is a terminal, plain text otherwise) --
+handy for eyeballing a scheme without parsing JSON.
+
 See `contrib/hyprland.conf` for bind examples.
+
+### Shell completions
+
+```sh
+mithshell completions zsh > ~/.zfunc/_mithshell     # or bash, fish, elvish, powershell
+```
+
+Generated directly from the `clap` command definitions, so it never drifts
+from the actual CLI.
 
 ## Development
 
