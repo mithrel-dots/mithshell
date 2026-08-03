@@ -147,16 +147,24 @@ See [`docs/tarragon.md`](docs/tarragon.md) for controls, every represented
 protocol field, plugin lifecycle semantics, previews, reload/detach behavior,
 and current backend limitations.
 
-### Material You
+### Theming
 
-Current Matugen releases are binary-only. Mithshell embeds the same
-`material-colors` engine Matugen uses, so it can generate and consume a scheme
-without requiring the `matugen` executable.
+Mithshell's stylesheet (`src/ui/style.css`) references 15 `@ms_*` role colors
+(`ms_primary`, `ms_on_surface`, `ms_outline`, ...). Where those colors come
+from is controlled by `theme.engine`, and can always be overridden with a
+`colors.css` file.
+
+#### Material You
+
+The default engine. Current Matugen releases are binary-only; mithshell
+embeds the same `material-colors` engine Matugen uses, so it can generate and
+consume a scheme without requiring the `matugen` executable.
 
 Generate from a color:
 
 ```toml
 [theme]
+engine = "material"
 mode = "dark"
 variant = "tonal-spot"
 
@@ -175,6 +183,35 @@ path = "/home/you/Pictures/wallpaper.jpg"
 
 Image decoding and quantization run outside the GTK thread. The active palette
 is exported atomically to `$XDG_STATE_HOME/mithshell/palette.json`.
+
+#### Inheriting the GTK theme
+
+Set `engine = "gtk"` to skip generation entirely and alias the `@ms_*` roles
+to the active GTK theme's standard named colors instead (`@accent_color`,
+`@window_bg_color`, `@borders`, ...) -- the same convention libadwaita and
+virtually every modern GTK4 theme ships in its `gtk.css`. Mithshell then
+tracks your system theme, including light/dark switches, with no
+configuration beyond:
+
+```toml
+[theme]
+engine = "gtk"
+```
+
+`mode`/`variant`/`source` are ignored in this mode. `mithshell theme current`
+and `palette.json` still report resolved hex values, read once from the
+active theme via a GTK style context lookup.
+
+#### Custom CSS
+
+Place a `colors.css` file next to `config.toml` (e.g.
+`$XDG_CONFIG_HOME/mithshell/colors.css`) and mithshell loads it as an
+additional stylesheet at a higher priority than everything above. It can
+override just a few `@ms_*` colors, or any other selector in the built-in
+stylesheet -- it's plain GTK CSS layered on top, so nothing about it is
+color-specific. See
+[`config/colors.example.css`](config/colors.example.css) for the full list of
+overridable color names. Changes are picked up by `mithshell reload`.
 
 ## IPC CLI
 

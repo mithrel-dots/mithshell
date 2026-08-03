@@ -1,0 +1,30 @@
+/* Optional user stylesheet for mithshell.
+ *
+ * Copy this file to `colors.css` next to your `config.toml`
+ * (e.g. $XDG_CONFIG_HOME/mithshell/colors.css) and mithshell will load it
+ * automatically at a higher priority than the built-in stylesheet and
+ * whichever `theme.engine` you have configured (material or gtk).
+ *
+ * You don't have to redefine every color below -- only override the ones
+ * you want to change; everything else keeps coming from the active engine.
+ * You can also add arbitrary rules here (e.g. `.island-surface { ... }`)
+ * to override any other part of the built-in stylesheet, not just colors.
+ *
+ * Changes are picked up on `mithshell reload`.
+ */
+
+@define-color ms_primary #9aa7ff;
+@define-color ms_on_primary #001947;
+@define-color ms_primary_container #29305f;
+@define-color ms_on_primary_container #dee1ff;
+@define-color ms_secondary #c0c3dd;
+@define-color ms_tertiary #e3bad1;
+@define-color ms_surface #131316;
+@define-color ms_surface_low #1d1b20;
+@define-color ms_surface_container #211f26;
+@define-color ms_surface_high #2b2930;
+@define-color ms_on_surface #e5e1e9;
+@define-color ms_on_surface_variant #c9c5d0;
+@define-color ms_outline #938f99;
+@define-color ms_outline_variant #49454f;
+@define-color ms_error #ffb4ab;
