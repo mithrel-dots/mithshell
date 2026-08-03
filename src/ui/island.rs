@@ -18,8 +18,8 @@ use crate::{
     media::{VISUALIZER_BARS, VisualizerLevels},
     preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData},
     state::{
-        HyprlandSnapshot, MediaState, OsdState, PlaybackStatus, SystemSnapshot, WeatherCondition,
-        WeatherDay, WeatherState,
+        HyprlandSnapshot, MediaPlayer, MediaState, OsdState, PlaybackStatus, SystemSnapshot,
+        WeatherCondition, WeatherDay, WeatherState,
     },
     tarragon::{
         TarragonPlugin, TarragonPluginState, TarragonSelection, TarragonSnapshot, TarragonStatus,
@@ -271,6 +271,7 @@ pub struct IslandWindow {
     player_length_us: Cell<i64>,
     player_active: Cell<bool>,
     latest_media: RefCell<Option<MediaState>>,
+    selected_media_service: RefCell<Option<String>>,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
     workspace_row: gtk::Box,
@@ -517,6 +518,7 @@ impl IslandWindow {
             player_length_us: Cell::new(0),
             player_active: Cell::new(false),
             latest_media: RefCell::new(None),
+            selected_media_service: RefCell::new(None),
             active_eyebrow: dashboard_widgets.active_eyebrow,
             active_title: dashboard_widgets.active_title,
             workspace_row: dashboard_widgets.workspace_row,
@@ -1114,8 +1116,14 @@ impl IslandWindow {
             });
         }
 
-        self.update_player_card(state);
-        *self.latest_media.borrow_mut() = state.cloned();
+        let selected = state.map(|state| {
+            let requested = self.selected_media_service.borrow().clone();
+            let selected = media_state_for_player(state, requested.as_deref());
+            *self.selected_media_service.borrow_mut() = Some(selected.service.clone());
+            selected
+        });
+        self.update_player_card(selected.as_ref());
+        *self.latest_media.borrow_mut() = selected;
     }
 
     /// Updates the always-visible media player card in the dashboard. Unlike
@@ -1141,12 +1149,30 @@ impl IslandWindow {
                     .set_sensitive(state.can_play || state.can_pause);
                 self.player_next_button.set_sensitive(state.can_go_next);
                 self.player_switch_row.set_visible(state.players.len() > 1);
-                self.player_switch_label
-                    .set_label(&format!("{} players", state.players.len()));
+                let selected = state
+                    .players
+                    .iter()
+                    .position(|player| player.service == state.service)
+                    .unwrap_or(0);
+                self.player_switch_label.set_label(&format!(
+                    "{} / {}  //  {}",
+                    selected + 1,
+                    state.players.len(),
+                    state.player.replace('.', " ")
+                ));
                 self.player_progress_base_us.set(state.position_us);
                 self.player_length_us.set(state.length_us.unwrap_or(0));
-                self.player_progress_started_at.set(Some(Instant::now()));
-                self.player_active.set(true);
+                self.player_progress_started_at
+                    .set((state.status == PlaybackStatus::Playing).then(Instant::now));
+                self.player_active
+                    .set(state.status == PlaybackStatus::Playing);
+                self.player_play_pause_button.set_icon_name(
+                    if state.status == PlaybackStatus::Playing {
+                        "media-playback-pause-symbolic"
+                    } else {
+                        "media-playback-start-symbolic"
+                    },
+                );
                 self.tick_player_progress();
             }
             None => {
@@ -1172,12 +1198,10 @@ impl IslandWindow {
     /// interpolating from the last known position using a local clock,
     /// rather than polling MPRIS for `Position` on a timer.
     fn tick_player_progress(&self) {
-        if !self.player_active.get() {
-            return;
-        }
         let elapsed_us = self
             .player_progress_started_at
             .get()
+            .filter(|_| self.player_active.get())
             .map_or(0, |started| started.elapsed().as_micros() as i64);
         let position_us = (self.player_progress_base_us.get() + elapsed_us).max(0);
         let length_us = self.player_length_us.get();
@@ -1723,25 +1747,10 @@ impl IslandWindow {
             .position(|player| player.service == state.service)
             .unwrap_or(0);
         let next = (current as i32 + direction).rem_euclid(state.players.len() as i32) as usize;
-        let selected = state.players[next].clone();
-        if selected.status != PlaybackStatus::Playing {
-            (self.actions.media_play_pause)(selected.service.clone());
-        }
-        let mut selected_state = state;
-        selected_state.player = selected.player;
-        selected_state.service = selected.service;
-        selected_state.title = selected.title;
-        selected_state.artist = selected.artist;
-        selected_state.album = selected.album;
-        selected_state.app_icon = selected.app_icon;
-        selected_state.position_us = selected.position_us;
-        selected_state.length_us = selected.length_us;
-        selected_state.can_play = selected.can_play;
-        selected_state.can_pause = selected.can_pause;
-        selected_state.can_go_next = selected.can_go_next;
-        selected_state.can_go_previous = selected.can_go_previous;
-        selected_state.status = selected.status;
+        let selected_state = media_state_for_player(&state, Some(&state.players[next].service));
+        *self.selected_media_service.borrow_mut() = Some(selected_state.service.clone());
         self.update_player_card(Some(&selected_state));
+        *self.latest_media.borrow_mut() = Some(selected_state);
     }
 
     fn scroll_workspace(&self, dx: f64, dy: f64) {
@@ -3268,6 +3277,46 @@ fn format_media_time(microseconds: i64) -> String {
     }
 }
 
+/// Returns the same discovery snapshot with one player promoted into the
+/// top-level fields consumed by the dashboard controls. Selection is purely
+/// presentational: it never invokes Play/PlayPause and therefore cannot
+/// disturb another player's playback.
+fn media_state_for_player(state: &MediaState, service: Option<&str>) -> MediaState {
+    let player: &MediaPlayer = service
+        .and_then(|service| {
+            state
+                .players
+                .iter()
+                .find(|player| player.service == service)
+        })
+        .or_else(|| {
+            state
+                .players
+                .iter()
+                .find(|player| player.service == state.service)
+        })
+        .unwrap_or_else(|| {
+            // Every MediaState is built from at least one discovered player.
+            state.players.first().expect("media state without players")
+        });
+    MediaState {
+        player: player.player.clone(),
+        service: player.service.clone(),
+        title: player.title.clone(),
+        artist: player.artist.clone(),
+        album: player.album.clone(),
+        app_icon: player.app_icon.clone(),
+        position_us: player.position_us,
+        length_us: player.length_us,
+        can_play: player.can_play,
+        can_pause: player.can_pause,
+        can_go_next: player.can_go_next,
+        can_go_previous: player.can_go_previous,
+        status: player.status,
+        players: state.players.clone(),
+    }
+}
+
 fn scaled(value: i32, scale: f64) -> i32 {
     (f64::from(value) * scale).round() as i32
 }
@@ -3293,7 +3342,26 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_media_time, resolved_scale};
+    use super::{format_media_time, media_state_for_player, resolved_scale};
+    use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
+
+    fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
+        MediaPlayer {
+            player: service.to_owned(),
+            service: service.to_owned(),
+            title: format!("track from {service}"),
+            artist: None,
+            album: None,
+            app_icon: None,
+            position_us: 0,
+            length_us: None,
+            can_play: true,
+            can_pause: true,
+            can_go_next: true,
+            can_go_previous: true,
+            status,
+        }
+    }
 
     #[test]
     fn explicit_scale_is_not_capped() {
@@ -3306,5 +3374,32 @@ mod tests {
         assert_eq!(format_media_time(65_000_000), "1:05");
         assert_eq!(format_media_time(3_661_000_000), "1:01:01");
         assert_eq!(format_media_time(-5_000_000), "0:00");
+    }
+
+    #[test]
+    fn media_selection_promotes_requested_player_without_changing_status() {
+        let playing = player("playing", PlaybackStatus::Playing);
+        let paused = player("paused", PlaybackStatus::Paused);
+        let state = MediaState {
+            player: playing.player.clone(),
+            service: playing.service.clone(),
+            title: playing.title.clone(),
+            artist: None,
+            album: None,
+            app_icon: None,
+            position_us: 0,
+            length_us: None,
+            can_play: true,
+            can_pause: true,
+            can_go_next: true,
+            can_go_previous: true,
+            status: PlaybackStatus::Playing,
+            players: vec![playing, paused],
+        };
+
+        let selected = media_state_for_player(&state, Some("paused"));
+        assert_eq!(selected.service, "paused");
+        assert_eq!(selected.status, PlaybackStatus::Paused);
+        assert_eq!(selected.players.len(), 2);
     }
 }
