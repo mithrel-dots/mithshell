@@ -167,6 +167,17 @@ pub fn colors_css_path(config_path: &Path) -> PathBuf {
     config_path.with_file_name("colors.css")
 }
 
+/// The user's personal GTK4 stylesheet override
+/// (`$XDG_CONFIG_HOME/gtk-4.0/gtk.css`). This is the common target external
+/// palette generators (matugen, wallust, ...) write `@define-color` roles
+/// to, and what `theme.engine = "gtk"` parses directly so mithshell can
+/// follow palette changes without a restart.
+pub fn gtk_user_css_path() -> Result<PathBuf> {
+    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?
+        .join("gtk-4.0")
+        .join("gtk.css"))
+}
+
 pub fn state_dir() -> Result<PathBuf> {
     Ok(xdg_dir("XDG_STATE_HOME", ".local/state")?.join("mithshell"))
 }

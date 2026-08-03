@@ -357,6 +357,7 @@ struct Controller {
     _visualizer_listener: thread::JoinHandle<()>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
+    _gtk_css_watcher: Option<thread::JoinHandle<()>>,
 }
 
 impl Controller {
@@ -384,6 +385,8 @@ impl Controller {
         let (tarragon_sender, tarragon_listener) = tarragon::start_listener(tarragon_event_sender);
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
         let (preview_sender, preview_listener) = preview::start_loader(preview_event_sender);
+        let (gtk_css_sender, gtk_css_receiver) = async_channel::unbounded();
+        let gtk_css_watcher = theme::watch_gtk_css(gtk_css_sender);
 
         let controller = Rc::new(Self {
             application: application.clone(),
@@ -410,6 +413,7 @@ impl Controller {
             _visualizer_listener: visualizer_listener,
             tarragon_listener: Some(tarragon_listener),
             preview_listener: Some(preview_listener),
+            _gtk_css_watcher: gtk_css_watcher,
         });
 
         let (ipc_sender, ipc_receiver) = async_channel::unbounded();
@@ -432,6 +436,7 @@ impl Controller {
         controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
         controller.attach_gtk_theme_watch();
+        controller.attach_gtk_css_watch(gtk_css_receiver);
 
         Ok(controller)
     }
@@ -709,6 +714,28 @@ impl Controller {
         if matches!(config.engine, PaletteEngine::Gtk) {
             self.generate_theme(config);
         }
+    }
+
+    /// Regenerates the palette whenever `$XDG_CONFIG_HOME/gtk-4.0/gtk.css`
+    /// changes on disk, so `theme.engine = "gtk"` follows external palette
+    /// generators (matugen, wallust, ...) rewriting it, without needing a
+    /// restart -- GTK itself never re-reads that file for an already
+    /// running process, so this is the only way to see those edits live.
+    fn attach_gtk_css_watch(self: &Rc<Self>, receiver: Receiver<()>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while receiver.recv().await.is_ok() {
+                // Tools often replace the file via write-then-rename,
+                // firing more than one event per save; give the burst a
+                // moment to land before coalescing it into one regenerate.
+                glib::timeout_future(std::time::Duration::from_millis(150)).await;
+                while receiver.try_recv().is_ok() {}
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                controller.regenerate_gtk_palette();
+            }
+        });
     }
 
     fn handle_command(self: &Rc<Self>, command: IpcCommand) -> Response {
