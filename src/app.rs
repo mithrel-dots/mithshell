@@ -38,12 +38,20 @@ pub fn run(cli: Cli) -> Result<()> {
 
 fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
     let is_latency = matches!(command, Command::Latency { .. });
+    let is_palette = matches!(
+        command,
+        Command::Theme {
+            command: ThemeCommand::Palette
+        }
+    );
     let (request, print_json) = command_request(command)?;
     let response = ipc::send(&socket_path, &request)?;
     if print_json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if is_latency {
         print_latency_report(&response);
+    } else if is_palette {
+        print_palette_swatches(&response);
     } else if let Some(data) = &response.data {
         println!("{}", serde_json::to_string_pretty(data)?);
     } else {
@@ -53,6 +61,68 @@ fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
         bail!(response.message);
     }
     Ok(())
+}
+
+/// Role labels in the same order as `Palette`'s fields, paired with the JSON
+/// key `ThemeCurrent` reports them under.
+const PALETTE_ROLES: &[(&str, &str)] = &[
+    ("primary", "Primary"),
+    ("on_primary", "On Primary"),
+    ("primary_container", "Primary Container"),
+    ("on_primary_container", "On Primary Container"),
+    ("secondary", "Secondary"),
+    ("tertiary", "Tertiary"),
+    ("surface", "Surface"),
+    ("surface_container_low", "Surface Container Low"),
+    ("surface_container", "Surface Container"),
+    ("surface_container_high", "Surface Container High"),
+    ("on_surface", "On Surface"),
+    ("on_surface_variant", "On Surface Variant"),
+    ("outline", "Outline"),
+    ("outline_variant", "Outline Variant"),
+    ("error", "Error"),
+];
+
+/// Renders each palette role as a colored square (when stdout is a
+/// terminal) followed by its scope name and hex value.
+fn print_palette_swatches(response: &Response) {
+    use std::io::IsTerminal;
+
+    let Some(data) = &response.data else {
+        println!("{}", response.message);
+        return;
+    };
+    let colorize = std::io::stdout().is_terminal();
+    if let Some(source) = data.get("source").and_then(serde_json::Value::as_str) {
+        let mode = data
+            .get("mode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        println!("source: {source}  mode: {mode}");
+        println!();
+    }
+    for (key, label) in PALETTE_ROLES {
+        let Some(hex) = data.get(*key).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let square = match (colorize, parse_hex(hex)) {
+            (true, Some((r, g, b))) => format!("\x1b[48;2;{r};{g};{b}m   \x1b[0m"),
+            _ => "   ".to_owned(),
+        };
+        println!("{square}  {label:<24} {hex}");
+    }
+}
+
+fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {
+    let hex = hex.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&hex[0..2], 16).ok()?,
+        u8::from_str_radix(&hex[2..4], 16).ok()?,
+        u8::from_str_radix(&hex[4..6], 16).ok()?,
+    ))
 }
 
 /// Renders the latency spans as a fixed-width table, in the same shape as
@@ -181,6 +251,7 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
                 json = print_json;
                 IpcCommand::ThemeCurrent
             }
+            ThemeCommand::Palette => IpcCommand::ThemeCurrent,
             ThemeCommand::Reset => IpcCommand::ThemeReset,
         },
         Command::Daemon { .. } => bail!("daemon command cannot be sent over IPC"),

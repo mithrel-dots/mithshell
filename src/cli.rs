@@ -133,6 +133,9 @@ pub enum ThemeCommand {
         json: bool,
     },
 
+    /// Print the active scheme as color swatches labeled with each role.
+    Palette,
+
     /// Remove a persisted theme override and reapply the configuration.
     Reset,
 }
