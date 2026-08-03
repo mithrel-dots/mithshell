@@ -252,6 +252,7 @@ struct Controller {
     theme_config: RefCell<crate::config::ThemeConfig>,
     palette: RefCell<Palette>,
     css_provider: CssProvider,
+    user_css_provider: CssProvider,
     hyprland: RefCell<HyprlandSnapshot>,
     system: RefCell<SystemSnapshot>,
     media: RefCell<Option<MediaState>>,
@@ -285,6 +286,8 @@ impl Controller {
         }
         let fallback = theme::generate(&crate::config::ThemeConfig::default())?;
         let css_provider = ui::install_styles(&fallback);
+        let user_css_provider =
+            ui::install_user_styles(&crate::config::colors_css_path(&config_path));
         let (theme_sender, theme_receiver) = async_channel::unbounded();
         let (media_sender, media_receiver) = async_channel::unbounded();
         let media_listener = media::start_listener(media_sender);
@@ -302,6 +305,7 @@ impl Controller {
             theme_config: RefCell::new(initial_theme),
             palette: RefCell::new(fallback),
             css_provider,
+            user_css_provider,
             hyprland: RefCell::new(HyprlandSnapshot::default()),
             system: RefCell::new(SystemSnapshot::default()),
             media: RefCell::new(None),
@@ -780,6 +784,10 @@ impl Controller {
         }
         *self.config.borrow_mut() = config;
         *self.theme_config.borrow_mut() = theme_config.clone();
+        ui::reload_user_styles(
+            &self.user_css_provider,
+            &crate::config::colors_css_path(&self.config_path),
+        );
         for island in self.islands.borrow_mut().drain().map(|(_, island)| island) {
             island.destroy();
         }
@@ -789,6 +797,19 @@ impl Controller {
     }
 
     fn generate_theme(&self, config: crate::config::ThemeConfig) {
+        // The GTK engine reads widget/style-context state and must run on
+        // the main thread; only the Material engine is safe to offload.
+        if matches!(config.engine, crate::config::PaletteEngine::Gtk) {
+            let result = theme::generate(&config)
+                .and_then(|palette| {
+                    theme::export_palette(&palette)?;
+                    Ok(palette)
+                })
+                .map_err(|error| format!("{error:#}"));
+            let _ = self.theme_sender.send_blocking(result);
+            return;
+        }
+
         let sender = self.theme_sender.clone();
         thread::spawn(move || {
             let result = theme::generate(&config)
