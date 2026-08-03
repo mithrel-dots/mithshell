@@ -23,6 +23,7 @@ use crate::{
     },
 };
 
+const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
 const MEDIA_HEIGHT: i32 = 32;
@@ -50,7 +51,8 @@ const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(80);
 #[derive(Debug, Clone, Copy)]
 struct Metrics {
     scale: f64,
-
+    window_width: i32,
+    window_height: i32,
     compact_width: i32,
     compact_height: i32,
     media_max_width: i32,
@@ -76,7 +78,8 @@ impl Metrics {
         let search_y = search_y.min((monitor_height - search_height - scaled(20, scale)).max(0));
         Self {
             scale,
-
+            window_width: scaled(WINDOW_WIDTH, scale),
+            window_height: search_y + search_height,
             compact_width: scaled(COMPACT_WIDTH, scale),
             compact_height: scaled(COMPACT_HEIGHT, scale),
             media_max_width: (f64::from(COMPACT_WIDTH) * media_width_factor * scale).round() as i32,
@@ -258,10 +261,6 @@ pub struct IslandWindow {
     osd_active: Cell<bool>,
     media_playing: Cell<bool>,
     media_width: Cell<i32>,
-    /// Current layer-surface size. The surface used to be pinned to the search
-    /// view's dimensions for the process lifetime, which meant a full-size
-    /// buffer per monitor even while only the compact pill was on screen.
-    window_size: Cell<(i32, i32)>,
     geometry: Cell<Geometry>,
     animation_generation: Cell<u64>,
     animation_ms: Cell<u32>,
@@ -312,8 +311,8 @@ impl IslandWindow {
             .title("mithshell")
             .decorated(false)
             .resizable(false)
-            .default_width(metrics.compact_width)
-            .default_height(metrics.compact_height)
+            .default_width(metrics.window_width)
+            .default_height(metrics.window_height)
             .build();
         window.add_css_class("mithshell-window");
         if let Some(class) = metrics.css_class() {
@@ -329,8 +328,7 @@ impl IslandWindow {
         window.set_exclusive_zone(metrics.spacing(shell.exclusive_zone));
 
         let fixed = Fixed::new();
-        // Sized for the compact pill; `apply_geometry` grows it per view.
-        fixed.set_size_request(metrics.compact_width, metrics.compact_height);
+        fixed.set_size_request(metrics.window_width, metrics.window_height);
         window.set_child(Some(&fixed));
 
         let surface = gtk::ScrolledWindow::new();
@@ -341,7 +339,11 @@ impl IslandWindow {
         surface.set_propagate_natural_height(false);
         surface.set_kinetic_scrolling(false);
         surface.set_has_frame(false);
-        fixed.put(&surface, 0.0, 0.0);
+        fixed.put(
+            &surface,
+            f64::from((metrics.window_width - metrics.compact_width) / 2),
+            0.0,
+        );
         surface.set_size_request(metrics.compact_width, metrics.compact_height);
 
         let content = Fixed::new();
@@ -460,7 +462,6 @@ impl IslandWindow {
             osd_active: Cell::new(false),
             media_playing: Cell::new(false),
             media_width: Cell::new(metrics.compact_width),
-            window_size: Cell::new((metrics.compact_width, metrics.compact_height)),
             geometry: Cell::new(Geometry::for_view(
                 View::Compact,
                 metrics,
@@ -1721,14 +1722,7 @@ impl IslandWindow {
     }
 
     fn finish_view(&self, view: View) {
-        let geometry = self.geometry_for_view(view);
-        // The transition is over, so the surface no longer has to cover both
-        // the previous and the current view. Collapse it to just this one.
-        let width = geometry.width.round() as i32;
-        let height = geometry.height.round() as i32;
-        let y = geometry.y.round() as i32;
-        self.resize_window(width, y + height);
-        self.apply_geometry(geometry);
+        self.apply_geometry(self.geometry_for_view(view));
         self.compact.set_visible(view == View::Compact);
         self.media.set_visible(view == View::Media);
         self.dashboard.set_visible(view == View::Dashboard);
@@ -1750,9 +1744,8 @@ impl IslandWindow {
         self.geometry.set(geometry);
         let width = geometry.width.round() as i32;
         let height = geometry.height.round() as i32;
+        let x = (self.metrics.window_width - width) / 2;
         let y = geometry.y.round() as i32;
-        self.grow_window_to(width, y + height);
-        let x = (self.window_size.get().0 - width) / 2;
         self.surface.set_size_request(width, height);
         self.fixed.move_(&self.surface, f64::from(x), f64::from(y));
         self.surface
@@ -1765,24 +1758,6 @@ impl IslandWindow {
             ));
             surface.set_input_region(Some(&region));
         }
-    }
-
-    /// Expands the layer surface so it can contain the island, never shrinking.
-    ///
-    /// Shrinking happens once per transition in `finish_view` instead, so an
-    /// animation does not reconfigure the surface on every frame.
-    fn grow_window_to(&self, width: i32, height: i32) {
-        let (current_width, current_height) = self.window_size.get();
-        let width = width.max(current_width);
-        let height = height.max(current_height);
-        if (width, height) != (current_width, current_height) {
-            self.resize_window(width, height);
-        }
-    }
-
-    fn resize_window(&self, width: i32, height: i32) {
-        self.window_size.set((width, height));
-        self.fixed.set_size_request(width, height);
     }
 }
 
