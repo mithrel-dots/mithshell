@@ -95,6 +95,33 @@ pub struct MediaState {
     pub can_pause: bool,
     pub can_go_next: bool,
     pub can_go_previous: bool,
+    pub status: PlaybackStatus,
+    pub players: Vec<MediaPlayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MediaPlayer {
+    pub player: String,
+    #[serde(skip_serializing)]
+    pub service: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub app_icon: Option<String>,
+    pub position_us: i64,
+    pub length_us: Option<i64>,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_go_next: bool,
+    pub can_go_previous: bool,
+    pub status: PlaybackStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PlaybackStatus {
+    Playing,
+    Paused,
+    Stopped,
 }
 
 #[derive(Debug, Clone, Serialize)]

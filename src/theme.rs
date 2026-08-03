@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    str::FromStr,
-    thread,
-};
+use std::{collections::HashMap, fs, path::PathBuf, str::FromStr, thread};
 
 use anyhow::{Context, Result};
 use async_channel::Sender;
@@ -376,17 +370,6 @@ pub fn override_path() -> Result<PathBuf> {
 
 pub fn palette_path() -> Result<PathBuf> {
     Ok(state_dir()?.join(PALETTE_FILE))
-}
-
-pub fn source_label(source: &ThemeSource) -> String {
-    match source {
-        ThemeSource::Color { value } => value.clone(),
-        ThemeSource::Image { path } => Path::new(path)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("image")
-            .to_owned(),
-    }
 }
 
 #[cfg(test)]

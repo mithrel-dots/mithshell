@@ -18,7 +18,7 @@ use crate::{
     media::{VISUALIZER_BARS, VisualizerLevels},
     preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData},
     state::{
-        HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot, WeatherCondition,
+        HyprlandSnapshot, MediaState, OsdState, PlaybackStatus, SystemSnapshot, WeatherCondition,
         WeatherDay, WeatherState,
     },
     tarragon::{
@@ -43,7 +43,7 @@ const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
 // Kept comfortably under SEARCH_HEIGHT/SEARCH_WIDTH, which size the shared
 // Fixed container every view is centered inside of.
 const WEATHER_WIDTH: i32 = 560;
-const WEATHER_HEIGHT: i32 = 580;
+const WEATHER_HEIGHT: i32 = 430;
 /// Minimum spacing between dispatched queries.
 ///
 /// This throttles on the leading edge: the first keystroke after an idle
@@ -259,6 +259,10 @@ pub struct IslandWindow {
     player_prev_button: gtk::Button,
     player_play_pause_button: gtk::Button,
     player_next_button: gtk::Button,
+    player_switch_row: gtk::Box,
+    player_switch_label: gtk::Label,
+    player_switch_prev: gtk::Button,
+    player_switch_next: gtk::Button,
     /// Position reported by the last MPRIS update, in microseconds. Since
     /// `MediaState` only ever represents a `Playing` player, the progress
     /// bar advances this locally between updates instead of polling MPRIS.
@@ -275,7 +279,6 @@ pub struct IslandWindow {
     brightness_row: gtk::Box,
     brightness_scale: gtk::Scale,
     brightness_value: gtk::Label,
-    theme_source: gtk::Label,
     search_entry: gtk::SearchEntry,
     search_results: gtk::ListBox,
     search_status: gtk::Label,
@@ -347,7 +350,6 @@ impl IslandWindow {
         monitor: &gdk::Monitor,
         monitor_name: String,
         config: &AppConfig,
-        palette: &Palette,
         actions: IslandActions,
         animations_enabled: bool,
     ) -> Rc<Self> {
@@ -425,7 +427,7 @@ impl IslandWindow {
             0.0,
         );
 
-        let dashboard_widgets = dashboard_view(palette, metrics);
+        let dashboard_widgets = dashboard_view(metrics);
         content.put(
             &dashboard_widgets.root,
             f64::from((metrics.search_width - metrics.dashboard_width) / 2),
@@ -506,6 +508,10 @@ impl IslandWindow {
             player_prev_button: dashboard_widgets.player_prev_button,
             player_play_pause_button: dashboard_widgets.player_play_pause_button,
             player_next_button: dashboard_widgets.player_next_button,
+            player_switch_row: dashboard_widgets.player_switch_row,
+            player_switch_label: dashboard_widgets.player_switch_label,
+            player_switch_prev: dashboard_widgets.player_switch_prev,
+            player_switch_next: dashboard_widgets.player_switch_next,
             player_progress_base_us: Cell::new(0),
             player_progress_started_at: Cell::new(None),
             player_length_us: Cell::new(0),
@@ -519,7 +525,6 @@ impl IslandWindow {
             brightness_row: dashboard_widgets.brightness_row,
             brightness_scale: dashboard_widgets.brightness_scale,
             brightness_value: dashboard_widgets.brightness_value,
-            theme_source: dashboard_widgets.theme_source,
             search_entry: search_widgets.entry,
             search_results: search_widgets.results,
             search_status: search_widgets.status,
@@ -1080,7 +1085,8 @@ impl IslandWindow {
     }
 
     pub fn update_media(self: &Rc<Self>, state: Option<&MediaState>) {
-        if let Some(state) = state {
+        let compact_state = state.filter(|state| state.status == PlaybackStatus::Playing);
+        if let Some(state) = compact_state {
             self.media_title.set_label(&state.title);
             self.media_title
                 .set_tooltip_text(Some(&format!("{} ({})", state.title, state.player)));
@@ -1096,7 +1102,7 @@ impl IslandWindow {
             self.media_playing.set(false);
         }
         self.reconcile_view();
-        if state.is_some() {
+        if compact_state.is_some() {
             let weak = Rc::downgrade(self);
             glib::idle_add_local_once(move || {
                 if let Some(island) = weak.upgrade()
@@ -1134,6 +1140,9 @@ impl IslandWindow {
                 self.player_play_pause_button
                     .set_sensitive(state.can_play || state.can_pause);
                 self.player_next_button.set_sensitive(state.can_go_next);
+                self.player_switch_row.set_visible(state.players.len() > 1);
+                self.player_switch_label
+                    .set_label(&format!("{} players", state.players.len()));
                 self.player_progress_base_us.set(state.position_us);
                 self.player_length_us.set(state.length_us.unwrap_or(0));
                 self.player_progress_started_at.set(Some(Instant::now()));
@@ -1149,6 +1158,7 @@ impl IslandWindow {
                 self.player_prev_button.set_sensitive(false);
                 self.player_play_pause_button.set_sensitive(false);
                 self.player_next_button.set_sensitive(false);
+                self.player_switch_row.set_visible(false);
                 self.player_progress.set_fraction(0.0);
                 self.player_elapsed_label.set_label("--:--");
                 self.player_duration_label.set_label("--:--");
@@ -1287,11 +1297,12 @@ impl IslandWindow {
                 .set_value(f64::from(brightness.percent));
             self.brightness_value
                 .set_label(&format!("{}%", brightness.percent));
+            self.brightness_row.set_visible(true);
             self.brightness_row.remove_css_class("unavailable");
             self.brightness_scale.set_sensitive(true);
         } else {
             self.brightness_value.set_label("--");
-            self.brightness_row.add_css_class("unavailable");
+            self.brightness_row.set_visible(false);
             self.brightness_scale.set_sensitive(false);
         }
 
@@ -1309,10 +1320,9 @@ impl IslandWindow {
         self.updating_controls.set(false);
     }
 
-    pub fn update_palette(&self, source: &str) {
-        self.theme_source.set_label(source);
-        // Custom Cairo drawing doesn't get redrawn automatically just
-        // because a CSS provider swapped colors underneath it.
+    /// Redraws any active custom Cairo drawing after a theme change --
+    /// swapping the CSS provider doesn't trigger that on its own.
+    pub fn update_palette(&self) {
         for icon in self.weather_icons.borrow().iter() {
             icon.queue_draw();
         }
@@ -1583,6 +1593,22 @@ impl IslandWindow {
         });
         self.dashboard.add_controller(header_click);
 
+        let weather_header_click = GestureClick::new();
+        weather_header_click.set_propagation_phase(gtk::PropagationPhase::Bubble);
+        let weak = Rc::downgrade(self);
+        weather_header_click.connect_released(move |gesture, _, _, y| {
+            if gesture.current_button() == 1
+                && y <= f64::from(
+                    weak.upgrade()
+                        .map_or(78, |island| island.metrics.spacing(78)),
+                )
+                && let Some(island) = weak.upgrade()
+            {
+                island.close();
+            }
+        });
+        self.weather.add_controller(weather_header_click);
+
         let weak = Rc::downgrade(self);
         close_button.connect_clicked(move |_| {
             if let Some(island) = weak.upgrade() {
@@ -1668,6 +1694,54 @@ impl IslandWindow {
                 (island.actions.media_next)(service);
             }
         });
+
+        let weak = Rc::downgrade(self);
+        self.player_switch_prev.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.switch_media_player(-1);
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        self.player_switch_next.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.switch_media_player(1);
+            }
+        });
+    }
+
+    fn switch_media_player(&self, direction: i32) {
+        let Some(state) = self.latest_media.borrow().clone() else {
+            return;
+        };
+        if state.players.len() < 2 {
+            return;
+        }
+        let current = state
+            .players
+            .iter()
+            .position(|player| player.service == state.service)
+            .unwrap_or(0);
+        let next = (current as i32 + direction).rem_euclid(state.players.len() as i32) as usize;
+        let selected = state.players[next].clone();
+        if selected.status != PlaybackStatus::Playing {
+            (self.actions.media_play_pause)(selected.service.clone());
+        }
+        let mut selected_state = state;
+        selected_state.player = selected.player;
+        selected_state.service = selected.service;
+        selected_state.title = selected.title;
+        selected_state.artist = selected.artist;
+        selected_state.album = selected.album;
+        selected_state.app_icon = selected.app_icon;
+        selected_state.position_us = selected.position_us;
+        selected_state.length_us = selected.length_us;
+        selected_state.can_play = selected.can_play;
+        selected_state.can_pause = selected.can_pause;
+        selected_state.can_go_next = selected.can_go_next;
+        selected_state.can_go_previous = selected.can_go_previous;
+        selected_state.status = selected.status;
+        self.update_player_card(Some(&selected_state));
     }
 
     fn scroll_workspace(&self, dx: f64, dy: f64) {
@@ -1958,11 +2032,12 @@ impl IslandWindow {
         self.search.set_can_target(view == View::Search);
         self.weather.set_can_target(view == View::Weather);
         self.osd.set_can_target(false);
-        self.window.set_keyboard_mode(if view == View::Search {
-            KeyboardMode::Exclusive
-        } else {
-            KeyboardMode::None
-        });
+        self.window
+            .set_keyboard_mode(if matches!(view, View::Search | View::Weather) {
+                KeyboardMode::Exclusive
+            } else {
+                KeyboardMode::None
+            });
         let start = self.geometry.get();
         let generation = self.animation_generation.get().wrapping_add(1);
         self.animation_generation.set(generation);
@@ -2537,6 +2612,10 @@ struct DashboardWidgets {
     player_prev_button: gtk::Button,
     player_play_pause_button: gtk::Button,
     player_next_button: gtk::Button,
+    player_switch_row: gtk::Box,
+    player_switch_label: gtk::Label,
+    player_switch_prev: gtk::Button,
+    player_switch_next: gtk::Button,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
     workspace_row: gtk::Box,
@@ -2545,13 +2624,12 @@ struct DashboardWidgets {
     brightness_row: gtk::Box,
     brightness_scale: gtk::Scale,
     brightness_value: gtk::Label,
-    theme_source: gtk::Label,
     weather_button: gtk::Button,
     search_button: gtk::Button,
     close_button: gtk::Button,
 }
 
-fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
+fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(13));
     root.set_size_request(metrics.dashboard_width, metrics.dashboard_height);
     root.add_css_class("dashboard-content");
@@ -2664,6 +2742,20 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
     player_time_row.append(&player_elapsed_label);
     player_time_row.append(&player_duration_label);
     player_card.append(&player_time_row);
+    let player_switch_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
+    player_switch_row.add_css_class("player-switch-row");
+    let player_switch_prev = gtk::Button::from_icon_name("go-previous-symbolic");
+    player_switch_prev.add_css_class("player-switch-button");
+    let player_switch_label = gtk::Label::new(Some("1 player"));
+    player_switch_label.add_css_class("player-switch-label");
+    player_switch_label.set_hexpand(true);
+    player_switch_label.set_xalign(0.5);
+    let player_switch_next = gtk::Button::from_icon_name("go-next-symbolic");
+    player_switch_next.add_css_class("player-switch-button");
+    player_switch_row.append(&player_switch_prev);
+    player_switch_row.append(&player_switch_label);
+    player_switch_row.append(&player_switch_next);
+    player_card.append(&player_switch_row);
     root.append(&player_card);
 
     let active_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
@@ -2701,23 +2793,6 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
     controls.append(&brightness_row);
     root.append(&controls);
 
-    let footer = gtk::Box::new(Orientation::Horizontal, metrics.spacing(7));
-    let palette_label = gtk::Label::new(Some("MATERIAL"));
-    palette_label.add_css_class("eyebrow");
-    footer.append(&palette_label);
-    for class in ["primary", "secondary", "tertiary"] {
-        let chip = gtk::Box::new(Orientation::Horizontal, 0);
-        chip.add_css_class("palette-chip");
-        chip.add_css_class(class);
-        footer.append(&chip);
-    }
-    let theme_source = gtk::Label::new(Some(&palette.source));
-    theme_source.add_css_class("muted-label");
-    theme_source.set_hexpand(true);
-    theme_source.set_halign(Align::End);
-    footer.append(&theme_source);
-    root.append(&footer);
-
     DashboardWidgets {
         root,
         hero_time: time,
@@ -2734,6 +2809,10 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
         player_prev_button,
         player_play_pause_button,
         player_next_button,
+        player_switch_row,
+        player_switch_label,
+        player_switch_prev,
+        player_switch_next,
         active_eyebrow,
         active_title,
         workspace_row,
@@ -2742,7 +2821,6 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
         brightness_row,
         brightness_scale,
         brightness_value,
-        theme_source,
         weather_button,
         search_button,
         close_button,
@@ -2780,7 +2858,7 @@ struct WeatherWidgets {
 }
 
 fn weather_view(metrics: Metrics) -> WeatherWidgets {
-    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(14));
+    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(7));
     root.set_size_request(metrics.weather_width, metrics.weather_height);
     root.add_css_class("weather-content");
     root.set_valign(Align::Start);
@@ -2818,18 +2896,20 @@ fn weather_view(metrics: Metrics) -> WeatherWidgets {
     let hero_description = gtk::Label::new(Some("Waiting for the forecast"));
     hero_description.add_css_class("weather-description");
     hero_description.set_halign(Align::Start);
-    root.append(&hero_description);
-
     let status = gtk::Label::new(Some("FETCHING FORECAST"));
     status.add_css_class("search-status");
     status.set_halign(Align::Start);
-    root.append(&status);
+    let hero_meta = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    hero_meta.append(&hero_description);
+    hero_meta.append(&status);
+    root.append(&hero_meta);
 
     let forecast_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
     forecast_row.set_homogeneous(true);
     root.append(&forecast_row);
 
     let calendar = gtk::Calendar::new();
+    calendar.set_vexpand(false);
     calendar.add_css_class("weather-calendar");
     calendar.set_hexpand(true);
     calendar.set_vexpand(true);

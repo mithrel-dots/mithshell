@@ -107,6 +107,18 @@ pub fn set_volume(percent: u8) -> Result<()> {
 }
 
 pub fn query_brightness() -> Result<Option<BrightnessState>> {
+    // Keep the dashboard row hidden unless the optional brightnessctl
+    // integration is actually installed. Some systems expose backlight
+    // sysfs nodes without a usable user-facing control command.
+    let available = Command::new("brightnessctl")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !available {
+        return Ok(None);
+    }
     let Some(device) = backlight_devices()?.into_iter().next() else {
         return Ok(None);
     };

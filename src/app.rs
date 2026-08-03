@@ -698,7 +698,7 @@ impl Controller {
                     Ok(palette) => {
                         ui::update_styles(&controller.css_provider, &palette);
                         for island in controller.islands.borrow().values() {
-                            island.update_palette(&palette.source);
+                            island.update_palette();
                         }
                         *controller.palette.borrow_mut() = palette;
                     }
@@ -1114,13 +1114,11 @@ impl Controller {
                     }
                 });
             });
-            let palette = self.palette.borrow();
             let island = IslandWindow::new(
                 &self.application,
                 &monitor,
                 connector.clone(),
                 &app_config,
-                &palette,
                 IslandActions {
                     switch_workspace,
                     set_volume,
@@ -1141,7 +1139,7 @@ impl Controller {
             island.update_media(self.media.borrow().as_ref());
             island.update_weather(self.weather.borrow().as_ref());
             island.update_visualizer(*self.visualizer.borrow());
-            island.update_palette(&theme::source_label(&self.theme_config.borrow().source));
+            island.update_palette();
             island.update_tarragon_connection(self.tarragon_connected.get(), None);
             if let Some(snapshot) = self.tarragon_snapshot.borrow().as_ref() {
                 island.update_tarragon_results(snapshot);

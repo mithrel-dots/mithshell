@@ -14,7 +14,7 @@ use glib::variant::ToVariant;
 use gtk::{gio, glib};
 use log::warn;
 
-use crate::state::MediaState;
+use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
 
 pub const VISUALIZER_BARS: usize = 7;
 pub type VisualizerLevels = [u8; VISUALIZER_BARS];
@@ -197,6 +197,7 @@ fn query_active_media(connection: &gio::DBusConnection) -> Result<Option<MediaSt
     names.retain(|name| is_mpris_service(name));
     names.sort();
 
+    let mut players = Vec::new();
     for name in names {
         let Some(player_properties) = query_properties(connection, &name, PLAYER_INTERFACE) else {
             continue;
@@ -207,11 +208,19 @@ fn query_active_media(connection: &gio::DBusConnection) -> Result<Option<MediaSt
             .and_then(|properties| properties.get("DesktopEntry"))
             .and_then(|value| value.get::<String>())
             .map(|value| value.trim_end_matches(".desktop").to_owned());
-        if let Some(state) = media_state_from_properties(&name, &player_properties, app_icon) {
-            return Ok(Some(state));
+        if let Some(player) = media_player_from_properties(&name, &player_properties, app_icon) {
+            players.push(player);
         }
     }
-    Ok(None)
+    let Some(active) = players
+        .iter()
+        .find(|player| player.status == PlaybackStatus::Playing)
+        .or_else(|| players.first())
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    Ok(Some(media_state(active, players)))
 }
 
 fn query_properties(
@@ -254,14 +263,17 @@ fn is_mpris_service(name: &str) -> bool {
         .is_some_and(|player| !player.is_empty() && player != "playerctld")
 }
 
-fn media_state_from_properties(
+fn media_player_from_properties(
     service: &str,
     properties: &HashMap<String, glib::Variant>,
     app_icon: Option<String>,
-) -> Option<MediaState> {
-    if properties.get("PlaybackStatus")?.get::<String>()? != "Playing" {
-        return None;
-    }
+) -> Option<MediaPlayer> {
+    let status = match properties.get("PlaybackStatus")?.get::<String>()?.as_str() {
+        "Playing" => PlaybackStatus::Playing,
+        "Paused" => PlaybackStatus::Paused,
+        "Stopped" => PlaybackStatus::Stopped,
+        _ => return None,
+    };
     let metadata = properties
         .get("Metadata")?
         .get::<HashMap<String, glib::Variant>>()?;
@@ -302,7 +314,7 @@ fn media_state_from_properties(
             .and_then(|value| value.get::<bool>())
             .unwrap_or(true)
     };
-    Some(MediaState {
+    Some(MediaPlayer {
         player,
         service: service.to_owned(),
         title,
@@ -315,7 +327,27 @@ fn media_state_from_properties(
         can_pause: capability("CanPause"),
         can_go_next: capability("CanGoNext"),
         can_go_previous: capability("CanGoPrevious"),
+        status,
     })
+}
+
+fn media_state(active: MediaPlayer, players: Vec<MediaPlayer>) -> MediaState {
+    MediaState {
+        player: active.player.clone(),
+        service: active.service.clone(),
+        title: active.title.clone(),
+        artist: active.artist.clone(),
+        album: active.album.clone(),
+        app_icon: active.app_icon.clone(),
+        position_us: active.position_us,
+        length_us: active.length_us,
+        can_play: active.can_play,
+        can_pause: active.can_pause,
+        can_go_next: active.can_go_next,
+        can_go_previous: active.can_go_previous,
+        status: active.status,
+        players,
+    }
 }
 
 fn control(service: &str, method: &str) -> Result<()> {
@@ -386,7 +418,7 @@ mod tests {
 
     #[test]
     fn extracts_only_playing_media_with_a_title_and_icon() {
-        let playing = media_state_from_properties(
+        let playing = media_player_from_properties(
             "org.mpris.MediaPlayer2.spotify",
             &properties("Playing", "A long song title"),
             Some("spotify-client".to_owned()),
@@ -395,14 +427,13 @@ mod tests {
         assert_eq!(playing.player, "spotify");
         assert_eq!(playing.title, "A long song title");
         assert_eq!(playing.app_icon.as_deref(), Some("spotify-client"));
-        assert!(
-            media_state_from_properties(
-                "org.mpris.MediaPlayer2.spotify",
-                &properties("Paused", "A long song title"),
-                None,
-            )
-            .is_none()
-        );
+        let paused = media_player_from_properties(
+            "org.mpris.MediaPlayer2.spotify",
+            &properties("Paused", "A long song title"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(paused.status, PlaybackStatus::Paused);
     }
 
     #[test]
@@ -424,7 +455,7 @@ mod tests {
             ("CanGoPrevious".to_owned(), true.to_variant()),
         ]);
         let state =
-            media_state_from_properties("org.mpris.MediaPlayer2.spotify", &properties, None)
+            media_player_from_properties("org.mpris.MediaPlayer2.spotify", &properties, None)
                 .unwrap();
         assert_eq!(state.service, "org.mpris.MediaPlayer2.spotify");
         assert_eq!(state.artist.as_deref(), Some("First Artist, Second Artist"));
