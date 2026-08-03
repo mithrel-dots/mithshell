@@ -25,12 +25,12 @@ use crate::{
 
 const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
-const COMPACT_HEIGHT: i32 = 40;
-const MEDIA_HEIGHT: i32 = 40;
+const COMPACT_HEIGHT: i32 = 32;
+const MEDIA_HEIGHT: i32 = 32;
 const DASHBOARD_WIDTH: i32 = 440;
 const DASHBOARD_HEIGHT: i32 = 370;
 const OSD_WIDTH: i32 = 292;
-const OSD_HEIGHT: i32 = 44;
+const OSD_HEIGHT: i32 = 36;
 const SEARCH_WIDTH: i32 = 820;
 const SEARCH_HEIGHT: i32 = 620;
 const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
@@ -57,11 +57,7 @@ struct Metrics {
 impl Metrics {
     fn new(monitor: &gdk::Monitor, configured_scale: f64, media_width_factor: f64) -> Self {
         let automatic = (f64::from(monitor.geometry().width()) / 2560.0).clamp(1.0, 1.45);
-        let scale = if configured_scale > 0.0 {
-            configured_scale.clamp(0.8, 1.5)
-        } else {
-            automatic
-        };
+        let scale = resolved_scale(configured_scale, automatic);
         let media_width_factor =
             media_width_factor.clamp(1.0, f64::from(DASHBOARD_WIDTH) / f64::from(COMPACT_WIDTH));
         let search_height = scaled(SEARCH_HEIGHT, scale);
@@ -2360,6 +2356,14 @@ fn scaled(value: i32, scale: f64) -> i32 {
     (f64::from(value) * scale).round() as i32
 }
 
+fn resolved_scale(configured: f64, automatic: f64) -> f64 {
+    if configured.is_finite() && configured > 0.0 {
+        configured.max(0.8)
+    } else {
+        automatic
+    }
+}
+
 fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
     let delta = if dy.abs() >= dx.abs() { dy } else { dx };
     if delta > 0.0 {
@@ -2368,5 +2372,15 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
         -1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_scale;
+
+    #[test]
+    fn explicit_scale_is_not_capped() {
+        assert_eq!(resolved_scale(2.4, 1.45), 2.4);
     }
 }
