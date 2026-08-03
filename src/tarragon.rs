@@ -2,6 +2,10 @@ use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, ErrorKind, Write},
     os::unix::net::UnixStream,
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -13,7 +17,6 @@ use serde::{Deserialize, Serialize};
 const SOCKET_PATH: &str = "/tmp/tarragon-ui.sock";
 const CLIENT_ID: &str = "mithshell";
 const RETRY_DELAY: Duration = Duration::from_secs(1);
-const READ_TIMEOUT: Duration = Duration::from_millis(30);
 
 #[derive(Debug, Clone)]
 pub enum TarragonCommand {
@@ -178,15 +181,92 @@ enum Request<'a> {
     },
 }
 
+/// The socket shared between the writer thread and the connection thread.
+///
+/// Commands used to be drained with `try_recv` between socket reads, which
+/// meant a queued query waited for the current read timeout to expire before it
+/// was written. Holding the write half here lets the writer thread block on the
+/// command channel and push a query the instant it is queued.
+#[derive(Default)]
+struct Connection {
+    stream: Mutex<Option<UnixStream>>,
+    pending_selection: AtomicBool,
+}
+
+impl Connection {
+    fn attach(&self, stream: UnixStream) {
+        *self.lock() = Some(stream);
+    }
+
+    fn detach(&self) {
+        *self.lock() = None;
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Option<UnixStream>> {
+        self.stream.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Writes a command when connected, dropping the socket if the write fails
+    /// so the connection thread can reconnect.
+    fn send(&self, command: &TarragonCommand) {
+        let mut guard = self.lock();
+        let Some(stream) = guard.as_mut() else {
+            return;
+        };
+        if write_command(stream, command).is_err() {
+            *guard = None;
+            return;
+        }
+        if matches!(command, TarragonCommand::Query(_)) {
+            crate::latency::mark_write();
+        }
+        if matches!(command, TarragonCommand::Select(_)) {
+            self.pending_selection.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn take_pending_selection(&self) -> bool {
+        self.pending_selection.swap(false, Ordering::Relaxed)
+    }
+}
+
 pub fn start_listener(
     event_sender: Sender<TarragonEvent>,
 ) -> (Sender<TarragonCommand>, thread::JoinHandle<()>) {
     let (command_sender, command_receiver) = async_channel::unbounded();
-    let handle = thread::spawn(move || run(command_receiver, event_sender));
+    let connection = Arc::new(Connection::default());
+
+    let writer_connection = Arc::clone(&connection);
+    let writer_receiver = command_receiver.clone();
+    thread::spawn(move || write_loop(&writer_receiver, &writer_connection));
+
+    let handle = thread::spawn(move || run(&command_receiver, &connection, &event_sender));
     (command_sender, handle)
 }
 
-fn run(command_receiver: Receiver<TarragonCommand>, event_sender: Sender<TarragonEvent>) {
+/// Blocks on the command channel so queries reach the socket without waiting
+/// for a poll cycle.
+fn write_loop(command_receiver: &Receiver<TarragonCommand>, connection: &Connection) {
+    while let Ok(command) = command_receiver.recv_blocking() {
+        connection.send(&command);
+    }
+    let mut guard = connection.lock();
+    if let Some(stream) = guard.as_mut() {
+        let _ = write_request(
+            stream,
+            &Request::Detach {
+                client_id: CLIENT_ID,
+            },
+        );
+    }
+    *guard = None;
+}
+
+fn run(
+    command_receiver: &Receiver<TarragonCommand>,
+    connection: &Connection,
+    event_sender: &Sender<TarragonEvent>,
+) {
     let mut reported_disconnected = false;
     while !command_receiver.is_closed() {
         match UnixStream::connect(SOCKET_PATH) {
@@ -196,7 +276,9 @@ fn run(command_receiver: Receiver<TarragonCommand>, event_sender: Sender<Tarrago
                     connected: true,
                     message: None,
                 });
-                if let Err(error) = run_connection(stream, &command_receiver, &event_sender) {
+                let outcome = run_connection(stream, connection, event_sender);
+                connection.detach();
+                if let Err(error) = outcome {
                     let _ = event_sender.send_blocking(TarragonEvent::Connection {
                         connected: false,
                         message: Some(error),
@@ -220,53 +302,26 @@ fn run(command_receiver: Receiver<TarragonCommand>, event_sender: Sender<Tarrago
 
 fn run_connection(
     stream: UnixStream,
-    command_receiver: &Receiver<TarragonCommand>,
+    connection: &Connection,
     event_sender: &Sender<TarragonEvent>,
 ) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(READ_TIMEOUT))
-        .map_err(|error| error.to_string())?;
-    let reader_stream = stream.try_clone().map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(reader_stream);
-    let mut writer = stream;
+    let writer = stream.try_clone().map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(stream);
     let mut own_queries = HashSet::new();
-    let mut pending_selection = false;
     let mut line = String::new();
-    write_command(&mut writer, &TarragonCommand::Status)?;
 
+    connection.attach(writer);
+    connection.send(&TarragonCommand::Status);
+
+    // A blocking read: no timeout, so the thread parks instead of spinning.
     loop {
-        while let Ok(command) = command_receiver.try_recv() {
-            let is_query = matches!(command, TarragonCommand::Query(_));
-            write_command(&mut writer, &command)?;
-            if is_query {
-                crate::latency::mark_write();
-            }
-            if matches!(command, TarragonCommand::Select(_)) {
-                pending_selection = true;
-            }
-        }
-        if command_receiver.is_closed() {
-            let _ = write_request(
-                &mut writer,
-                &Request::Detach {
-                    client_id: CLIENT_ID,
-                },
-            );
-            return Ok(());
-        }
-
         match reader.read_line(&mut line) {
             Ok(0) => return Err("TarraGon closed the connection".into()),
             Ok(_) => {
-                handle_message(
-                    &line,
-                    &mut own_queries,
-                    &mut pending_selection,
-                    event_sender,
-                );
+                handle_message(&line, &mut own_queries, connection, event_sender);
                 line.clear();
             }
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => return Err(format!("TarraGon read failed: {error}")),
         }
     }
@@ -318,7 +373,7 @@ fn write_request(writer: &mut UnixStream, request: &Request<'_>) -> Result<(), S
 fn handle_message(
     line: &str,
     own_queries: &mut HashSet<String>,
-    pending_selection: &mut bool,
+    connection: &Connection,
     event_sender: &Sender<TarragonEvent>,
 ) {
     let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -373,10 +428,9 @@ fn handle_message(
             }
         }
         Some("select_response") => {
-            if !*pending_selection {
+            if !connection.take_pending_selection() {
                 return;
             }
-            *pending_selection = false;
             let success = message
                 .get("success")
                 .and_then(|value| value.as_bool())
@@ -440,7 +494,12 @@ mod tests {
         });
         let (sender, receiver) = async_channel::unbounded();
         let mut own = HashSet::from(["q-1".to_owned()]);
-        handle_message(&message.to_string(), &mut own, &mut false, &sender);
+        handle_message(
+            &message.to_string(),
+            &mut own,
+            &Connection::default(),
+            &sender,
+        );
         let TarragonEvent::Results(snapshot) = receiver.try_recv().unwrap() else {
             panic!("expected results event");
         };
@@ -449,6 +508,42 @@ mod tests {
         assert_eq!(snapshot.list[0].label, "Result");
         assert_eq!(snapshot.list[0].preview_path, "/tmp/x.png");
         assert_eq!(snapshot.plugins["desktop_files"].count, 1);
+    }
+
+    /// `pending_selection` moved from a local in the read loop to shared state,
+    /// because the write now happens on a separate thread. A response must be
+    /// reported exactly once, and only when a selection is actually pending.
+    #[test]
+    fn select_response_is_reported_once_per_pending_selection() {
+        let message = serde_json::json!({
+            "type": "select_response",
+            "success": true,
+            "message": "Launched",
+        })
+        .to_string();
+        let (sender, receiver) = async_channel::unbounded();
+        let connection = Connection::default();
+
+        // No selection in flight: the response is ignored.
+        handle_message(&message, &mut HashSet::new(), &connection, &sender);
+        assert!(receiver.try_recv().is_err());
+
+        connection.pending_selection.store(true, Ordering::Relaxed);
+        handle_message(&message, &mut HashSet::new(), &connection, &sender);
+        let TarragonEvent::Selection { success, message } = receiver.try_recv().unwrap() else {
+            panic!("expected selection event");
+        };
+        assert!(success);
+        assert_eq!(message, "Launched");
+
+        // The flag is consumed, so a duplicate response is not reported again.
+        handle_message(
+            &serde_json::json!({ "type": "select_response", "success": true }).to_string(),
+            &mut HashSet::new(),
+            &connection,
+            &sender,
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -471,7 +566,7 @@ mod tests {
         handle_message(
             &message.to_string(),
             &mut HashSet::new(),
-            &mut false,
+            &Connection::default(),
             &sender,
         );
         let TarragonEvent::Status(status) = receiver.try_recv().unwrap() else {

@@ -35,6 +35,10 @@ const SEARCH_WIDTH: i32 = 820;
 const SEARCH_HEIGHT: i32 = 620;
 const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
 const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
+/// Coalescing window between a keystroke and the query reaching TarraGon.
+/// TarraGon answers in well under a millisecond, so this only needs to be long
+/// enough to skip intermediate keystrokes during a fast burst of typing.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(30);
 
 #[derive(Debug, Clone, Copy)]
 struct Metrics {
@@ -238,6 +242,10 @@ pub struct IslandWindow {
     search_action_generation: Cell<u64>,
     search_selection_pending: Cell<bool>,
     search_preview_key: RefCell<Option<String>>,
+    /// Text of the most recently dispatched query. Snapshots are matched
+    /// against this rather than the live entry text, so results still land
+    /// when the user has typed ahead of the query that is in flight.
+    search_dispatched: RefCell<Option<String>>,
     search_snapshot: RefCell<Option<TarragonSnapshot>>,
     search_backend_status: RefCell<Option<TarragonStatus>>,
     osd_active: Cell<bool>,
@@ -437,6 +445,7 @@ impl IslandWindow {
             search_action_generation: Cell::new(0),
             search_selection_pending: Cell::new(false),
             search_preview_key: RefCell::new(None),
+            search_dispatched: RefCell::new(None),
             search_snapshot: RefCell::new(None),
             search_backend_status: RefCell::new(None),
             osd_active: Cell::new(false),
@@ -549,7 +558,10 @@ impl IslandWindow {
     }
 
     pub fn update_tarragon_results(self: &Rc<Self>, snapshot: &TarragonSnapshot) {
-        if snapshot.input != self.search_entry.text().as_str() {
+        // Match the query this island actually asked for. Comparing against the
+        // live entry text instead would drop every snapshot whenever the user
+        // typed while results were in flight, pinning the UI on "SEARCHING".
+        if self.search_dispatched.borrow().as_deref() != Some(snapshot.input.as_str()) {
             return;
         }
         let selected_index = self
@@ -1121,6 +1133,10 @@ impl IslandWindow {
             }
         });
 
+        // GtkSearchEntry withholds `search-changed` for 150ms by default. That
+        // sits on top of our own debounce, so disable it and let
+        // `schedule_search` own the coalescing window.
+        self.search_entry.set_search_delay(0);
         let weak = Rc::downgrade(self);
         self.search_entry.connect_search_changed(move |entry| {
             if let Some(island) = weak.upgrade() {
@@ -1389,6 +1405,7 @@ impl IslandWindow {
             return;
         }
         if text.trim().is_empty() {
+            *self.search_dispatched.borrow_mut() = None;
             *self.search_snapshot.borrow_mut() = None;
             clear_list_box(&self.search_results);
             self.clear_search_preview();
@@ -1397,12 +1414,13 @@ impl IslandWindow {
         }
         self.search_status.set_label("SEARCHING");
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(100), move || {
+        glib::timeout_add_local_once(SEARCH_DEBOUNCE, move || {
             if let Some(island) = weak.upgrade()
                 && island.search_open.get()
                 && island.search_generation.get() == generation
             {
                 crate::latency::mark_dispatch();
+                *island.search_dispatched.borrow_mut() = Some(text.clone());
                 (island.actions.search)(text);
             }
         });
