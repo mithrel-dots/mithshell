@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use async_channel::{Receiver, Sender};
+use clap::CommandFactory;
 use gtk::{Application, CssProvider, gdk, gio, glib, prelude::*};
 use log::{error, info, warn};
 
@@ -26,6 +27,12 @@ use crate::{
 };
 
 pub fn run(cli: Cli) -> Result<()> {
+    // Completions are generated offline; skip resolving a runtime socket
+    // path (which requires XDG_RUNTIME_DIR) for this command entirely.
+    if let Command::Completions { shell } = &cli.command {
+        generate_completions(*shell);
+        return Ok(());
+    }
     let socket_path = ipc::socket_path(cli.socket)?;
     match cli.command {
         Command::Daemon {
@@ -34,6 +41,14 @@ pub fn run(cli: Cli) -> Result<()> {
         } => run_daemon(socket_path, config, !no_animations),
         command => run_client(socket_path, command),
     }
+}
+
+/// Writes a completion script for `shell` to stdout, generated from the same
+/// `clap::Command` used to parse arguments so it never drifts from the CLI.
+fn generate_completions(shell: clap_complete::Shell) {
+    let mut command = Cli::command();
+    let name = command.get_name().to_owned();
+    clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
 }
 
 fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
@@ -255,6 +270,7 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
             ThemeCommand::Reset => IpcCommand::ThemeReset,
         },
         Command::Daemon { .. } => bail!("daemon command cannot be sent over IPC"),
+        Command::Completions { .. } => bail!("completions are generated locally, not over IPC"),
     };
     Ok((Request::new(command), json))
 }

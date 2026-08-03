@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -80,6 +81,12 @@ pub enum Command {
     Theme {
         #[command(subcommand)]
         command: ThemeCommand,
+    },
+
+    /// Print a shell completion script to stdout.
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
     },
 }
 

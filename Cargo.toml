@@ -9,6 +9,7 @@ anyhow = "1.0"
 async-channel = "2.5"
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
 env_logger = "0.11"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 gtk4-layer-shell = { version = "0.8", features = ["v1_3"] }
