@@ -113,6 +113,77 @@ window.mithshell-dismiss > contents {
   font-weight: 650;
 }
 
+.player-card {
+  background: alpha(@ms_surface_low, 0.92);
+  border: 1px solid alpha(@ms_outline_variant, 0.28);
+  border-radius: 20px;
+  padding: 12px 15px;
+}
+
+.player-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 28px;
+}
+
+.player-title {
+  color: @ms_on_surface;
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.player-artist {
+  color: alpha(@ms_on_surface_variant, 0.8);
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+}
+
+.player-button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: @ms_on_surface_variant;
+  background: alpha(@ms_on_surface, 0.06);
+  border: 0;
+  border-radius: 13px;
+  box-shadow: none;
+  -gtk-icon-size: 13px;
+}
+
+.player-button:hover {
+  color: @ms_on_surface;
+  background: alpha(@ms_on_surface, 0.12);
+}
+
+.player-button.player-play {
+  color: @ms_on_primary;
+  background: @ms_primary;
+}
+
+.player-button.player-play:hover {
+  background: alpha(@ms_primary, 0.85);
+}
+
+progressbar.player-progress trough {
+  min-height: 4px;
+  border-radius: 99px;
+  background: alpha(@ms_outline_variant, 0.35);
+}
+
+progressbar.player-progress progress {
+  min-height: 4px;
+  border-radius: 99px;
+  background: @ms_primary;
+}
+
+.player-time {
+  color: alpha(@ms_on_surface_variant, 0.76);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
 .workspace-button {
   min-width: 28px;
   min-height: 28px;
@@ -526,6 +597,14 @@ progressbar.osd-progress progress {
 .scale-medium .controls-card { border-radius: 24px; }
 .scale-medium .active-card { padding: 16px 18px; }
 .scale-medium .active-title { font-size: 17px; }
+.scale-medium .player-card { border-radius: 24px; padding: 15px 18px; }
+.scale-medium .player-icon { -gtk-icon-size: 34px; }
+.scale-medium .player-title { font-size: 16px; }
+.scale-medium .player-artist { font-size: 13px; }
+.scale-medium .player-button { min-width: 32px; min-height: 32px; border-radius: 16px; -gtk-icon-size: 16px; }
+.scale-medium progressbar.player-progress trough,
+.scale-medium progressbar.player-progress progress { min-height: 5px; }
+.scale-medium .player-time { font-size: 11px; }
 .scale-medium .workspace-button,
 .scale-medium .close-button { min-width: 34px; min-height: 34px; border-radius: 17px; }
 .scale-medium .workspace-button { font-size: 12px; }
@@ -594,6 +673,14 @@ progressbar.osd-progress progress {
 .scale-large .controls-card { border-radius: 29px; }
 .scale-large .active-card { padding: 19px 22px; }
 .scale-large .active-title { font-size: 20px; }
+.scale-large .player-card { border-radius: 29px; padding: 18px 22px; }
+.scale-large .player-icon { -gtk-icon-size: 40px; }
+.scale-large .player-title { font-size: 19px; }
+.scale-large .player-artist { font-size: 16px; }
+.scale-large .player-button { min-width: 38px; min-height: 38px; border-radius: 19px; -gtk-icon-size: 19px; }
+.scale-large progressbar.player-progress trough,
+.scale-large progressbar.player-progress progress { min-height: 6px; }
+.scale-large .player-time { font-size: 13px; }
 .scale-large .workspace-button,
 .scale-large .close-button { min-width: 41px; min-height: 41px; border-radius: 21px; }
 .scale-large .workspace-button { font-size: 14px; }

@@ -277,11 +277,80 @@ fn media_state_from_properties(
             .filter(|name| !name.is_empty())
             .map(str::to_owned)
     });
+    let artist = metadata
+        .get("xesam:artist")
+        .and_then(|value| value.get::<Vec<String>>())
+        .map(|artists| artists.join(", "))
+        .filter(|value| !value.is_empty());
+    let album = metadata
+        .get("xesam:album")
+        .and_then(|value| value.get::<String>())
+        .filter(|value| !value.is_empty());
+    let length_us = metadata
+        .get("mpris:length")
+        .and_then(|value| value.get::<i64>());
+    let position_us = properties
+        .get("Position")
+        .and_then(|value| value.get::<i64>())
+        .unwrap_or(0);
+    // Absent capability properties are treated as supported, matching the
+    // MPRIS convention of only advertising a capability as `false` when a
+    // player is certain it cannot perform the action.
+    let capability = |name: &str| {
+        properties
+            .get(name)
+            .and_then(|value| value.get::<bool>())
+            .unwrap_or(true)
+    };
     Some(MediaState {
         player,
+        service: service.to_owned(),
         title,
+        artist,
+        album,
         app_icon,
+        position_us,
+        length_us,
+        can_play: capability("CanPlay"),
+        can_pause: capability("CanPause"),
+        can_go_next: capability("CanGoNext"),
+        can_go_previous: capability("CanGoPrevious"),
     })
+}
+
+fn control(service: &str, method: &str) -> Result<()> {
+    let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
+        .context("failed to connect to the session D-Bus")?;
+    connection
+        .call_sync(
+            Some(service),
+            PLAYER_PATH,
+            PLAYER_INTERFACE,
+            method,
+            None,
+            None,
+            gio::DBusCallFlags::NONE,
+            1_000,
+            None::<&gio::Cancellable>,
+        )
+        .with_context(|| format!("{method} failed for {service}"))?;
+    Ok(())
+}
+
+/// Toggles play/pause on an MPRIS player, addressed by its full D-Bus
+/// service name (e.g. `org.mpris.MediaPlayer2.spotify`).
+pub fn play_pause(service: &str) -> Result<()> {
+    control(service, "PlayPause")
+}
+
+/// Skips to the next track on an MPRIS player.
+pub fn next(service: &str) -> Result<()> {
+    control(service, "Next")
+}
+
+/// Skips to the previous track on an MPRIS player.
+pub fn previous(service: &str) -> Result<()> {
+    control(service, "Previous")
 }
 
 fn parse_cava_line(line: &str) -> Option<VisualizerLevels> {
@@ -334,6 +403,39 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn extracts_artist_album_progress_and_capabilities() {
+        let metadata = HashMap::from([
+            ("xesam:title".to_owned(), "A long song title".to_variant()),
+            (
+                "xesam:artist".to_owned(),
+                vec!["First Artist".to_owned(), "Second Artist".to_owned()].to_variant(),
+            ),
+            ("xesam:album".to_owned(), "An Album".to_owned().to_variant()),
+            ("mpris:length".to_owned(), 245_000_000_i64.to_variant()),
+        ]);
+        let properties = HashMap::from([
+            ("PlaybackStatus".to_owned(), "Playing".to_variant()),
+            ("Metadata".to_owned(), metadata.to_variant()),
+            ("Position".to_owned(), 12_000_000_i64.to_variant()),
+            ("CanGoNext".to_owned(), false.to_variant()),
+            ("CanGoPrevious".to_owned(), true.to_variant()),
+        ]);
+        let state =
+            media_state_from_properties("org.mpris.MediaPlayer2.spotify", &properties, None)
+                .unwrap();
+        assert_eq!(state.service, "org.mpris.MediaPlayer2.spotify");
+        assert_eq!(state.artist.as_deref(), Some("First Artist, Second Artist"));
+        assert_eq!(state.album.as_deref(), Some("An Album"));
+        assert_eq!(state.length_us, Some(245_000_000));
+        assert_eq!(state.position_us, 12_000_000);
+        assert!(!state.can_go_next);
+        assert!(state.can_go_previous);
+        // Absent capability properties default to supported.
+        assert!(state.can_play);
+        assert!(state.can_pause);
     }
 
     #[test]

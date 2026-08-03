@@ -28,7 +28,9 @@ const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
 const MEDIA_HEIGHT: i32 = 32;
 const DASHBOARD_WIDTH: i32 = 440;
-const DASHBOARD_HEIGHT: i32 = 370;
+// Tall enough for the header, the media player card, the current-window
+// card, workspaces, volume/brightness controls, and the palette footer.
+const DASHBOARD_HEIGHT: i32 = 480;
 const OSD_WIDTH: i32 = 292;
 const OSD_HEIGHT: i32 = 36;
 const SEARCH_WIDTH: i32 = 820;
@@ -115,6 +117,8 @@ pub type SearchAction = Rc<dyn Fn(String)>;
 pub type SelectionAction = Rc<dyn Fn(TarragonSelection)>;
 pub type UnitAction = Rc<dyn Fn()>;
 pub type PreviewAction = Rc<dyn Fn(u64, String)>;
+/// Argument is the target MPRIS player's full D-Bus service name.
+pub type MediaAction = Rc<dyn Fn(String)>;
 
 #[derive(Clone)]
 pub struct IslandActions {
@@ -126,6 +130,9 @@ pub struct IslandActions {
     pub tarragon_status: UnitAction,
     pub tarragon_reload: UnitAction,
     pub load_preview: PreviewAction,
+    pub media_play_pause: MediaAction,
+    pub media_next: MediaAction,
+    pub media_previous: MediaAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +218,24 @@ pub struct IslandWindow {
     hero_date: gtk::Label,
     battery_chip: gtk::Box,
     battery_label: gtk::Label,
+    player_card: gtk::Box,
+    player_icon: gtk::Image,
+    player_title: gtk::Label,
+    player_artist: gtk::Label,
+    player_progress: gtk::ProgressBar,
+    player_elapsed_label: gtk::Label,
+    player_duration_label: gtk::Label,
+    player_prev_button: gtk::Button,
+    player_play_pause_button: gtk::Button,
+    player_next_button: gtk::Button,
+    /// Position reported by the last MPRIS update, in microseconds. Since
+    /// `MediaState` only ever represents a `Playing` player, the progress
+    /// bar advances this locally between updates instead of polling MPRIS.
+    player_progress_base_us: Cell<i64>,
+    player_progress_started_at: Cell<Option<Instant>>,
+    player_length_us: Cell<i64>,
+    player_active: Cell<bool>,
+    latest_media: RefCell<Option<MediaState>>,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
     workspace_row: gtk::Box,
@@ -416,6 +441,21 @@ impl IslandWindow {
             hero_date: dashboard_widgets.hero_date,
             battery_chip: dashboard_widgets.battery_chip,
             battery_label: dashboard_widgets.battery_label,
+            player_card: dashboard_widgets.player_card,
+            player_icon: dashboard_widgets.player_icon,
+            player_title: dashboard_widgets.player_title,
+            player_artist: dashboard_widgets.player_artist,
+            player_progress: dashboard_widgets.player_progress,
+            player_elapsed_label: dashboard_widgets.player_elapsed_label,
+            player_duration_label: dashboard_widgets.player_duration_label,
+            player_prev_button: dashboard_widgets.player_prev_button,
+            player_play_pause_button: dashboard_widgets.player_play_pause_button,
+            player_next_button: dashboard_widgets.player_next_button,
+            player_progress_base_us: Cell::new(0),
+            player_progress_started_at: Cell::new(None),
+            player_length_us: Cell::new(0),
+            player_active: Cell::new(false),
+            latest_media: RefCell::new(None),
             active_eyebrow: dashboard_widgets.active_eyebrow,
             active_title: dashboard_widgets.active_title,
             workspace_row: dashboard_widgets.workspace_row,
@@ -486,6 +526,7 @@ impl IslandWindow {
             &dismiss_area,
         );
         island.start_clock();
+        island.start_player_progress_timer();
         let weak = Rc::downgrade(&island);
         island.window.connect_realize(move |_| {
             if let Some(island) = weak.upgrade() {
@@ -954,6 +995,93 @@ impl IslandWindow {
                 }
             });
         }
+
+        self.update_player_card(state);
+        *self.latest_media.borrow_mut() = state.cloned();
+    }
+
+    /// Updates the always-visible media player card in the dashboard. Unlike
+    /// the compact pill above (`update_media`'s first half, gated on
+    /// `media_playing`), this card is part of the dashboard layout and shows
+    /// an idle placeholder when nothing is playing instead of disappearing.
+    fn update_player_card(&self, state: Option<&MediaState>) {
+        match state {
+            Some(state) => {
+                self.player_card.remove_css_class("unavailable");
+                self.player_title.set_label(&state.title);
+                self.player_artist
+                    .set_label(state.artist.as_deref().unwrap_or_default());
+                self.player_artist.set_visible(state.artist.is_some());
+                if let Some(icon) = state.app_icon.as_deref() {
+                    self.player_icon.set_icon_name(Some(icon));
+                    self.player_icon.set_visible(true);
+                } else {
+                    self.player_icon.set_visible(false);
+                }
+                self.player_prev_button.set_sensitive(state.can_go_previous);
+                self.player_play_pause_button
+                    .set_sensitive(state.can_play || state.can_pause);
+                self.player_next_button.set_sensitive(state.can_go_next);
+                self.player_progress_base_us.set(state.position_us);
+                self.player_length_us.set(state.length_us.unwrap_or(0));
+                self.player_progress_started_at.set(Some(Instant::now()));
+                self.player_active.set(true);
+                self.tick_player_progress();
+            }
+            None => {
+                self.player_card.add_css_class("unavailable");
+                self.player_title.set_label("Nothing playing");
+                self.player_artist.set_label("");
+                self.player_artist.set_visible(false);
+                self.player_icon.set_visible(false);
+                self.player_prev_button.set_sensitive(false);
+                self.player_play_pause_button.set_sensitive(false);
+                self.player_next_button.set_sensitive(false);
+                self.player_progress.set_fraction(0.0);
+                self.player_elapsed_label.set_label("--:--");
+                self.player_duration_label.set_label("--:--");
+                self.player_active.set(false);
+                self.player_progress_started_at.set(None);
+            }
+        }
+    }
+
+    /// Advances the player card's progress bar between MPRIS updates by
+    /// interpolating from the last known position using a local clock,
+    /// rather than polling MPRIS for `Position` on a timer.
+    fn tick_player_progress(&self) {
+        if !self.player_active.get() {
+            return;
+        }
+        let elapsed_us = self
+            .player_progress_started_at
+            .get()
+            .map_or(0, |started| started.elapsed().as_micros() as i64);
+        let position_us = (self.player_progress_base_us.get() + elapsed_us).max(0);
+        let length_us = self.player_length_us.get();
+        if length_us > 0 {
+            let position_us = position_us.min(length_us);
+            self.player_progress
+                .set_fraction((position_us as f64 / length_us as f64).clamp(0.0, 1.0));
+            self.player_duration_label
+                .set_label(&format_media_time(length_us));
+        } else {
+            self.player_progress.set_fraction(0.0);
+            self.player_duration_label.set_label("--:--");
+        }
+        self.player_elapsed_label
+            .set_label(&format_media_time(position_us));
+    }
+
+    fn start_player_progress_timer(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(500), move || {
+            let Some(island) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            island.tick_player_progress();
+            glib::ControlFlow::Continue
+        });
     }
 
     pub fn update_visualizer(&self, levels: VisualizerLevels) {
@@ -1365,6 +1493,45 @@ impl IslandWindow {
                         (island.actions.set_brightness)(value);
                     }
                 });
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        self.player_prev_button.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade()
+                && let Some(service) = island
+                    .latest_media
+                    .borrow()
+                    .as_ref()
+                    .map(|state| state.service.clone())
+            {
+                (island.actions.media_previous)(service);
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        self.player_play_pause_button.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade()
+                && let Some(service) = island
+                    .latest_media
+                    .borrow()
+                    .as_ref()
+                    .map(|state| state.service.clone())
+            {
+                (island.actions.media_play_pause)(service);
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        self.player_next_button.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade()
+                && let Some(service) = island
+                    .latest_media
+                    .borrow()
+                    .as_ref()
+                    .map(|state| state.service.clone())
+            {
+                (island.actions.media_next)(service);
             }
         });
     }
@@ -2214,6 +2381,16 @@ struct DashboardWidgets {
     hero_date: gtk::Label,
     battery_chip: gtk::Box,
     battery_label: gtk::Label,
+    player_card: gtk::Box,
+    player_icon: gtk::Image,
+    player_title: gtk::Label,
+    player_artist: gtk::Label,
+    player_progress: gtk::ProgressBar,
+    player_elapsed_label: gtk::Label,
+    player_duration_label: gtk::Label,
+    player_prev_button: gtk::Button,
+    player_play_pause_button: gtk::Button,
+    player_next_button: gtk::Button,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
     workspace_row: gtk::Box,
@@ -2269,6 +2446,73 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
     header.append(&search_button);
     header.append(&close_button);
     root.append(&header);
+
+    let player_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
+    player_card.add_css_class("player-card");
+    player_card.add_css_class("unavailable");
+
+    let player_top = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
+    let player_icon = gtk::Image::new();
+    player_icon.add_css_class("player-icon");
+    player_icon.set_valign(Align::Center);
+    player_icon.set_visible(false);
+
+    let player_text = gtk::Box::new(Orientation::Vertical, 0);
+    player_text.set_hexpand(true);
+    player_text.set_valign(Align::Center);
+    let player_title = gtk::Label::new(Some("Nothing playing"));
+    player_title.add_css_class("player-title");
+    player_title.set_halign(Align::Start);
+    player_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let player_artist = gtk::Label::new(None);
+    player_artist.add_css_class("player-artist");
+    player_artist.set_halign(Align::Start);
+    player_artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    player_artist.set_visible(false);
+    player_text.append(&player_title);
+    player_text.append(&player_artist);
+
+    let player_prev_button = gtk::Button::from_icon_name("media-skip-backward-symbolic");
+    player_prev_button.add_css_class("player-button");
+    player_prev_button.set_tooltip_text(Some("Previous track"));
+    player_prev_button.set_valign(Align::Center);
+    player_prev_button.set_sensitive(false);
+    let player_play_pause_button = gtk::Button::from_icon_name("media-playback-pause-symbolic");
+    player_play_pause_button.add_css_class("player-button");
+    player_play_pause_button.add_css_class("player-play");
+    player_play_pause_button.set_tooltip_text(Some("Play/Pause"));
+    player_play_pause_button.set_valign(Align::Center);
+    player_play_pause_button.set_sensitive(false);
+    let player_next_button = gtk::Button::from_icon_name("media-skip-forward-symbolic");
+    player_next_button.add_css_class("player-button");
+    player_next_button.set_tooltip_text(Some("Next track"));
+    player_next_button.set_valign(Align::Center);
+    player_next_button.set_sensitive(false);
+
+    player_top.append(&player_icon);
+    player_top.append(&player_text);
+    player_top.append(&player_prev_button);
+    player_top.append(&player_play_pause_button);
+    player_top.append(&player_next_button);
+    player_card.append(&player_top);
+
+    let player_progress = gtk::ProgressBar::new();
+    player_progress.set_hexpand(true);
+    player_progress.add_css_class("player-progress");
+    player_card.append(&player_progress);
+
+    let player_time_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    let player_elapsed_label = gtk::Label::new(Some("--:--"));
+    player_elapsed_label.add_css_class("player-time");
+    player_elapsed_label.set_halign(Align::Start);
+    let player_duration_label = gtk::Label::new(Some("--:--"));
+    player_duration_label.add_css_class("player-time");
+    player_duration_label.set_halign(Align::End);
+    player_duration_label.set_hexpand(true);
+    player_time_row.append(&player_elapsed_label);
+    player_time_row.append(&player_duration_label);
+    player_card.append(&player_time_row);
+    root.append(&player_card);
 
     let active_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
     active_card.add_css_class("active-card");
@@ -2328,6 +2572,16 @@ fn dashboard_view(palette: &Palette, metrics: Metrics) -> DashboardWidgets {
         hero_date: date,
         battery_chip,
         battery_label,
+        player_card,
+        player_icon,
+        player_title,
+        player_artist,
+        player_progress,
+        player_elapsed_label,
+        player_duration_label,
+        player_prev_button,
+        player_play_pause_button,
+        player_next_button,
         active_eyebrow,
         active_title,
         workspace_row,
@@ -2441,6 +2695,19 @@ fn lerp(start: f64, target: f64, progress: f64) -> f64 {
     start + (target - start) * progress
 }
 
+/// Formats a microsecond duration as `M:SS`, or `H:MM:SS` past one hour.
+fn format_media_time(microseconds: i64) -> String {
+    let total_seconds = (microseconds.max(0) / 1_000_000) as u64;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 fn scaled(value: i32, scale: f64) -> i32 {
     (f64::from(value) * scale).round() as i32
 }
@@ -2466,10 +2733,18 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::resolved_scale;
+    use super::{format_media_time, resolved_scale};
 
     #[test]
     fn explicit_scale_is_not_capped() {
         assert_eq!(resolved_scale(2.4, 1.45), 2.4);
+    }
+
+    #[test]
+    fn formats_media_time_below_and_above_an_hour() {
+        assert_eq!(format_media_time(0), "0:00");
+        assert_eq!(format_media_time(65_000_000), "1:05");
+        assert_eq!(format_media_time(3_661_000_000), "1:01:01");
+        assert_eq!(format_media_time(-5_000_000), "0:00");
     }
 }

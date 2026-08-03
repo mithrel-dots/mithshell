@@ -76,8 +76,25 @@ pub struct AudioState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MediaState {
     pub player: String,
+    /// Full MPRIS D-Bus service name (e.g. `org.mpris.MediaPlayer2.spotify`),
+    /// kept around so play/pause/next/previous calls can target the right
+    /// player. Not part of the public IPC surface.
+    #[serde(skip_serializing)]
+    pub service: String,
     pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
     pub app_icon: Option<String>,
+    /// Track position at the moment this state was captured, in
+    /// microseconds. Since `MediaState` is only ever produced for a
+    /// `Playing` player, a progress bar can interpolate forward from this
+    /// baseline using a local clock instead of polling MPRIS continuously.
+    pub position_us: i64,
+    pub length_us: Option<i64>,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_go_next: bool,
+    pub can_go_previous: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1067,6 +1067,27 @@ impl Controller {
                     path: PathBuf::from(path),
                 });
             });
+            let media_play_pause = Rc::new(move |service: String| {
+                thread::spawn(move || {
+                    if let Err(error) = media::play_pause(&service) {
+                        warn!("failed to toggle media playback: {error:#}");
+                    }
+                });
+            });
+            let media_next = Rc::new(move |service: String| {
+                thread::spawn(move || {
+                    if let Err(error) = media::next(&service) {
+                        warn!("failed to skip to the next track: {error:#}");
+                    }
+                });
+            });
+            let media_previous = Rc::new(move |service: String| {
+                thread::spawn(move || {
+                    if let Err(error) = media::previous(&service) {
+                        warn!("failed to skip to the previous track: {error:#}");
+                    }
+                });
+            });
             let palette = self.palette.borrow();
             let island = IslandWindow::new(
                 &self.application,
@@ -1083,6 +1104,9 @@ impl Controller {
                     tarragon_status,
                     tarragon_reload,
                     load_preview,
+                    media_play_pause,
+                    media_next,
+                    media_previous,
                 },
                 self.animations,
             );
