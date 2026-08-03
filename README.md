@@ -43,6 +43,19 @@ cargo build --release
 sudo install -Dm755 target/release/mithshell /usr/bin/mithshell
 ```
 
+With [`just`](https://github.com/casey/just), run `just` to list the project
+recipes. The complete local user-service deployment is:
+
+```sh
+just run
+```
+
+This builds the release binary, symlinks it to `~/.local/bin/mithshell`, keeps
+any existing config (or installs the example on first use), symlinks the
+systemd user unit, and restarts `mithshell.service`. Useful development recipes
+include `just check`, `just daemon`, `just search`, `just status`, and
+`just service-logs`.
+
 Start it from Hyprland:
 
 ```conf
