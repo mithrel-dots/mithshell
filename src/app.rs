@@ -13,7 +13,7 @@ use log::{error, info, warn};
 
 use crate::{
     cli::{self, Cli, Command, ThemeCommand, ThemeModeArg},
-    config::{self, AppConfig, ThemeMode, ThemeSource},
+    config::{self, AppConfig, PaletteEngine, ThemeMode, ThemeSource},
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
     latency, media,
@@ -344,6 +344,7 @@ impl Controller {
         controller.attach_tarragon(tarragon_event_receiver);
         controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
+        controller.attach_gtk_theme_watch();
 
         Ok(controller)
     }
@@ -588,6 +589,39 @@ impl Controller {
                 }
             }
         });
+    }
+
+    /// Regenerates the palette whenever the system GTK theme changes, so
+    /// `theme.engine = "gtk"` tracks live theme/light-dark switches instead
+    /// of only updating on the next `mithshell reload` or restart.
+    /// No-op when the active engine is Material, since that palette is
+    /// independent of the system theme.
+    fn attach_gtk_theme_watch(self: &Rc<Self>) {
+        let Some(settings) = gtk::Settings::default() else {
+            warn!("no GTK settings available; theme.engine = \"gtk\" will not live-update");
+            return;
+        };
+
+        let weak = Rc::downgrade(self);
+        settings.connect_gtk_application_prefer_dark_theme_notify(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                controller.regenerate_gtk_palette();
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        settings.connect_notify_local(Some("gtk-theme-name"), move |_, _| {
+            if let Some(controller) = weak.upgrade() {
+                controller.regenerate_gtk_palette();
+            }
+        });
+    }
+
+    fn regenerate_gtk_palette(self: &Rc<Self>) {
+        let config = self.theme_config.borrow().clone();
+        if matches!(config.engine, PaletteEngine::Gtk) {
+            self.generate_theme(config);
+        }
     }
 
     fn handle_command(self: &Rc<Self>, command: IpcCommand) -> Response {
