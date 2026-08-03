@@ -186,12 +186,10 @@ is exported atomically to `$XDG_STATE_HOME/mithshell/palette.json`.
 
 #### Inheriting the GTK theme
 
-Set `engine = "gtk"` to skip generation entirely and alias the `@ms_*` roles
-to the active GTK theme's standard named colors instead (`@accent_color`,
-`@window_bg_color`, `@borders`, ...) -- the same convention libadwaita and
-virtually every modern GTK4 theme ships in its `gtk.css`. Mithshell then
-tracks your system theme, including light/dark switches, with no
-configuration beyond:
+Set `engine = "gtk"` to skip generation entirely and resolve the `@ms_*`
+roles from the active GTK theme's standard named colors instead
+(`@accent_color`, `@window_bg_color`, `@borders`, ...) -- the same convention
+libadwaita and virtually every modern GTK4 theme ships in its `gtk.css`:
 
 ```toml
 [theme]
@@ -199,8 +197,23 @@ engine = "gtk"
 ```
 
 `mode`/`variant`/`source` are ignored in this mode. `mithshell theme current`
-and `palette.json` still report resolved hex values, read once from the
-active theme via a GTK style context lookup.
+and `palette.json` report resolved hex values, read via a GTK style context
+lookup.
+
+Mithshell watches `Gtk.Settings` and regenerates automatically when the
+active theme name or the dark/light preference changes live (e.g. through a
+theme switcher that goes through the XSETTINGS/portal mechanism). Two things
+it can't do anything about, because they're inherent to how GTK loads theme
+CSS:
+
+- Hand-editing colors directly in a theme's `gtk.css`/`gtk-4.0/gtk.css`
+  requires restarting mithshell (like any other GTK4 app) -- GTK only parses
+  that file once per process. Prefer `colors.css` (below) if you want colors
+  you can edit and reload without restarting anything.
+- An explicit `gtk-application-prefer-dark-theme=`/`gtk-theme-name=` line in
+  `~/.config/gtk-4.0/settings.ini` is a hard pin that GTK will not override
+  from a live portal/XSETTINGS change; remove it if you want mithshell (and
+  other apps) to follow live light/dark switches.
 
 #### Custom CSS
 
