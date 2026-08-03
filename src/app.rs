@@ -16,7 +16,7 @@ use crate::{
     config::{self, AppConfig, ThemeMode, ThemeSource},
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
-    media,
+    latency, media,
     preview::{self, PreviewEvent, PreviewRequest},
     state::{AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot},
     system,
@@ -37,10 +37,13 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
+    let is_latency = matches!(command, Command::Latency { .. });
     let (request, print_json) = command_request(command)?;
     let response = ipc::send(&socket_path, &request)?;
     if print_json {
         println!("{}", serde_json::to_string_pretty(&response)?);
+    } else if is_latency {
+        print_latency_report(&response);
     } else if let Some(data) = &response.data {
         println!("{}", serde_json::to_string_pretty(data)?);
     } else {
@@ -50,6 +53,58 @@ fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
         bail!(response.message);
     }
     Ok(())
+}
+
+/// Renders the latency spans as a fixed-width table, in the same shape as
+/// `tarragon bench` so the two are easy to read side by side.
+fn print_latency_report(response: &Response) {
+    let Some(spans) = response
+        .data
+        .as_ref()
+        .and_then(|data| data.get("spans"))
+        .and_then(|spans| spans.as_object())
+    else {
+        println!("{}", response.message);
+        return;
+    };
+    if spans.is_empty() {
+        println!("{}", response.message);
+        println!("no samples recorded yet");
+        return;
+    }
+
+    println!("Mithshell search latency");
+    println!();
+    println!(
+        "{:<10}  {:>5}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
+        "Span", "Runs", "Avg ms", "Min ms", "P50 ms", "P95 ms", "Max ms"
+    );
+    println!("{}", "-".repeat(68));
+    // Fixed pipeline order rather than the map's ordering.
+    for name in ["debounce", "write", "backend", "build", "paint", "total"] {
+        let Some(span) = spans.get(name) else {
+            continue;
+        };
+        let number = |key: &str| {
+            span.get(key)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        let count = span
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        println!(
+            "{:<10}  {:>5}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}",
+            name,
+            count,
+            number("avg_ms"),
+            number("min_ms"),
+            number("p50_ms"),
+            number("p95_ms"),
+            number("max_ms"),
+        );
+    }
 }
 
 fn command_request(command: Command) -> Result<(Request, bool)> {
@@ -86,6 +141,13 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
         Command::Status { json: print_json } => {
             json = print_json;
             IpcCommand::Status
+        }
+        Command::Latency {
+            json: print_json,
+            reset,
+        } => {
+            json = print_json;
+            IpcCommand::Latency { reset }
         }
         Command::Theme { command } => match command {
             ThemeCommand::Set {
@@ -141,6 +203,9 @@ fn run_daemon(
     let config_path = config::config_path(config_override)?;
     let config = AppConfig::load(&config_path)?;
     ipc::prepare_runtime_socket(&socket_path)?;
+    if latency::init() {
+        info!("latency tracing enabled; read it with `mithshell latency`");
+    }
 
     let application = Application::builder()
         .application_id("dev.mithrel.mithshell")
@@ -439,6 +504,7 @@ impl Controller {
                         }
                     }
                     TarragonEvent::Results(snapshot) => {
+                        latency::mark_results();
                         for island in controller.islands.borrow().values() {
                             island.update_tarragon_results(&snapshot);
                         }
@@ -601,6 +667,20 @@ impl Controller {
                     "palette": &*self.palette.borrow(),
                 });
                 Ok(Response::with_data("daemon is running", data))
+            }
+            IpcCommand::Latency { reset } => {
+                if reset {
+                    latency::reset();
+                    return Ok(Response::ok("latency samples cleared"));
+                }
+                if latency::enabled() {
+                    Ok(Response::with_data("latency report", latency::report()))
+                } else {
+                    Ok(Response::with_data(
+                        "latency tracing is disabled; restart the daemon with MITHSHELL_TRACE_LATENCY=1",
+                        latency::report(),
+                    ))
+                }
             }
             IpcCommand::ThemeSet {
                 source,

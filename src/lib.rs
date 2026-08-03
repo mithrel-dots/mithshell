@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod hyprland;
 pub mod ipc;
+pub mod latency;
 pub mod media;
 pub mod preview;
 pub mod state;

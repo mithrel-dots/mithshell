@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 const SOCKET_PATH: &str = "/tmp/tarragon-ui.sock";
 const CLIENT_ID: &str = "mithshell";
 const RETRY_DELAY: Duration = Duration::from_secs(1);
-const READ_TIMEOUT: Duration = Duration::from_millis(100);
+const READ_TIMEOUT: Duration = Duration::from_millis(30);
 
 #[derive(Debug, Clone)]
 pub enum TarragonCommand {
@@ -236,7 +236,11 @@ fn run_connection(
 
     loop {
         while let Ok(command) = command_receiver.try_recv() {
+            let is_query = matches!(command, TarragonCommand::Query(_));
             write_command(&mut writer, &command)?;
+            if is_query {
+                crate::latency::mark_write();
+            }
             if matches!(command, TarragonCommand::Select(_)) {
                 pending_selection = true;
             }

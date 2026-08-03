@@ -607,6 +607,8 @@ impl IslandWindow {
         }
         self.search_status.set_label(&status);
         self.render_plugin_list();
+        // t4: main-thread widget work for this snapshot is complete.
+        crate::latency::mark_build();
     }
 
     pub fn update_tarragon_status(self: &Rc<Self>, status: &TarragonStatus) {
@@ -1163,6 +1165,14 @@ impl IslandWindow {
             };
             let results_active = island.search_open.get()
                 && island.search_stack.visible_child_name().as_deref() == Some("results");
+            // t0: capture the moment a text-mutating key arrives, before the
+            // entry's own search-delay and the debounce timer run.
+            if island.search_open.get()
+                && (key.to_unicode().is_some()
+                    || matches!(key, gdk::Key::BackSpace | gdk::Key::Delete))
+            {
+                crate::latency::mark_keystroke();
+            }
             match key {
                 gdk::Key::Escape => {
                     island.close();
@@ -1180,6 +1190,16 @@ impl IslandWindow {
             }
         });
         self.window.add_controller(overlay_keys);
+
+        // t5: the frame carrying the updated results reached the compositor.
+        // Only wired when tracing is on, so normal runs pay nothing.
+        if crate::latency::enabled() {
+            self.window.connect_realize(|window| {
+                if let Some(clock) = window.frame_clock() {
+                    clock.connect_after_paint(|_| crate::latency::mark_paint());
+                }
+            });
+        }
 
         for workspaces in [&self.compact_workspaces, &self.media_workspaces] {
             let scroll = gtk::EventControllerScroll::new(
@@ -1382,6 +1402,7 @@ impl IslandWindow {
                 && island.search_open.get()
                 && island.search_generation.get() == generation
             {
+                crate::latency::mark_dispatch();
                 (island.actions.search)(text);
             }
         });

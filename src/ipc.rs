@@ -58,6 +58,9 @@ pub enum IpcCommand {
     },
     Reload,
     Status,
+    Latency {
+        reset: bool,
+    },
     ThemeSet {
         source: ThemeSource,
         mode: Option<ThemeMode>,

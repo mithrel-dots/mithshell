@@ -65,6 +65,17 @@ pub enum Command {
         json: bool,
     },
 
+    /// Report search latency percentiles collected with MITHSHELL_TRACE_LATENCY=1.
+    Latency {
+        /// Print the full machine-readable latency report.
+        #[arg(long)]
+        json: bool,
+
+        /// Discard collected samples instead of reporting them.
+        #[arg(long)]
+        reset: bool,
+    },
+
     /// Generate and inspect Material You color schemes.
     Theme {
         #[command(subcommand)]
