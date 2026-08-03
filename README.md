@@ -189,7 +189,8 @@ is exported atomically to `$XDG_STATE_HOME/mithshell/palette.json`.
 Set `engine = "gtk"` to skip generation entirely and resolve the `@ms_*`
 roles from the active GTK theme's standard named colors instead
 (`@accent_color`, `@window_bg_color`, `@borders`, ...) -- the same convention
-libadwaita and virtually every modern GTK4 theme ships in its `gtk.css`:
+libadwaita, matugen's `gtk4` template, wallust, and virtually every modern
+GTK4 theme all use:
 
 ```toml
 [theme]
@@ -197,23 +198,26 @@ engine = "gtk"
 ```
 
 `mode`/`variant`/`source` are ignored in this mode. `mithshell theme current`
-and `palette.json` report resolved hex values, read via a GTK style context
-lookup.
+and `palette.json` report the resolved hex values.
 
-Mithshell watches `Gtk.Settings` and regenerates automatically when the
-active theme name or the dark/light preference changes live (e.g. through a
-theme switcher that goes through the XSETTINGS/portal mechanism). Two things
-it can't do anything about, because they're inherent to how GTK loads theme
-CSS:
+Mithshell reads and watches `$XDG_CONFIG_HOME/gtk-4.0/gtk.css` directly for
+this (parsing `@define-color` lines itself, including simple `@other-name`
+aliases) rather than relying on GTK's own cascade, and regenerates the
+palette whenever that file changes on disk. This is what makes tools like
+matugen/wallust rewriting it after a wallpaper change take effect live,
+with no `mithshell reload` or restart needed -- GTK itself only parses that
+file once per process, so nothing else watching the display's style
+cascade could ever pick up edits to it live.
 
-- Hand-editing colors directly in a theme's `gtk.css`/`gtk-4.0/gtk.css`
-  requires restarting mithshell (like any other GTK4 app) -- GTK only parses
-  that file once per process. Prefer `colors.css` (below) if you want colors
-  you can edit and reload without restarting anything.
-- An explicit `gtk-application-prefer-dark-theme=`/`gtk-theme-name=` line in
-  `~/.config/gtk-4.0/settings.ini` is a hard pin that GTK will not override
-  from a live portal/XSETTINGS change; remove it if you want mithshell (and
-  other apps) to follow live light/dark switches.
+If that file is absent or doesn't define any of the roles mithshell needs,
+it falls back to a live GTK style context lookup against whatever theme is
+currently active, refreshed whenever `Gtk.Settings`' theme name or dark/light
+preference changes (e.g. through a theme switcher going through the
+XSETTINGS/portal mechanism). Note an explicit
+`gtk-application-prefer-dark-theme=`/`gtk-theme-name=` line in
+`~/.config/gtk-4.0/settings.ini` is a hard pin that GTK won't override from a
+live portal/XSETTINGS change; remove it if you want that fallback path to
+follow live light/dark switches too.
 
 #### Custom CSS
 
