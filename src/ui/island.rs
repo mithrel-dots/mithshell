@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gtk::{
@@ -35,10 +35,14 @@ const SEARCH_WIDTH: i32 = 820;
 const SEARCH_HEIGHT: i32 = 620;
 const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
 const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
-/// Coalescing window between a keystroke and the query reaching TarraGon.
-/// TarraGon answers in well under a millisecond, so this only needs to be long
-/// enough to skip intermediate keystrokes during a fast burst of typing.
-const SEARCH_DEBOUNCE: Duration = Duration::from_millis(30);
+/// Minimum spacing between dispatched queries.
+///
+/// This throttles on the leading edge: the first keystroke after an idle
+/// period is sent immediately, and only a burst faster than this window (held
+/// keys repeating, or a very fast typist) is coalesced. A trailing debounce
+/// would instead tax every keystroke, which is pure cost given TarraGon
+/// answers in well under a millisecond.
+const SEARCH_THROTTLE: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Clone, Copy)]
 struct Metrics {
@@ -246,6 +250,8 @@ pub struct IslandWindow {
     /// against this rather than the live entry text, so results still land
     /// when the user has typed ahead of the query that is in flight.
     search_dispatched: RefCell<Option<String>>,
+    /// When the last query was sent, for the leading-edge throttle.
+    last_search_dispatch: Cell<Option<Instant>>,
     search_snapshot: RefCell<Option<TarragonSnapshot>>,
     search_backend_status: RefCell<Option<TarragonStatus>>,
     osd_active: Cell<bool>,
@@ -446,6 +452,7 @@ impl IslandWindow {
             search_selection_pending: Cell::new(false),
             search_preview_key: RefCell::new(None),
             search_dispatched: RefCell::new(None),
+            last_search_dispatch: Cell::new(None),
             search_snapshot: RefCell::new(None),
             search_backend_status: RefCell::new(None),
             osd_active: Cell::new(false),
@@ -1413,17 +1420,36 @@ impl IslandWindow {
             return;
         }
         self.search_status.set_label("SEARCHING");
+
+        // Leading edge: nothing dispatched recently, so send immediately.
+        let now = Instant::now();
+        let ready = self
+            .last_search_dispatch
+            .get()
+            .is_none_or(|last| now.duration_since(last) >= SEARCH_THROTTLE);
+        if ready {
+            self.dispatch_search(text);
+            return;
+        }
+
+        // Inside the window: coalesce until it closes. The generation check
+        // means only the final keystroke of the burst is actually sent.
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(SEARCH_DEBOUNCE, move || {
+        glib::timeout_add_local_once(SEARCH_THROTTLE, move || {
             if let Some(island) = weak.upgrade()
                 && island.search_open.get()
                 && island.search_generation.get() == generation
             {
-                crate::latency::mark_dispatch();
-                *island.search_dispatched.borrow_mut() = Some(text.clone());
-                (island.actions.search)(text);
+                island.dispatch_search(text);
             }
         });
+    }
+
+    fn dispatch_search(self: &Rc<Self>, text: String) {
+        crate::latency::mark_dispatch();
+        self.last_search_dispatch.set(Some(Instant::now()));
+        *self.search_dispatched.borrow_mut() = Some(text.clone());
+        (self.actions.search)(text);
     }
 
     fn move_search_selection(&self, offset: i32) {
