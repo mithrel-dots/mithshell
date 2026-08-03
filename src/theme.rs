@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use gtk::prelude::*;
 use material_colors::{
     color::Argb,
     dynamic_color::Variant,
@@ -15,7 +16,10 @@ use material_colors::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{ThemeConfig, ThemeMode, ThemeSource, ThemeVariant, expand_home, state_dir},
+    config::{
+        DEFAULT_SOURCE_COLOR, PaletteEngine, ThemeConfig, ThemeMode, ThemeSource, ThemeVariant,
+        expand_home, state_dir,
+    },
     state::Palette,
 };
 
@@ -28,7 +32,17 @@ pub struct ThemeOverride {
     pub mode: ThemeMode,
 }
 
+/// Generates a palette per `config.engine`. The GTK engine touches GTK
+/// widgets and must be called from the main thread; the Material engine does
+/// not depend on GTK and is safe to call from a background thread.
 pub fn generate(config: &ThemeConfig) -> Result<Palette> {
+    match config.engine {
+        PaletteEngine::Material => generate_material(config),
+        PaletteEngine::Gtk => Ok(generate_gtk()),
+    }
+}
+
+fn generate_material(config: &ThemeConfig) -> Result<Palette> {
     let source = source_color(&config.source)?;
     let theme = ThemeBuilder::with_source(source)
         .variant(variant(config.variant))
@@ -38,6 +52,70 @@ pub fn generate(config: &ThemeConfig) -> Result<Palette> {
         ThemeMode::Light => &theme.schemes.light,
     };
     Ok(palette(source, config.mode, scheme))
+}
+
+/// Builds a palette by resolving the active GTK theme's standard named
+/// colors (the same `@accent_color`/`@window_bg_color`/... convention
+/// libadwaita and most modern GTK4 themes ship in their `gtk.css`), so
+/// mithshell follows the system theme instead of generating its own scheme.
+/// Falls back to the default Material You source color for any name the
+/// active theme doesn't define.
+///
+/// `StyleContext::lookup_color` has been deprecated since GTK 4.10 with no
+/// direct replacement for resolving a named color to RGBA outside of a
+/// stylesheet; it remains the only way to read the current theme's palette
+/// and continues to function correctly.
+#[allow(deprecated)]
+pub fn generate_gtk() -> Palette {
+    let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let context = widget.style_context();
+    let lookup = |names: &[&str], fallback: &str| -> String {
+        for name in names {
+            if let Some(rgba) = context.lookup_color(name) {
+                return hex(Argb::new(
+                    255,
+                    (rgba.red() * 255.0).round() as u8,
+                    (rgba.green() * 255.0).round() as u8,
+                    (rgba.blue() * 255.0).round() as u8,
+                ));
+            }
+        }
+        fallback.to_owned()
+    };
+    let mode = gtk::Settings::default()
+        .map(|settings| {
+            if settings.is_gtk_application_prefer_dark_theme() {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            }
+        })
+        .unwrap_or_default();
+
+    let on_primary = lookup(&["accent_fg_color", "theme_selected_fg_color"], "#ffffff");
+    let outline = lookup(&["borders", "unfocused_borders"], "#79747e");
+    Palette {
+        source: "gtk-theme".to_owned(),
+        mode,
+        primary: lookup(
+            &["accent_color", "theme_selected_bg_color"],
+            DEFAULT_SOURCE_COLOR,
+        ),
+        on_primary: on_primary.clone(),
+        primary_container: lookup(&["accent_bg_color", "accent_color"], DEFAULT_SOURCE_COLOR),
+        on_primary_container: on_primary,
+        secondary: lookup(&["accent_color"], DEFAULT_SOURCE_COLOR),
+        tertiary: lookup(&["accent_color"], DEFAULT_SOURCE_COLOR),
+        surface: lookup(&["window_bg_color", "theme_bg_color"], "#141318"),
+        surface_container_low: lookup(&["view_bg_color", "theme_base_color"], "#1d1b20"),
+        surface_container: lookup(&["headerbar_bg_color", "window_bg_color"], "#211f26"),
+        surface_container_high: lookup(&["popover_bg_color", "headerbar_bg_color"], "#2b2930"),
+        on_surface: lookup(&["window_fg_color", "theme_fg_color"], "#e6e0e9"),
+        on_surface_variant: lookup(&["insensitive_fg_color", "view_fg_color"], "#cac4d0"),
+        outline: outline.clone(),
+        outline_variant: outline,
+        error: lookup(&["error_color"], "#ffb4ab"),
+    }
 }
 
 pub fn load_override() -> Result<Option<ThemeOverride>> {
