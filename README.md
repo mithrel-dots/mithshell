@@ -216,3 +216,35 @@ cargo clippy --all-targets -- -D warnings
 
 Set `RUST_LOG=mithshell=debug` for IPC and service diagnostics. The daemon also
 accepts `--no-animations` for debugging or reduced-motion setups.
+
+### Rendering
+
+The daemon defaults to GTK's cairo renderer. The island is a small 2D surface,
+so GPU compositing gains little while mapping the whole driver stack into a
+session-long process; on an NVIDIA system this is the difference between
+224 MB and 85 MB of RSS. Export `GSK_RENDERER` to override it, for example
+`GSK_RENDERER=ngl`.
+
+### Benchmarking
+
+Search latency is instrumented behind an environment variable, so it costs
+nothing unless you ask for it:
+
+```sh
+just trace-on        # restart the service with MITHSHELL_TRACE_LATENCY=1
+just bench-latency   # drive the launcher with wtype, then print percentiles
+just bench-memory    # RSS, PSS, private dirty, largest mappings, surfaces
+just trace-off       # restart without tracing
+```
+
+`mithshell latency` prints the collected report on demand and
+`mithshell latency --reset` clears it. Six spans are measured from the real key
+event through to the frame that paints the results: `debounce` (keystroke to
+query dispatched), `write` (dispatch to socket flush), `backend` (TarraGon
+round trip), `build` (main-thread widget update), `paint` (frame presented),
+and `total`.
+
+Reading the numbers: `backend` is TarraGon's own cost, `build` is the shell's
+rendering work, and `paint` is mostly waiting for the next vsync, so it has a
+floor of roughly one frame interval.
+
