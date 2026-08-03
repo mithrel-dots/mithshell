@@ -35,3 +35,12 @@ tree-sitter-toml-ng = "0.7.0"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-yaml = "0.7.2"
 wait-timeout = "0.2.1"
+
+[profile.release]
+# A long-lived shell daemon benefits more from a small resident image than
+# from aggressive inlining. LTO in particular lets the linker discard the
+# unused parts of the bundled tree-sitter grammars and image decoders.
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
