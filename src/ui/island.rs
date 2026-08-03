@@ -43,6 +43,10 @@ const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
 /// would instead tax every keystroke, which is pure cost given TarraGon
 /// answers in well under a millisecond.
 const SEARCH_THROTTLE: Duration = Duration::from_millis(16);
+/// How long a selection must hold still before its file preview is loaded.
+/// Previews can spawn ffprobe or ffmpegthumbnailer, so unlike a query they are
+/// far too expensive to issue for every intermediate row.
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(80);
 
 #[derive(Debug, Clone, Copy)]
 struct Metrics {
@@ -665,6 +669,13 @@ impl IslandWindow {
     }
 
     fn render_plugin_list(&self) {
+        // The plugin pane is a separate stack page. Rebuilding roughly seven
+        // widgets per plugin on every streamed snapshot is invisible work when
+        // the pane is not on screen, and TarraGon sends one snapshot per plugin
+        // completion.
+        if !self.search_plugin_toggle.is_active() {
+            return;
+        }
         clear_list_box(&self.search_plugins);
         let status = self.search_backend_status.borrow();
         let Some(status) = status.as_ref() else {
@@ -788,7 +799,17 @@ impl IslandWindow {
             } else {
                 self.search_preview_file_meta
                     .set_label("LOADING FILE METADATA");
-                (self.actions.load_preview)(generation, result.preview_path.clone());
+                // Held arrow keys walk the list faster than a preview can be
+                // produced, so wait out the burst before touching the disk.
+                let weak = Rc::downgrade(self);
+                let path = result.preview_path.clone();
+                glib::timeout_add_local_once(PREVIEW_DEBOUNCE, move || {
+                    if let Some(island) = weak.upgrade()
+                        && island.preview_generation.get() == generation
+                    {
+                        (island.actions.load_preview)(generation, path);
+                    }
+                });
             }
         }
 
@@ -1125,6 +1146,9 @@ impl IslandWindow {
             if let Some(island) = weak.upgrade() {
                 if button.is_active() {
                     island.search_stack.set_visible_child_name("plugins");
+                    // Rendering is skipped while the pane is hidden, so build
+                    // it now that it is about to be shown.
+                    island.render_plugin_list();
                     island.show_plugin_summary();
                     (island.actions.tarragon_status)();
                 } else {

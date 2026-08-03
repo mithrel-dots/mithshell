@@ -294,13 +294,33 @@ pub fn start_loader(
 fn run_loader(receiver: Receiver<PreviewRequest>, sender: Sender<PreviewEvent>) {
     let mut engine = PreviewEngine::new();
     while let Ok(request) = receiver.recv_blocking() {
-        let result = engine.load(&request.path);
-        let _ = sender.send_blocking(PreviewEvent {
-            monitor: request.monitor,
-            generation: request.generation,
-            result,
-        });
+        let pending = coalesce_requests(request, std::iter::from_fn(|| receiver.try_recv().ok()));
+        for request in pending {
+            let result = engine.load(&request.path);
+            let _ = sender.send_blocking(PreviewEvent {
+                monitor: request.monitor,
+                generation: request.generation,
+                result,
+            });
+        }
     }
+}
+
+/// Keeps only the newest queued request per monitor.
+///
+/// Arrowing through results queues one request per row. Loading each in turn
+/// can mean serial ffprobe and ffmpegthumbnailer runs whose output is thrown
+/// away on arrival because the selection already moved on.
+fn coalesce_requests(
+    first: PreviewRequest,
+    rest: impl Iterator<Item = PreviewRequest>,
+) -> Vec<PreviewRequest> {
+    let mut pending: HashMap<String, PreviewRequest> = HashMap::new();
+    pending.insert(first.monitor.clone(), first);
+    for request in rest {
+        pending.insert(request.monitor.clone(), request);
+    }
+    pending.into_values().collect()
 }
 
 fn build_configuration(language: LanguageKind) -> Result<HighlightConfiguration, String> {
@@ -825,6 +845,47 @@ struct FfprobeFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(monitor: &str, generation: u64, path: &str) -> PreviewRequest {
+        PreviewRequest {
+            monitor: monitor.to_owned(),
+            generation,
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn only_the_newest_request_per_monitor_is_loaded() {
+        let pending = coalesce_requests(
+            request("DP-1", 1, "/a"),
+            [
+                request("DP-1", 2, "/b"),
+                request("DP-2", 7, "/c"),
+                request("DP-1", 3, "/d"),
+            ]
+            .into_iter(),
+        );
+
+        assert_eq!(pending.len(), 2, "one request survives per monitor");
+        let dp1 = pending
+            .iter()
+            .find(|request| request.monitor == "DP-1")
+            .unwrap();
+        assert_eq!(dp1.generation, 3, "superseded requests are dropped");
+        assert_eq!(dp1.path, PathBuf::from("/d"));
+        let dp2 = pending
+            .iter()
+            .find(|request| request.monitor == "DP-2")
+            .unwrap();
+        assert_eq!(dp2.generation, 7, "other monitors are not discarded");
+    }
+
+    #[test]
+    fn a_lone_request_is_preserved() {
+        let pending = coalesce_requests(request("DP-1", 1, "/a"), std::iter::empty());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].generation, 1);
+    }
 
     fn temporary_path(extension: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
