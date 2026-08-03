@@ -12,6 +12,11 @@ scale = 0
 max_width_factor = 1.8
 
 [theme]
+# "material" generates a Material You scheme from theme.source below.
+# "gtk" instead inherits the active GTK theme's named colors
+# (@accent_color, @window_bg_color, @borders, ...) and ignores
+# mode/variant/source entirely.
+engine = "material"
 mode = "dark"
 variant = "tonal-spot"
 
@@ -23,3 +28,8 @@ value = "#9aa7ff"
 # [theme.source]
 # kind = "image"
 # path = "/home/you/Pictures/wallpaper.jpg"
+
+# A "colors.css" file placed next to this config.toml, if present, is
+# loaded as a higher-priority stylesheet layered on top of whichever
+# engine is active above. It can override individual @ms_* colors, or
+# any other selector in the built-in stylesheet. See colors.example.css.

@@ -77,6 +77,9 @@ impl Default for MediaConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeConfig {
+    /// Where palette colors come from: generated Material You, or inherited
+    /// from the active GTK theme's named colors.
+    pub engine: PaletteEngine,
     pub mode: ThemeMode,
     pub variant: ThemeVariant,
     pub source: ThemeSource,
@@ -85,6 +88,7 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
+            engine: PaletteEngine::Material,
             mode: ThemeMode::Dark,
             variant: ThemeVariant::TonalSpot,
             source: ThemeSource::Color {
@@ -92,6 +96,19 @@ impl Default for ThemeConfig {
             },
         }
     }
+}
+
+/// Selects how the `ms_*` role colors used by `style.css` are produced.
+/// `mode`/`variant`/`source` only apply when `engine = "material"`.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PaletteEngine {
+    /// Generate a Material You scheme from `source` (color or image).
+    #[default]
+    Material,
+    /// Alias the palette to the active GTK theme's standard named colors
+    /// (`@accent_color`, `@window_bg_color`, `@borders`, ...).
+    Gtk,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -140,6 +157,14 @@ pub fn config_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
     Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?
         .join("mithshell")
         .join("config.toml"))
+}
+
+/// Path to an optional user stylesheet living next to `config.toml`. When
+/// present, its contents are loaded as a higher-priority CSS provider layered
+/// on top of the generated/inherited palette, so it can override individual
+/// `@ms_*` colors or arbitrary widget rules.
+pub fn colors_css_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("colors.css")
 }
 
 pub fn state_dir() -> Result<PathBuf> {
@@ -217,6 +242,33 @@ mod tests {
         assert_eq!(config.shell.monitors, ["DP-1"]);
         assert!(matches!(config.theme.source, ThemeSource::Image { .. }));
         assert_eq!(config.media.max_width_factor, 1.8);
+    }
+
+    #[test]
+    fn defaults_to_material_engine() {
+        assert_eq!(ThemeConfig::default().engine, PaletteEngine::Material);
+    }
+
+    #[test]
+    fn parses_gtk_engine() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [theme]
+            engine = "gtk"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.theme.engine, PaletteEngine::Gtk);
+    }
+
+    #[test]
+    fn derives_colors_css_path_next_to_config() {
+        let config_path = PathBuf::from("/home/user/.config/mithshell/config.toml");
+        assert_eq!(
+            colors_css_path(&config_path),
+            PathBuf::from("/home/user/.config/mithshell/colors.css")
+        );
     }
 
     #[test]
