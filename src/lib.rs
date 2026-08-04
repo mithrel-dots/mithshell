@@ -1,6 +1,7 @@
 pub mod app;
 pub mod cli;
 pub mod config;
+pub mod http;
 pub mod hyprland;
 pub mod ipc;
 pub mod latency;

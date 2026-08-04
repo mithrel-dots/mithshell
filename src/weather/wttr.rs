@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use log::warn;
 use serde::Deserialize;
 
+use crate::http;
 use crate::state::{WeatherCondition, WeatherDay, WeatherState};
 
-use super::{curl, pad_forecast, url_encode, weekday_label};
+use super::{pad_forecast, url_encode, weekday_label};
 
 /// wttr.in's machine-readable `j1` format; without a path segment it
 /// geolocates by source IP, so no location needs to be configured.
@@ -15,13 +16,13 @@ pub(super) fn fetch(city: Option<&str>) -> Result<WeatherState> {
         Some(city) => format!("https://wttr.in/{}?format=j1", url_encode(city)),
         None => WTTR_URL.to_owned(),
     };
-    match curl(&url) {
+    match http::get(&url) {
         Ok(body) => parse_response(&body),
         Err(error) if city.is_some() => {
             warn!(
                 "wttr.in rejected the configured city, falling back to IP geolocation: {error:#}"
             );
-            parse_response(&curl(WTTR_URL)?)
+            parse_response(&http::get(WTTR_URL)?)
         }
         Err(error) => Err(error),
     }

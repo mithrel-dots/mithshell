@@ -1,6 +1,6 @@
-use std::{process::Command, thread, time::Duration};
+use std::{thread, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use async_channel::Sender;
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -74,24 +74,6 @@ pub fn start_poller(
             thread::sleep(sleep_for);
         }
     })
-}
-
-/// Runs `curl` against `url` and returns the response body as a string.
-fn curl(url: &str) -> Result<String> {
-    let output = Command::new("curl")
-        .args(["-fsS", "--max-time", "8", url])
-        .output()
-        .context("failed to run curl")?;
-    if !output.status.success() {
-        bail!("curl exited with {}", output.status);
-    }
-    String::from_utf8(output.stdout).context("response was not UTF-8")
-}
-
-/// Runs `curl` against `url` and parses the response body as JSON.
-fn curl_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
-    let body = curl(url)?;
-    serde_json::from_str(&body).context("invalid JSON response")
 }
 
 /// Julian day number of a proleptic Gregorian date, per Richards' algorithm.

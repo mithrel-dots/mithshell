@@ -2,9 +2,10 @@ use anyhow::{Context, Result, bail};
 use log::warn;
 use serde::Deserialize;
 
+use crate::http;
 use crate::state::{WeatherCondition, WeatherDay, WeatherState};
 
-use super::{curl, curl_json, pad_forecast, url_encode, weekday_label};
+use super::{pad_forecast, url_encode, weekday_label};
 
 /// Free, keyless IP geolocation used to resolve coordinates for the forecast
 /// request, matching wttr.in's "no configuration needed" behavior.
@@ -37,12 +38,12 @@ pub(super) fn fetch(city: Option<&str>) -> Result<WeatherState> {
         lat = geo.latitude,
         lon = geo.longitude,
     );
-    let body = curl(&url)?;
+    let body = http::get(&url)?;
     parse_response(&body, &geo)
 }
 
 fn ip_geocode() -> Result<GeoResponse> {
-    let geo: GeoResponse = curl_json(GEO_URL)?;
+    let geo: GeoResponse = http::get_json(GEO_URL)?;
     if !geo.success {
         bail!("IP geolocation failed");
     }
@@ -54,7 +55,7 @@ fn geocode(city: &str) -> Result<GeoResponse> {
         "{GEOCODING_URL}?name={}&count=1&language=en&format=json",
         url_encode(city)
     );
-    let response: GeocodingResponse = curl_json(&url)?;
+    let response: GeocodingResponse = http::get_json(&url)?;
     let result = response.results.first().context("no matching city found")?;
     Ok(GeoResponse {
         success: true,
