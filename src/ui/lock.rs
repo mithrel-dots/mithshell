@@ -567,6 +567,16 @@ impl LockSession {
 
     fn unlock_after_library_cleanup(&self) {
         self.unlocking.set(true);
+        // GTK 4.22.4 crashes in `gdk_wayland_toplevel_remove_from_session`
+        // when "window-removed" fires for a window whose surface is already
+        // gone, as happens for the lock surfaces during the C library's
+        // teardown. Detaching the windows first skips that path; the
+        // upstream NULL guard is unreleased (GNOME/gtk#8098).
+        for window in self.windows.borrow().values() {
+            if let Some(window) = window.window.upgrade() {
+                window.set_application(None::<&Application>);
+            }
+        }
         self.instance.unlock();
         self.unlocking.set(false);
         // The C library has finished destroying its assigned windows.
