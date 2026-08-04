@@ -53,7 +53,7 @@ window.mithshell-dismiss > contents {
 }
 
 .dashboard-content {
-  padding: 24px;
+  padding: 12px;
 }
 
 .eyebrow {
@@ -158,6 +158,11 @@ window.mithshell-dismiss > contents {
 .player-button.player-play {
   color: @ms_on_primary;
   background: @ms_primary;
+}
+
+.player-button.player-play image {
+  margin-left: 8px;
+  margin-top: 7px;
 }
 
 .player-button.player-play:hover {
@@ -529,7 +534,7 @@ scale.control-scale slider {
 .osd-icon {
   color: @ms_primary;
   -gtk-icon-size: 17px;
-}
+}No training on your business data by default
 
 .osd-title {
   min-width: 68px;
@@ -594,7 +599,7 @@ progressbar.osd-progress progress {
 .weather-day-label {
   color: @ms_primary;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.6px;
 }
@@ -616,6 +621,7 @@ progressbar.osd-progress progress {
 
 calendar.weather-calendar {
   padding: 2px 6px;
+  font-size: 20px;
   color: @ms_on_surface;
   background: alpha(@ms_surface_low, 0.9);
   border: 1px solid alpha(@ms_outline_variant, 0.26);

@@ -30,10 +30,8 @@ const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
 const MEDIA_HEIGHT: i32 = 32;
-const DASHBOARD_WIDTH: i32 = 440;
-// Tall enough for the header, the media player card, the current-window
-// card, workspaces, volume/brightness controls, and the palette footer.
-const DASHBOARD_HEIGHT: i32 = 400;
+const DASHBOARD_WIDTH: i32 = 420;
+const DASHBOARD_HEIGHT: i32 = 360;
 const OSD_WIDTH: i32 = 292;
 const OSD_HEIGHT: i32 = 36;
 const SEARCH_WIDTH: i32 = 820;
@@ -42,8 +40,8 @@ const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
 const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
 // Kept comfortably under SEARCH_HEIGHT/SEARCH_WIDTH, which size the shared
 // Fixed container every view is centered inside of.
-const WEATHER_WIDTH: i32 = 560;
-const WEATHER_HEIGHT: i32 = 430;
+const WEATHER_WIDTH: i32 = 320;
+const WEATHER_HEIGHT: i32 = 360;
 /// Minimum spacing between dispatched queries.
 ///
 /// This throttles on the leading edge: the first keystroke after an idle
