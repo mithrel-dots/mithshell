@@ -12,6 +12,7 @@ use gtk::{
 };
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
+use super::{resolved_scale, scaled};
 use crate::{
     config::{AppConfig, ShellConfig},
     ipc::OsdKind,
@@ -30,8 +31,8 @@ const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
 const MEDIA_HEIGHT: i32 = 32;
-const DASHBOARD_WIDTH: i32 = 420;
-const DASHBOARD_HEIGHT: i32 = 360;
+const DASHBOARD_WIDTH: i32 = 448;
+const DASHBOARD_HEIGHT: i32 = 400;
 const OSD_WIDTH: i32 = 292;
 const OSD_HEIGHT: i32 = 36;
 const SEARCH_WIDTH: i32 = 820;
@@ -77,8 +78,7 @@ struct Metrics {
 
 impl Metrics {
     fn new(monitor: &gdk::Monitor, configured_scale: f64, media_width_factor: f64) -> Self {
-        let automatic = (f64::from(monitor.geometry().width()) / 2560.0).clamp(1.0, 1.45);
-        let scale = resolved_scale(configured_scale, automatic);
+        let scale = resolved_scale(configured_scale, super::automatic_scale(monitor));
         let media_width_factor =
             media_width_factor.clamp(1.0, f64::from(DASHBOARD_WIDTH) / f64::from(COMPACT_WIDTH));
         let search_height = scaled(SEARCH_HEIGHT, scale);
@@ -110,13 +110,7 @@ impl Metrics {
     }
 
     fn css_class(self) -> Option<&'static str> {
-        if self.scale >= 1.35 {
-            Some("scale-large")
-        } else if self.scale >= 1.12 {
-            Some("scale-medium")
-        } else {
-            None
-        }
+        super::scale_class(self.scale)
     }
 }
 
@@ -278,6 +272,14 @@ pub struct IslandWindow {
     brightness_row: gtk::Box,
     brightness_scale: gtk::Scale,
     brightness_value: gtk::Label,
+    /// Placeholder notification center widgets (static "coming soon" copy
+    /// today). Kept as fields so a future notification-history feature can
+    /// populate `notification_list` and update `notification_count` without
+    /// touching the dashboard layout again.
+    #[allow(dead_code)]
+    notification_count: gtk::Label,
+    #[allow(dead_code)]
+    notification_list: gtk::Box,
     search_entry: gtk::SearchEntry,
     search_results: gtk::ListBox,
     search_status: gtk::Label,
@@ -525,6 +527,8 @@ impl IslandWindow {
             brightness_row: dashboard_widgets.brightness_row,
             brightness_scale: dashboard_widgets.brightness_scale,
             brightness_value: dashboard_widgets.brightness_value,
+            notification_count: dashboard_widgets.notification_count,
+            notification_list: dashboard_widgets.notification_list,
             search_entry: search_widgets.entry,
             search_results: search_widgets.results,
             search_status: search_widgets.status,
@@ -2631,6 +2635,8 @@ struct DashboardWidgets {
     brightness_row: gtk::Box,
     brightness_scale: gtk::Scale,
     brightness_value: gtk::Label,
+    notification_count: gtk::Label,
+    notification_list: gtk::Box,
     weather_button: gtk::Button,
     search_button: gtk::Button,
     close_button: gtk::Button,
@@ -2765,8 +2771,12 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     player_card.append(&player_switch_row);
     root.append(&player_card);
 
+    let status_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    status_row.add_css_class("status-row");
+
     let active_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
     active_card.add_css_class("active-card");
+    active_card.set_hexpand(true);
     let active_eyebrow = gtk::Label::new(Some("OUTPUT  //  WORKSPACE --"));
     active_eyebrow.add_css_class("eyebrow");
     active_eyebrow.set_halign(Align::Start);
@@ -2777,18 +2787,20 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     active_title.set_max_width_chars(48);
     active_card.append(&active_eyebrow);
     active_card.append(&active_title);
-    root.append(&active_card);
 
-    let workspace_line = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    let workspace_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
+    workspace_card.add_css_class("active-card");
     let workspace_label = gtk::Label::new(Some("WORKSPACES"));
     workspace_label.add_css_class("eyebrow");
-    workspace_label.set_hexpand(true);
     workspace_label.set_halign(Align::Start);
     let workspace_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
-    workspace_row.set_halign(Align::End);
-    workspace_line.append(&workspace_label);
-    workspace_line.append(&workspace_row);
-    root.append(&workspace_line);
+    workspace_row.set_halign(Align::Start);
+    workspace_card.append(&workspace_label);
+    workspace_card.append(&workspace_row);
+
+    status_row.append(&active_card);
+    status_row.append(&workspace_card);
+    root.append(&status_row);
 
     let controls = gtk::Box::new(Orientation::Vertical, 0);
     controls.add_css_class("controls-card");
@@ -2799,6 +2811,32 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     controls.append(&volume_row);
     controls.append(&brightness_row);
     root.append(&controls);
+
+    let notification_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
+    notification_card.add_css_class("notification-card");
+
+    let notification_header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    let notification_title = gtk::Label::new(Some("NOTIFICATIONS"));
+    notification_title.add_css_class("eyebrow");
+    notification_title.set_halign(Align::Start);
+    notification_title.set_hexpand(true);
+    let notification_count = gtk::Label::new(Some("0"));
+    notification_count.add_css_class("notification-count");
+    notification_header.append(&notification_title);
+    notification_header.append(&notification_count);
+    notification_card.append(&notification_header);
+
+    let notification_list = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
+    notification_list.add_css_class("notification-list");
+    let notification_placeholder =
+        gtk::Label::new(Some("No notifications yet -- live history is coming soon"));
+    notification_placeholder.add_css_class("muted-label");
+    notification_placeholder.add_css_class("notification-empty");
+    notification_placeholder.set_halign(Align::Start);
+    notification_placeholder.set_wrap(true);
+    notification_list.append(&notification_placeholder);
+    notification_card.append(&notification_list);
+    root.append(&notification_card);
 
     DashboardWidgets {
         root,
@@ -2828,6 +2866,8 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
         brightness_row,
         brightness_scale,
         brightness_value,
+        notification_count,
+        notification_list,
         weather_button,
         search_button,
         close_button,
@@ -3312,18 +3352,6 @@ fn media_state_for_player(state: &MediaState, service: Option<&str>) -> MediaSta
         can_go_previous: player.can_go_previous,
         status: player.status,
         players: state.players.clone(),
-    }
-}
-
-fn scaled(value: i32, scale: f64) -> i32 {
-    (f64::from(value) * scale).round() as i32
-}
-
-fn resolved_scale(configured: f64, automatic: f64) -> f64 {
-    if configured.is_finite() && configured > 0.0 {
-        configured.max(0.8)
-    } else {
-        automatic
     }
 }
 

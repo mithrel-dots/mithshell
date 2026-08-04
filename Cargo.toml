@@ -13,10 +13,13 @@ clap_complete = "4.5"
 env_logger = "0.11"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 gtk4-layer-shell = { version = "0.8", features = ["v1_3"] }
+gtk4-session-lock = { version = "0.4.0", features = ["v1_1", "v1_2"] }
 image = "0.25.10"
+libc = "0.2.189"
 log = "0.4"
 material-colors = { version = "0.4.2", features = ["image", "serde"] }
 notify = "8.2.0"
+pam-sys = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.9"

@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub media: MediaConfig,
     pub theme: ThemeConfig,
     pub weather: WeatherConfig,
+    pub lock: LockConfig,
 }
 
 impl AppConfig {
@@ -92,6 +93,53 @@ impl Default for WeatherConfig {
         Self {
             provider: WeatherProvider::Wttr,
             city: None,
+        }
+    }
+}
+
+/// Lock screen appearance and authentication.
+///
+/// The blur is applied to a screenshot taken the moment before the lock
+/// appears, so these values trade capture-to-visible latency against how
+/// soft the backdrop looks. `downscale` is by far the strongest lever: the
+/// blur cost falls with its square.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockConfig {
+    /// PAM service to authenticate against. When unset, `/etc/pam.d/mithshell`
+    /// is used if it exists and `login` is inherited otherwise.
+    pub pam_service: Option<String>,
+    /// Box-blur radius, measured in downscaled pixels.
+    pub blur_radius: u32,
+    /// Integer shrink factor applied to the screenshot before blurring.
+    pub blur_downscale: u32,
+    /// Brightness multiplier for the backdrop, from 0 (black) to 1 (untouched).
+    pub dim: f64,
+}
+
+impl Default for LockConfig {
+    fn default() -> Self {
+        Self {
+            pam_service: None,
+            blur_radius: 6,
+            blur_downscale: 6,
+            dim: 0.55,
+        }
+    }
+}
+
+impl LockConfig {
+    /// Clamps the configured values into ranges the blur can actually
+    /// honour, so a typo cannot wedge the daemon in a multi-second blur.
+    pub fn blur_settings(&self) -> crate::lock::backdrop::BlurSettings {
+        crate::lock::backdrop::BlurSettings {
+            radius: self.blur_radius.min(64) as usize,
+            downscale: self.blur_downscale.clamp(1, 32) as usize,
+            dim: if self.dim.is_finite() {
+                self.dim.clamp(0.0, 1.0)
+            } else {
+                Self::default().dim
+            },
         }
     }
 }
@@ -315,6 +363,58 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.media.max_width_factor, 1.6);
+    }
+
+    #[test]
+    fn lock_defaults_to_inheriting_the_pam_service() {
+        let config = LockConfig::default();
+        assert_eq!(config.pam_service, None);
+        assert!(config.dim > 0.0 && config.dim < 1.0);
+    }
+
+    #[test]
+    fn parses_a_lock_section() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [lock]
+            pam_service = "mithshell"
+            blur_radius = 12
+            blur_downscale = 4
+            dim = 0.3
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.lock.pam_service.as_deref(), Some("mithshell"));
+        let settings = config.lock.blur_settings();
+        assert_eq!(settings.radius, 12);
+        assert_eq!(settings.downscale, 4);
+        assert!((settings.dim - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn blur_settings_clamp_hostile_values() {
+        // A typo here would otherwise wedge the daemon in a multi-second
+        // blur, or divide by zero in the downscaler.
+        let config = LockConfig {
+            pam_service: None,
+            blur_radius: 100_000,
+            blur_downscale: 0,
+            dim: f64::NAN,
+        };
+        let settings = config.blur_settings();
+        assert_eq!(settings.radius, 64);
+        assert_eq!(settings.downscale, 1);
+        assert!(settings.dim.is_finite());
+
+        let settings = LockConfig {
+            blur_downscale: 1_000,
+            dim: 4.0,
+            ..LockConfig::default()
+        }
+        .blur_settings();
+        assert_eq!(settings.downscale, 32);
+        assert!((settings.dim - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

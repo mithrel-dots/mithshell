@@ -56,6 +56,8 @@ pub enum IpcCommand {
         value: Option<u8>,
         timeout_ms: u64,
     },
+    Lock,
+    Unlock,
     Reload,
     Status,
     Latency {
@@ -191,6 +193,7 @@ pub fn start_server(
 }
 
 fn handle_connection(mut stream: UnixStream, sender: &Sender<IncomingRequest>) -> Result<()> {
+    verify_peer_is_this_user(&stream).context("rejected IPC connection")?;
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .context("failed to set IPC read timeout")?;
@@ -243,6 +246,49 @@ pub fn prepare_runtime_socket(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Rejects a connection that did not come from this process's own uid.
+///
+/// The socket is already restricted to this user by directory (`0700`) and
+/// file (`0600`) permissions set up in [`prepare_runtime_socket`] and
+/// [`protect_socket`], so in the common case this is redundant. It matters
+/// for the commands that bypass authentication -- most notably
+/// [`IpcCommand::Unlock`] -- where "redundant" is exactly the property a
+/// security boundary should have: a bug in one layer (a misconfigured
+/// runtime dir, an unexpected setuid path) should not by itself be enough
+/// to unlock the session.
+fn verify_peer_is_this_user(stream: &UnixStream) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: `stream.as_raw_fd()` is a valid, open socket for the
+    // lifetime of this call, `ucred` is a plain-old-data struct with no
+    // invalid bit patterns, and `len` starts at its size as required by
+    // `getsockopt(2)`.
+    let credentials = unsafe {
+        let mut ucred: libc::ucred = std::mem::zeroed();
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let result = libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut ucred).cast::<libc::c_void>(),
+            &mut len,
+        );
+        if result != 0 {
+            bail!("SO_PEERCRED failed: {}", std::io::Error::last_os_error());
+        }
+        ucred
+    };
+
+    let our_uid = unsafe { libc::geteuid() };
+    if credentials.uid != our_uid {
+        bail!(
+            "peer uid {} does not match daemon uid {our_uid}",
+            credentials.uid
+        );
+    }
+    Ok(())
+}
+
 pub fn protect_socket(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("failed to protect {}", path.display()))
@@ -267,6 +313,23 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Request = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn lock_and_unlock_round_trip_as_json() {
+        for command in [IpcCommand::Lock, IpcCommand::Unlock] {
+            let request = Request::new(command.clone());
+            let encoded = serde_json::to_string(&request).unwrap();
+            let decoded: Request = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, request);
+        }
+    }
+
+    #[test]
+    fn accepts_a_connection_from_its_own_uid() {
+        let (a, b) = UnixStream::pair().unwrap();
+        drop(b);
+        assert!(verify_peer_is_this_user(&a).is_ok());
     }
 
     #[test]

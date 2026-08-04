@@ -1,13 +1,51 @@
 mod island;
+mod lock;
 
 use std::{fs, path::Path};
 
-use gtk::{CssProvider, gdk};
+use gtk::{CssProvider, gdk, prelude::MonitorExt};
 use log::warn;
 
 use crate::state::Palette;
 
 pub use island::{IslandActions, IslandWindow};
+pub use lock::{LockEndedAction, LockSession, LockSubmitAction};
+
+/// Rounds a design-time pixel dimension to the active UI scale.
+pub(crate) fn scaled(value: i32, scale: f64) -> i32 {
+    (f64::from(value) * scale).round() as i32
+}
+
+/// Resolves `shell.scale`: a positive configured value wins, otherwise the
+/// scale derived from the monitor's logical width is used.
+pub(crate) fn resolved_scale(configured: f64, automatic: f64) -> f64 {
+    if configured.is_finite() && configured > 0.0 {
+        configured.max(0.8)
+    } else {
+        automatic
+    }
+}
+
+/// The density class that pairs with a resolved scale.
+///
+/// GTK output scaling is often left at 1 on 4K Hyprland setups, so surfaces
+/// are scaled in layout while text and controls need matching CSS overrides
+/// to stay proportional. Shared by every window so the island and the lock
+/// screen never disagree about which tier an output is in.
+pub(crate) fn scale_class(scale: f64) -> Option<&'static str> {
+    if scale >= 1.35 {
+        Some("scale-large")
+    } else if scale >= 1.12 {
+        Some("scale-medium")
+    } else {
+        None
+    }
+}
+
+/// The scale mithshell picks for an output when `shell.scale` is unset.
+pub(crate) fn automatic_scale(monitor: &gdk::Monitor) -> f64 {
+    (f64::from(monitor.geometry().width()) / 2560.0).clamp(1.0, 1.45)
+}
 
 const BASE_CSS: &str = include_str!("style.css");
 

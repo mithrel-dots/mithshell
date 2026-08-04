@@ -17,7 +17,9 @@ use crate::{
     config::{self, AppConfig, PaletteEngine, ThemeMode, ThemeSource},
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
-    latency, media,
+    latency,
+    lock::{self, AuthEvent, AuthRequest},
+    media,
     preview::{self, PreviewEvent, PreviewRequest},
     state::{
         AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot, WeatherState,
@@ -25,7 +27,7 @@ use crate::{
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
     theme,
-    ui::{self, IslandActions, IslandWindow},
+    ui::{self, IslandActions, IslandWindow, LockSession, LockSubmitAction},
     weather,
 };
 
@@ -225,6 +227,8 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
             value,
             timeout_ms: timeout,
         },
+        Command::Lock => IpcCommand::Lock,
+        Command::Unlock => IpcCommand::Unlock,
         Command::Reload => IpcCommand::Reload,
         Command::Status { json: print_json } => {
             json = print_json;
@@ -353,8 +357,11 @@ struct Controller {
     tarragon_status: RefCell<Option<TarragonStatus>>,
     pending_volume: Cell<Option<u8>>,
     islands: RefCell<HashMap<String, Rc<IslandWindow>>>,
+    /// `Some` exactly while the session is locked.
+    lock: RefCell<Option<Rc<LockSession>>>,
     animations: bool,
     theme_sender: Sender<Result<Palette, String>>,
+    auth_sender: Sender<AuthRequest>,
     tarragon_sender: Sender<TarragonCommand>,
     preview_sender: Sender<PreviewRequest>,
     _media_listener: thread::JoinHandle<()>,
@@ -362,6 +369,7 @@ struct Controller {
     _weather_listener: thread::JoinHandle<()>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
+    auth_listener: Option<thread::JoinHandle<()>>,
     _gtk_css_watcher: Option<thread::JoinHandle<()>>,
 }
 
@@ -398,6 +406,13 @@ impl Controller {
         let (preview_sender, preview_listener) = preview::start_loader(preview_event_sender);
         let (gtk_css_sender, gtk_css_receiver) = async_channel::unbounded();
         let gtk_css_watcher = theme::watch_gtk_css(gtk_css_sender);
+        // Resolved once here rather than at lock time so a broken PAM
+        // configuration shows up in the log at startup, while the user can
+        // still do something about it.
+        let pam_service = lock::service_name(config.lock.pam_service.as_deref());
+        let (auth_event_sender, auth_event_receiver) = async_channel::unbounded();
+        let (auth_sender, auth_listener) =
+            lock::start_authenticator(pam_service, auth_event_sender);
 
         let controller = Rc::new(Self {
             application: application.clone(),
@@ -417,8 +432,10 @@ impl Controller {
             tarragon_status: RefCell::new(None),
             pending_volume: Cell::new(None),
             islands: RefCell::new(HashMap::new()),
+            lock: RefCell::new(None),
             animations,
             theme_sender,
+            auth_sender,
             tarragon_sender,
             preview_sender,
             _media_listener: media_listener,
@@ -426,6 +443,7 @@ impl Controller {
             _weather_listener: weather_listener,
             tarragon_listener: Some(tarragon_listener),
             preview_listener: Some(preview_listener),
+            auth_listener: Some(auth_listener),
             _gtk_css_watcher: gtk_css_watcher,
         });
 
@@ -449,6 +467,7 @@ impl Controller {
         controller.attach_tarragon(tarragon_event_receiver);
         controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
+        controller.attach_auth(auth_event_receiver);
         controller.attach_gtk_theme_watch();
         controller.attach_gtk_css_watch(gtk_css_receiver);
 
@@ -465,6 +484,9 @@ impl Controller {
             monitors.connect_items_changed(move |_, _, _, _| {
                 if let Some(controller) = weak.upgrade() {
                     controller.reconcile_monitors();
+                    // Deliberately not touched here: a `LockSession` tracks
+                    // hotplugged outputs itself, through the session lock
+                    // instance's own `monitor` signal.
                 }
             });
         }
@@ -674,6 +696,43 @@ impl Controller {
         });
     }
 
+    /// Routes PAM worker messages back to the lock screen.
+    ///
+    /// On `Outcome::Granted`, `LockSession::resolve` itself calls
+    /// `Instance::unlock`, which fires the `unlocked` signal wired in
+    /// `LockSession::new`; that is what actually clears `self.lock`, not
+    /// this function. This only forwards messages.
+    fn attach_auth(self: &Rc<Self>, receiver: Receiver<AuthEvent>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(event) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                // Clone the handle out before calling into it: the signal
+                // handlers `resolve`/`progress` can trigger take the same
+                // RefCell, and holding a borrow across the call would panic.
+                let Some(session) = controller.lock.borrow().clone() else {
+                    continue;
+                };
+                match event {
+                    AuthEvent::Progress {
+                        generation,
+                        message,
+                    } => {
+                        session.progress(generation, &message);
+                    }
+                    AuthEvent::Result {
+                        generation,
+                        outcome,
+                    } => {
+                        session.resolve(generation, &outcome);
+                    }
+                }
+            }
+        });
+    }
+
     fn attach_preview(self: &Rc<Self>, receiver: Receiver<PreviewEvent>) {
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
@@ -775,6 +834,21 @@ impl Controller {
     }
 
     fn try_handle_command(self: &Rc<Self>, command: IpcCommand) -> Result<Response> {
+        // Anything that raises interactive chrome is refused while locked.
+        // The compositor already hides the island's surface for the
+        // duration of the lock (ext-session-lock-v1 blanks every normal
+        // client), so these would be invisible either way -- but TarraGon
+        // search can launch applications, which must not be reachable from
+        // a locked session by anyone who can reach the IPC socket, visible
+        // or not.
+        if self.lock.borrow().is_some()
+            && matches!(
+                command,
+                IpcCommand::Toggle { .. } | IpcCommand::Open { .. } | IpcCommand::Search { .. }
+            )
+        {
+            bail!("the session is locked");
+        }
         match command {
             IpcCommand::Toggle { monitor } => {
                 let targets = self.target_islands(&monitor)?;
@@ -823,6 +897,29 @@ impl Controller {
                 }
                 Ok(Response::ok(format!("{kind:?} OSD shown")))
             }
+            IpcCommand::Lock => {
+                if self.lock.borrow().is_some() {
+                    return Ok(Response::ok("session is already locked"));
+                }
+                self.lock()?;
+                Ok(Response::ok("session lock requested"))
+            }
+            IpcCommand::Unlock => {
+                // Same-user, same-machine escape hatch: reaching this at
+                // all already proves the caller passed the peer-credential
+                // check in `ipc::handle_connection`, whatever TTY or
+                // session they're sending it from. Bypasses PAM entirely,
+                // by design -- this is the recovery path for a stuck
+                // prompt, not a second authentication method.
+                let session = self.lock.borrow().clone();
+                match session {
+                    Some(session) => {
+                        session.force_unlock();
+                        Ok(Response::ok("unlock requested"))
+                    }
+                    None => Ok(Response::ok("session is not locked")),
+                }
+            }
             IpcCommand::Reload => {
                 self.reload_config()?;
                 Ok(Response::ok("configuration reloaded"))
@@ -847,6 +944,7 @@ impl Controller {
                         "plugins": self.tarragon_status.borrow().as_ref().map_or(0, |status| status.plugins.len()),
                     },
                     "palette": &*self.palette.borrow(),
+                    "lock": self.lock.borrow().as_ref().map(|session| session.debug_state()),
                 });
                 Ok(Response::with_data("daemon is running", data))
             }
@@ -911,6 +1009,59 @@ impl Controller {
         }
     }
 
+    /// Requests a session lock on every output, via `ext-session-lock-v1`.
+    ///
+    /// Collapses the dashboard/search views first purely for state hygiene
+    /// (so they aren't left open once unlocked) -- it is not what hides
+    /// them while locked. The compositor does that itself, for every
+    /// normal client's surface, the moment the lock is acquired, and it
+    /// does not undo that if this process dies. That guarantee comes
+    /// entirely from the protocol; nothing in this function provides it.
+    fn lock(self: &Rc<Self>) -> Result<()> {
+        for island in self.islands.borrow().values() {
+            island.close();
+        }
+
+        let auth_sender = self.auth_sender.clone();
+        let submit: LockSubmitAction = Rc::new(move |generation: u64, password: String| {
+            if auth_sender
+                .try_send(AuthRequest {
+                    generation,
+                    password,
+                })
+                .is_err()
+            {
+                error!("the authentication worker is gone; cannot verify the password");
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        let on_ended = Rc::new(move || {
+            if let Some(controller) = weak.upgrade() {
+                // A no-op if the session was never stored here in the first
+                // place (the synchronous-failure case in `LockSession::new`);
+                // see `has_failed` below.
+                controller.lock.borrow_mut().take();
+            }
+        });
+
+        let config = self.config.borrow();
+        let session = LockSession::new(
+            &self.application,
+            &config.lock,
+            config.shell.scale,
+            submit,
+            on_ended,
+        );
+        drop(config);
+
+        if session.has_failed() {
+            bail!("the compositor refused to lock the session");
+        }
+        *self.lock.borrow_mut() = Some(session);
+        Ok(())
+    }
+
     fn current_osd_value(&self, kind: OsdKind) -> u8 {
         match kind {
             OsdKind::Volume => self.system.borrow().audio.map_or(0, |audio| audio.percent),
@@ -955,6 +1106,9 @@ impl Controller {
     }
 
     fn reload_config(self: &Rc<Self>) -> Result<()> {
+        if self.lock.borrow().is_some() {
+            bail!("cannot reload while the session is locked");
+        }
         let config = AppConfig::load(&self.config_path)?;
         let mut theme_config = config.theme.clone();
         if let Some(theme_override) = theme::load_override()? {
@@ -1183,12 +1337,24 @@ impl Controller {
 
 impl Drop for Controller {
     fn drop(&mut self) {
+        // Deliberately does not unlock a locked session. Fail-locked is the
+        // entire point of ext-session-lock-v1: dropping the `LockSession`
+        // here (its `Drop` only unregisters our own timers/watchers, never
+        // calls `Instance::unlock`) leaves the compositor still blanking
+        // every output. A daemon restart while locked therefore cannot
+        // unlock the screen; recovery is `mithshell unlock` from another
+        // session, or whatever secure recovery the compositor itself
+        // offers. See the "Lock screen" section of the README.
         self.tarragon_sender.close();
         self.preview_sender.close();
+        self.auth_sender.close();
         if let Some(listener) = self.tarragon_listener.take() {
             let _ = listener.join();
         }
         if let Some(listener) = self.preview_listener.take() {
+            let _ = listener.join();
+        }
+        if let Some(listener) = self.auth_listener.take() {
             let _ = listener.join();
         }
     }

@@ -7,10 +7,10 @@ window.mithshell-dismiss > contents {
 }
 
 .island-surface {
-  background: alpha(@ms_surface, 0.96);
-  border: 1px solid alpha(@ms_outline_variant, 0.48);
-  border-radius: 28px;
-  box-shadow: 0 16px 38px alpha(black, 0.48), inset 0 1px alpha(white, 0.055);
+  background: alpha(@ms_surface, 0.97);
+  border: 1px solid alpha(@ms_outline_variant, 0.4);
+  border-radius: 22px;
+  box-shadow: 0 16px 38px alpha(black, 0.55), inset 0 1px alpha(white, 0.045);
 }
 
 .compact-content {
@@ -18,8 +18,8 @@ window.mithshell-dismiss > contents {
 }
 
 .compact-clock {
-  color: @ms_on_surface;
-  font-family: "Inter", "Rubik", sans-serif;
+  color: @ms_tertiary;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 13px;
   font-weight: 700;
   font-feature-settings: "tnum";
@@ -28,8 +28,8 @@ window.mithshell-dismiss > contents {
 .compact-battery,
 .compact-workspace {
   color: @ms_on_surface_variant;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -38,7 +38,7 @@ window.mithshell-dismiss > contents {
   min-height: 7px;
   padding: 0;
   border: 0;
-  border-radius: 99px;
+  border-radius: 3px;
   background: alpha(@ms_on_surface_variant, 0.28);
   box-shadow: none;
 }
@@ -53,71 +53,90 @@ window.mithshell-dismiss > contents {
 }
 
 .dashboard-content {
-  padding: 12px;
+  padding: 14px 14px 0 14px;
 }
 
 .eyebrow {
   color: @ms_primary;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 1.2px;
+  letter-spacing: 1.4px;
 }
 
 .hero-time {
-  color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
-  font-size: 32px;
-  font-weight: 650;
+  color: @ms_tertiary;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 30px;
+  font-weight: 700;
   font-feature-settings: "tnum";
-  letter-spacing: -1px;
+  letter-spacing: 0px;
 }
 
 .hero-date,
 .muted-label {
   color: alpha(@ms_on_surface_variant, 0.82);
-  font-family: "Inter", sans-serif;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
 }
 
 .battery-chip {
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 12px;
-  border-radius: 16px;
+  border-radius: 10px;
   background: alpha(@ms_surface_container, 0.9);
-  border: 1px solid alpha(@ms_outline_variant, 0.26);
+  border: 1px solid alpha(@ms_outline_variant, 0.3);
 }
 
 .battery-chip label {
-  color: @ms_on_surface;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  color: @ms_secondary;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .active-card,
-.controls-card {
+.controls-card,
+.notification-card {
   background: alpha(@ms_surface_low, 0.92);
-  border: 1px solid alpha(@ms_outline_variant, 0.28);
-  border-radius: 20px;
+  border: 1px solid alpha(@ms_outline_variant, 0.3);
+  border-radius: 14px;
+  padding: 14px 16px;
 }
 
-.active-card {
-  padding: 13px 15px;
+.status-row {
+  margin: 0;
 }
 
 .active-title {
   color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
-  font-size: 14px;
-  font-weight: 650;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.notification-count {
+  min-width: 18px;
+  color: @ms_on_primary;
+  background: @ms_primary;
+  border-radius: 9px;
+  padding: 1px 6px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.notification-empty {
+  color: alpha(@ms_on_surface_variant, 0.7);
+  font-size: 11px;
+  padding: 4px 0;
 }
 
 .player-card {
   background: alpha(@ms_surface_low, 0.92);
-  border: 1px solid alpha(@ms_outline_variant, 0.28);
-  border-radius: 20px;
-  padding: 12px 15px;
+  border: 1px solid alpha(@ms_outline_variant, 0.3);
+  border-radius: 14px;
+  padding: 14px 16px;
 }
 
 .player-icon {
@@ -127,14 +146,14 @@ window.mithshell-dismiss > contents {
 
 .player-title {
   color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .player-artist {
-  color: alpha(@ms_on_surface_variant, 0.8);
-  font-family: "Inter", sans-serif;
+  color: alpha(@ms_on_surface_variant, 0.82);
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
 }
 
@@ -145,7 +164,7 @@ window.mithshell-dismiss > contents {
   color: @ms_on_surface_variant;
   background: alpha(@ms_on_surface, 0.06);
   border: 0;
-  border-radius: 13px;
+  border-radius: 8px;
   box-shadow: none;
   -gtk-icon-size: 13px;
 }
@@ -183,23 +202,23 @@ progressbar.player-progress progress {
 
 .player-time {
   color: alpha(@ms_on_surface_variant, 0.76);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
   font-weight: 700;
   font-feature-settings: "tnum";
 }
 
 .workspace-button {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
   color: alpha(@ms_on_surface_variant, 0.68);
-  background: transparent;
-  border: 0;
-  border-radius: 14px;
+  background: alpha(@ms_surface_container, 0.8);
+  border: 1px solid alpha(@ms_outline_variant, 0.24);
+  border-radius: 8px;
   box-shadow: none;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -216,10 +235,7 @@ progressbar.player-progress progress {
 .workspace-button.active {
   color: @ms_on_primary;
   background: @ms_primary;
-}
-
-.controls-card {
-  padding: 9px 14px;
+  border-color: @ms_primary;
 }
 
 .control-row {
@@ -234,8 +250,8 @@ progressbar.player-progress progress {
 .control-value {
   min-width: 38px;
   color: @ms_on_surface_variant;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -245,13 +261,13 @@ scale.control-scale {
 
 scale.control-scale trough {
   min-height: 5px;
-  border-radius: 99px;
+  border-radius: 3px;
   background: alpha(@ms_outline_variant, 0.35);
 }
 
 scale.control-scale highlight {
   min-height: 5px;
-  border-radius: 99px;
+  border-radius: 3px;
   background: @ms_primary;
 }
 
@@ -260,19 +276,19 @@ scale.control-scale slider {
   min-height: 15px;
   margin: -5px;
   border: 0;
-  border-radius: 99px;
+  border-radius: 4px;
   background: @ms_on_surface;
   box-shadow: 0 2px 8px alpha(black, 0.34);
 }
 
 .close-button {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
   color: @ms_on_surface_variant;
-  background: alpha(@ms_on_surface, 0.06);
-  border: 0;
-  border-radius: 14px;
+  background: alpha(@ms_surface_container, 0.8);
+  border: 1px solid alpha(@ms_outline_variant, 0.24);
+  border-radius: 8px;
   box-shadow: none;
 }
 
@@ -297,17 +313,17 @@ scale.control-scale slider {
 .media-clock {
   min-width: 38px;
   color: @ms_on_surface_variant;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
   font-weight: 700;
   font-feature-settings: "tnum";
 }
 
 .media-title {
   color: @ms_on_surface;
-  font-family: "Inter", "Rubik", sans-serif;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .search-content {
@@ -534,33 +550,33 @@ scale.control-scale slider {
 .osd-icon {
   color: @ms_primary;
   -gtk-icon-size: 17px;
-}No training on your business data by default
+}
 
 .osd-title {
   min-width: 68px;
   color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
-  font-size: 11px;
-  font-weight: 650;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .osd-value {
   min-width: 31px;
   color: @ms_on_surface_variant;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
   font-weight: 700;
 }
 
 progressbar.osd-progress trough {
   min-height: 5px;
-  border-radius: 99px;
+  border-radius: 3px;
   background: alpha(@ms_outline_variant, 0.35);
 }
 
 progressbar.osd-progress progress {
   min-height: 5px;
-  border-radius: 99px;
+  border-radius: 3px;
   background: @ms_primary;
 }
 
@@ -570,35 +586,35 @@ progressbar.osd-progress progress {
 
 .weather-location {
   color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
-  font-size: 18px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 17px;
   font-weight: 700;
 }
 
 .weather-hero-temp {
   color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
-  font-size: 30px;
-  font-weight: 650;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 28px;
+  font-weight: 700;
   font-feature-settings: "tnum";
 }
 
 .weather-description {
   color: alpha(@ms_on_surface_variant, 0.85);
-  font-family: "Inter", sans-serif;
-  font-size: 13px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
 }
 
 .weather-day-card {
   padding: 6px 4px;
   background: alpha(@ms_surface_low, 0.9);
-  border: 1px solid alpha(@ms_outline_variant, 0.26);
-  border-radius: 16px;
+  border: 1px solid alpha(@ms_outline_variant, 0.3);
+  border-radius: 10px;
 }
 
 .weather-day-label {
   color: @ms_primary;
-  font-family: "JetBrains Mono", monospace;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.6px;
@@ -606,7 +622,7 @@ progressbar.osd-progress progress {
 
 .weather-day-high {
   color: @ms_on_surface;
-  font-family: "Inter", sans-serif;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 12px;
   font-weight: 700;
   font-feature-settings: "tnum";
@@ -614,28 +630,97 @@ progressbar.osd-progress progress {
 
 .weather-day-low {
   color: alpha(@ms_on_surface_variant, 0.75);
-  font-family: "Inter", sans-serif;
-  font-size: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
   font-feature-settings: "tnum";
 }
 
 calendar.weather-calendar {
   padding: 2px 6px;
-  font-size: 20px;
+  font-size: 18px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   color: @ms_on_surface;
   background: alpha(@ms_surface_low, 0.9);
-  border: 1px solid alpha(@ms_outline_variant, 0.26);
-  border-radius: 18px;
+  border: 1px solid alpha(@ms_outline_variant, 0.3);
+  border-radius: 12px;
 }
 
 calendar.weather-calendar label.day-number:selected {
   color: @ms_on_primary;
   background: @ms_primary;
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .unavailable {
   opacity: 0.38;
+}
+
+/* --- Lock screen ---------------------------------------------------------
+ * The window itself is opaque black rather than transparent: it is the
+ * fallback that guarantees the desktop stays hidden if the screenshot or
+ * the blur ever fails. The blurred capture is painted on top of it, and
+ * only the card in the middle reads as chrome. */
+window.mithshell-lock,
+window.mithshell-lock > contents {
+  background: black;
+  box-shadow: none;
+}
+
+.lock-card {
+  padding: 26px 24px 22px 24px;
+}
+
+.lock-user {
+  color: @ms_on_surface_variant;
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.lock-entry {
+  min-height: 42px;
+  padding: 0 12px;
+  color: @ms_on_surface;
+  background: alpha(@ms_surface_low, 0.94);
+  border: 1px solid alpha(@ms_outline_variant, 0.34);
+  border-radius: 17px;
+  box-shadow: none;
+  font-family: "Inter", sans-serif;
+  font-size: 15px;
+}
+
+.lock-entry:focus-within {
+  border-color: alpha(@ms_primary, 0.78);
+  box-shadow: 0 0 0 2px alpha(@ms_primary, 0.12);
+}
+
+.lock-entry image {
+  color: @ms_on_surface_variant;
+}
+
+/* PAM sleeps for a second or more after a bad password; dimming the entry
+ * is the only feedback the user gets that something is happening. */
+.lock-entry:disabled {
+  opacity: 0.55;
+}
+
+.lock-caps {
+  color: @ms_tertiary;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+}
+
+.lock-status {
+  color: alpha(@ms_on_surface_variant, 0.82);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lock-status.error {
+  color: @ms_error;
 }
 
 /* GTK output scaling is often left at 1 on 4K Hyprland setups. These density
@@ -651,7 +736,7 @@ calendar.weather-calendar label.day-number:selected {
 .scale-medium .compact-workspace { font-size: 12px; }
 .scale-medium .workspace-dot { min-width: 9px; min-height: 9px; }
 .scale-medium .workspace-dot.active { min-width: 23px; }
-.scale-medium .dashboard-content { padding: 29px; }
+.scale-medium .dashboard-content { padding: 29px 29px 0 29px; }
 .scale-medium .eyebrow { font-size: 11px; letter-spacing: 1.4px; }
 .scale-medium .hero-time { font-size: 38px; }
 .scale-medium .hero-date,
@@ -659,10 +744,10 @@ calendar.weather-calendar label.day-number:selected {
 .scale-medium .battery-chip { min-height: 38px; padding: 0 14px; border-radius: 19px; }
 .scale-medium .battery-chip label { font-size: 13px; }
 .scale-medium .active-card,
-.scale-medium .controls-card { border-radius: 24px; }
-.scale-medium .active-card { padding: 16px 18px; }
+.scale-medium .controls-card,
+.scale-medium .notification-card { border-radius: 16px; padding: 16px 18px; }
 .scale-medium .active-title { font-size: 17px; }
-.scale-medium .player-card { border-radius: 24px; padding: 15px 18px; }
+.scale-medium .player-card { border-radius: 16px; padding: 16px 18px; }
 .scale-medium .player-icon { -gtk-icon-size: 34px; }
 .scale-medium .player-title { font-size: 16px; }
 .scale-medium .player-artist { font-size: 13px; }
@@ -671,9 +756,8 @@ calendar.weather-calendar label.day-number:selected {
 .scale-medium progressbar.player-progress progress { min-height: 5px; }
 .scale-medium .player-time { font-size: 11px; }
 .scale-medium .workspace-button,
-.scale-medium .close-button { min-width: 34px; min-height: 34px; border-radius: 17px; }
+.scale-medium .close-button { min-width: 32px; min-height: 32px; border-radius: 10px; }
 .scale-medium .workspace-button { font-size: 12px; }
-.scale-medium .controls-card { padding: 11px 17px; }
 .scale-medium .control-row { min-height: 44px; }
 .scale-medium .control-icon { -gtk-icon-size: 19px; }
 .scale-medium .control-value { min-width: 46px; font-size: 12px; }
@@ -718,11 +802,17 @@ calendar.weather-calendar label.day-number:selected {
 .scale-medium .weather-location { font-size: 19px; }
 .scale-medium .weather-hero-temp { font-size: 30px; }
 .scale-medium .weather-description { font-size: 15px; }
-.scale-medium .weather-day-card { padding: 8px 5px; border-radius: 19px; }
+.scale-medium .weather-day-card { padding: 8px 5px; border-radius: 12px; }
 .scale-medium .weather-day-label { font-size: 12px; }
 .scale-medium .weather-day-high { font-size: 15px; }
 .scale-medium .weather-day-low { font-size: 13px; }
-.scale-medium calendar.weather-calendar { padding: 4px 8px; border-radius: 22px; }
+.scale-medium calendar.weather-calendar { padding: 4px 8px; border-radius: 14px; }
+
+.scale-medium .lock-card { padding: 33px 30px 28px 30px; }
+.scale-medium .lock-user { font-size: 16px; }
+.scale-medium .lock-entry { min-height: 53px; border-radius: 21px; padding: 0 15px; font-size: 18px; }
+.scale-medium .lock-caps { font-size: 12px; }
+.scale-medium .lock-status { font-size: 13px; }
 
 .scale-large .island-surface {
   border-radius: 41px;
@@ -735,7 +825,7 @@ calendar.weather-calendar label.day-number:selected {
 .scale-large .compact-workspace { font-size: 14px; }
 .scale-large .workspace-dot { min-width: 10px; min-height: 10px; }
 .scale-large .workspace-dot.active { min-width: 28px; }
-.scale-large .dashboard-content { padding: 35px; }
+.scale-large .dashboard-content { padding: 35px 35px 0 35px; }
 .scale-large .eyebrow { font-size: 13px; letter-spacing: 1.7px; }
 .scale-large .hero-time { font-size: 46px; }
 .scale-large .hero-date,
@@ -743,10 +833,10 @@ calendar.weather-calendar label.day-number:selected {
 .scale-large .battery-chip { min-height: 46px; padding: 0 17px; border-radius: 23px; }
 .scale-large .battery-chip label { font-size: 16px; }
 .scale-large .active-card,
-.scale-large .controls-card { border-radius: 29px; }
-.scale-large .active-card { padding: 19px 22px; }
+.scale-large .controls-card,
+.scale-large .notification-card { border-radius: 20px; padding: 20px 22px; }
 .scale-large .active-title { font-size: 20px; }
-.scale-large .player-card { border-radius: 29px; padding: 18px 22px; }
+.scale-large .player-card { border-radius: 20px; padding: 20px 22px; }
 .scale-large .player-icon { -gtk-icon-size: 40px; }
 .scale-large .player-title { font-size: 19px; }
 .scale-large .player-artist { font-size: 16px; }
@@ -755,9 +845,8 @@ calendar.weather-calendar label.day-number:selected {
 .scale-large progressbar.player-progress progress { min-height: 6px; }
 .scale-large .player-time { font-size: 13px; }
 .scale-large .workspace-button,
-.scale-large .close-button { min-width: 41px; min-height: 41px; border-radius: 21px; }
+.scale-large .close-button { min-width: 38px; min-height: 38px; border-radius: 12px; }
 .scale-large .workspace-button { font-size: 14px; }
-.scale-large .controls-card { padding: 13px 20px; }
 .scale-large .control-row { min-height: 54px; }
 .scale-large .control-icon { -gtk-icon-size: 23px; }
 .scale-large .control-value { min-width: 55px; font-size: 14px; }
@@ -802,8 +891,13 @@ calendar.weather-calendar label.day-number:selected {
 .scale-large .weather-location { font-size: 21px; }
 .scale-large .weather-hero-temp { font-size: 32px; }
 .scale-large .weather-description { font-size: 17px; }
-.scale-large .weather-day-card { padding: 9px 6px; border-radius: 22px; }
+.scale-large .weather-day-card { padding: 9px 6px; border-radius: 14px; }
 .scale-large .weather-day-label { font-size: 14px; }
 .scale-large .weather-day-high { font-size: 17px; }
 .scale-large .weather-day-low { font-size: 15px; }
-.scale-large calendar.weather-calendar { padding: 5px 10px; border-radius: 26px; }
+.scale-large calendar.weather-calendar { padding: 5px 10px; border-radius: 16px; }
+.scale-large .lock-card { padding: 40px 36px 34px 36px; }
+.scale-large .lock-user { font-size: 19px; }
+.scale-large .lock-entry { min-height: 63px; border-radius: 25px; padding: 0 18px; font-size: 22px; }
+.scale-large .lock-caps { font-size: 14px; }
+.scale-large .lock-status { font-size: 16px; }

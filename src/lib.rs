@@ -5,6 +5,7 @@ pub mod http;
 pub mod hyprland;
 pub mod ipc;
 pub mod latency;
+pub mod lock;
 pub mod media;
 pub mod preview;
 pub mod state;

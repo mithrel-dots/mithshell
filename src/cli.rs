@@ -56,6 +56,18 @@ pub enum Command {
         monitor: MonitorArgs,
     },
 
+    /// Lock the session behind a PAM password prompt.
+    Lock,
+
+    /// Force-unlock a locked session without authenticating.
+    ///
+    /// A same-user, same-machine escape hatch: send this from a different
+    /// TTY or SSH session logged in as the same user as the locked
+    /// session. The IPC socket is already restricted to this user by
+    /// filesystem permissions and a peer-credential check, so reaching the
+    /// daemon at all already proves that.
+    Unlock,
+
     /// Reload the TOML configuration.
     Reload,
 

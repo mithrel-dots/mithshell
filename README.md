@@ -24,6 +24,10 @@ changes made outside Mithshell.
 `cava` provides the media pill's live seven-band spectrum. If it is not
 available, media metadata still works and the visualizer remains at rest.
 
+`grim` is optional and used only by the lock screen, to capture the frozen
+wallpaper it blurs. Without it the lock still works and falls back to a solid
+black backdrop.
+
 `brightnessctl` is optional and only used by the example Hyprland keybinds.
 The dashboard reads `/sys/class/backlight` directly and hides the control when
 no backlight exists.
@@ -147,12 +151,125 @@ See [`docs/tarragon.md`](docs/tarragon.md) for controls, every represented
 protocol field, plugin lifecycle semantics, previews, reload/detach behavior,
 and current backend limitations.
 
+### Lock screen
+
+`mithshell lock` locks the session through the
+[`ext-session-lock-v1`](https://wayland.app/protocols/ext-session-lock-v1)
+Wayland protocol, using [`gtk4-session-lock`](https://github.com/wmww/gtk4-layer-shell)
+-- the sibling crate to `gtk4-layer-shell`, wrapping the same C library and
+already an installed dependency. This is a compositor-enforced lock, not a
+window mithshell merely draws on top of everything: the protocol requires
+the compositor to blank every other client's surface (the island included)
+the instant the lock is acquired, and explicitly states that if the locking
+client dies, "the compositor must not unlock the session in response... it
+is acceptable for the session to be permanently locked if this happens."
+That guarantee is the compositor's job, not mithshell's; killing or crashing
+the daemon while locked does not expose the desktop. Hyprland has supported
+this protocol since 0.52.1.
+
+Each output gets a fresh window assigned to it as a lock surface, showing the
+screen as it was the moment before locking -- captured with `grim`,
+downscaled, box-blurred, and dimmed -- with a single card centred on it. The
+card reuses the island's surface, typography and `@ms_*` palette roles, so a
+locked session looks like the same shell rather than a separate program.
+
+```toml
+[lock]
+blur_radius = 6
+blur_downscale = 6
+dim = 0.55
+```
+
+The window background is opaque black underneath the screenshot, so a
+missing `grim` or a failed capture degrades to a blank screen rather than a
+transparent one. Capturing happens before the window is handed to the
+lock instance; the protocol grants clients a grace window between
+requesting the lock and the compositor actually blanking the output
+specifically so lock screens can render (and screenshot) without a race.
+
+#### Authentication
+
+Passwords are checked against PAM on a dedicated worker thread, never the GTK
+main thread, because modules can block for a long time -- `pam_unix` sleeps
+for seconds after a wrong password, and hardware token modules wait for a
+physical touch. The service is resolved once at startup:
+
+* `/etc/pam.d/mithshell` when an administrator has written one;
+* otherwise `/etc/pam.d/login`, which every distribution ships. Whatever
+  that stack does, the lock screen does too -- including multi-factor
+  setups. For example:
+
+  ```
+  # /etc/pam.d/login
+  auth       sufficient pam_u2f.so cue
+  auth       required   pam_google_authenticator.so
+  auth       requisite  pam_nologin.so
+  account    include    system-local-login
+  session    include    system-local-login
+  password   include    system-local-login
+  ```
+
+  Here the lock screen will wait for a YubiKey touch first (the `cue`
+  option's "Please touch the device" message is forwarded live to the card's
+  status line as it happens, not just a static "Authenticating..."), falling
+  through to a TOTP code from `pam_google_authenticator` typed into the same
+  password field if no key is touched. No lock-specific configuration is
+  needed for this to work; it is exactly what `/etc/pam.d/login` already
+  describes.
+
+Set `pam_service` to override the choice. Authentication additionally runs
+`pam_acct_mgmt`, so expired and disabled accounts cannot unlock, and passes
+`PAM_DISALLOW_NULL_AUTHTOK`, so an empty password never unlocks regardless of
+what the inherited stack permits.
+
+#### Behavior
+
+Every output gets its own card and they share one password buffer, so it does
+not matter which screen has keyboard focus. `Escape` clears the field instead
+of dismissing the lock, and a Caps Lock warning appears while the modifier is
+active. `mithshell reload` is refused while locked, since reloading rebuilds
+every window, and so are `toggle`, `open` and `search` -- the launcher can
+start applications and must not be reachable from a locked session, visible
+or not.
+
+`mithshell unlock` force-unlocks without authenticating, as a same-user,
+same-machine escape hatch: run it from a different TTY or an SSH session
+logged in as the same user as the locked one. The IPC socket already only
+accepts connections from this user's uid (filesystem permissions plus an
+`SO_PEERCRED` check), so reaching the daemon with it at all already proves
+that; this command exists for when the lock screen itself is unusable
+(broken PAM config, unresponsive hardware token) rather than as a second
+authentication method.
+
+**Caveat.** `mithshell unlock` only reaches a `LockSession` held by the
+*currently running* daemon process. Because the fail-locked guarantee comes
+from the compositor continuing to enforce a lock whose client has
+disappeared, restarting the mithshell daemon (`systemctl restart`, a
+crash-and-respawn, `just run`) *while locked* does not automatically
+re-establish mithshell's own lock screen -- the new process starts with no
+memory of being locked, while the compositor is still blanking every output
+from the old, now-dead lock object, and `mithshell unlock` against the new
+process correctly reports "session is not locked" without being able to
+touch that stale state. Recovery in that case is whatever secure recovery
+mechanism the compositor itself offers (see its documentation), not
+mithshell. This is an inherent tradeoff of the fail-locked model, not
+specific to mithshell -- any session-lock client has it if killed uncleanly,
+which is exactly why restarting a lock client while it is actively locking
+the screen is best avoided.
+
 ### Theming
 
 Mithshell's stylesheet (`src/ui/style.css`) references 15 `@ms_*` role colors
 (`ms_primary`, `ms_on_surface`, `ms_outline`, ...). Where those colors come
 from is controlled by `theme.engine`, and can always be overridden with a
 `colors.css` file.
+
+The dashboard, compact bar, media popup, OSD, and weather popup use
+[Monocraft](https://github.com/IdreesInc/Monocraft) as their display font,
+falling back to `JetBrainsMono Nerd Font` and the system monospace font if
+it isn't installed. Install `ttf-monocraft-git` (AUR) or the upstream release
+for the intended pixel-art look; TarraGon's search UI keeps its own
+`Inter`/`JetBrains Mono` pairing and is unaffected.
 
 #### Material You
 
@@ -243,6 +360,9 @@ mithshell close --monitor all
 
 mithshell osd volume --value 60
 mithshell osd brightness --value 45 --timeout 1200
+
+mithshell lock
+mithshell unlock
 
 mithshell status --json
 mithshell reload

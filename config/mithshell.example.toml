@@ -11,6 +11,20 @@ scale = 0
 # Maximum media-pill width as a multiple of the compact pill width.
 max_width_factor = 1.8
 
+[lock]
+# PAM service the lock screen authenticates against. When unset, mithshell
+# uses /etc/pam.d/mithshell if it exists and otherwise inherits
+# /etc/pam.d/login, which already has the right stack for the console user.
+# pam_service = "mithshell"
+
+# The lock backdrop is a screenshot taken the instant before the lock
+# appears, shrunk, box-blurred three times, and dimmed. blur_downscale is
+# the strongest performance lever: cost falls with its square.
+blur_radius = 6
+blur_downscale = 6
+# Brightness multiplier for the backdrop: 0 is black, 1 leaves it untouched.
+dim = 0.55
+
 [theme]
 # "material" generates a Material You scheme from theme.source below.
 # "gtk" instead inherits the active GTK theme's named colors
