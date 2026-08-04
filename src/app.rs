@@ -387,7 +387,11 @@ impl Controller {
         let (visualizer_sender, visualizer_receiver) = async_channel::bounded(2);
         let visualizer_listener = media::start_visualizer(visualizer_sender);
         let (weather_sender, weather_receiver) = async_channel::unbounded();
-        let weather_listener = weather::start_poller(weather_sender);
+        let weather_listener = weather::start_poller(
+            config.weather.provider,
+            config.weather.city.clone(),
+            weather_sender,
+        );
         let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
         let (tarragon_sender, tarragon_listener) = tarragon::start_listener(tarragon_event_sender);
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();

@@ -139,7 +139,7 @@ pub struct BatteryState {
 
 /// A coarse weather condition, used to pick which placeholder pixel-art
 /// illustration a forecast entry is drawn with. Deliberately broader than
-/// wttr.in's underlying WWO condition codes -- the icon set is illustrative
+/// the providers' underlying condition codes -- the icon set is illustrative
 /// placeholder art, not a precise per-code library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum WeatherCondition {
@@ -158,11 +158,11 @@ pub enum WeatherCondition {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherDay {
-    /// ISO `YYYY-MM-DD`, as reported by wttr.in.
+    /// ISO `YYYY-MM-DD`.
     pub date: String,
     pub weekday: String,
-    /// `None` for padded placeholder days beyond what wttr.in's free tier
-    /// actually reports (see `weather::pad_forecast`).
+    /// `None` for placeholder days padded by `weather::pad_forecast` when a
+    /// provider reports fewer than seven days.
     pub max_c: Option<i32>,
     pub min_c: Option<i32>,
     pub condition: WeatherCondition,

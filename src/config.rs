@@ -6,6 +6,8 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::weather::WeatherProvider;
+
 pub const DEFAULT_SOURCE_COLOR: &str = "#9aa7ff";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -14,6 +16,7 @@ pub struct AppConfig {
     pub shell: ShellConfig,
     pub media: MediaConfig,
     pub theme: ThemeConfig,
+    pub weather: WeatherConfig,
 }
 
 impl AppConfig {
@@ -70,6 +73,25 @@ impl Default for MediaConfig {
     fn default() -> Self {
         Self {
             max_width_factor: 1.8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WeatherConfig {
+    /// Which upstream forecast service the weather tile polls.
+    pub provider: WeatherProvider,
+    /// City name for the forecast. When unset (or when the city cannot be
+    /// resolved), the provider falls back to best-effort IP geolocation.
+    pub city: Option<String>,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self {
+            provider: WeatherProvider::Wttr,
+            city: None,
         }
     }
 }
@@ -293,5 +315,38 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.media.max_width_factor, 1.6);
+    }
+
+    #[test]
+    fn defaults_to_wttr_weather_provider() {
+        assert_eq!(WeatherConfig::default().provider, WeatherProvider::Wttr);
+        assert_eq!(WeatherConfig::default().city, None);
+    }
+
+    #[test]
+    fn parses_weather_provider() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [weather]
+            provider = "open-meteo"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.weather.provider, WeatherProvider::OpenMeteo);
+        assert_eq!(config.weather.city, None);
+    }
+
+    #[test]
+    fn parses_weather_city() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [weather]
+            city = "Athens"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.weather.city.as_deref(), Some("Athens"));
     }
 }
