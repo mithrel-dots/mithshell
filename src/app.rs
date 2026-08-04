@@ -1042,6 +1042,10 @@ impl Controller {
                 // place (the synchronous-failure case in `LockSession::new`);
                 // see `has_failed` below.
                 controller.lock.borrow_mut().take();
+                // The compositor blanked these while locked; force a recommit.
+                for island in controller.islands.borrow().values() {
+                    island.recomposite();
+                }
             }
         });
 

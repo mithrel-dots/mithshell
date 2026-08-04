@@ -1,39 +1,15 @@
 //! The lock screen surface.
 //!
-//! Backed by the `ext-session-lock-v1` Wayland protocol through
-//! `gtk4-session-lock` -- the sibling crate to the `gtk4-layer-shell`
-//! dependency the rest of the shell already uses, wrapping the same C
-//! library. This is a real compositor-enforced lock, not a window we merely
-//! render on top of everything else: the protocol requires the compositor
-//! to blank every other client's surface (including the island's) the
-//! moment the lock is acquired, and to keep the session locked -- "possibly
-//! permanently" -- if this process dies while locked. See the "Session
-//! lock" protocol doc at <https://wayland.app/protocols/ext-session-lock-v1>
-//! for the exact guarantees; the crash-safety is the compositor's job, not
-//! ours.
+//! A real compositor-enforced lock through `gtk4-session-lock`, the
+//! sibling crate to `gtk4-layer-shell` wrapping the same C library and
+//! speaking `ext-session-lock-v1`. The protocol blanks every other surface
+//! (including the island) while locked, and keeps the session locked if
+//! this process dies -- crash-safety is the compositor's job, not ours.
+//! See <https://wayland.app/protocols/ext-session-lock-v1>.
 //!
-//! One card-bearing window per output, each on a frozen, blurred capture of
-//! that output's last frame. The card reuses the island's surface,
-//! typography and `@ms_*` palette roles so a locked session still looks
-//! like the same shell.
-//!
-//! # Flow
-//!
-//! [`LockSession::new`] creates a [`gtk4_session_lock::Instance`] and wires
-//! its four signals before calling [`Instance::lock`][lock]:
-//!
-//! - `monitor` fires once per existing output immediately, and again for
-//!   any output that appears later. The handler builds a fresh, *unrealized*
-//!   window and calls [`Instance::assign_window_to_monitor`][assign] --
-//!   `present()` must never be called on it, the library maps it itself.
-//! - `locked` fires once the compositor has actually blanked every output.
-//! - `failed` fires if the compositor refuses (for example another process
-//!   already holds the lock), possibly before `lock()` even returns.
-//! - `unlocked` fires when the session is unlocked, whether that was our
-//!   own `Instance::unlock` call or something compositor-side.
-//!
-//! [lock]: gtk4_session_lock::Instance::lock
-//! [assign]: gtk4_session_lock::Instance::assign_window_to_monitor
+//! One card-bearing window per output, each on a frozen, blurred capture
+//! of that output's last frame, reusing the island's surface styles and
+//! `@ms_*` palette roles.
 
 use std::{
     cell::{Cell, RefCell},
@@ -73,22 +49,20 @@ pub type LockEndedAction = Rc<dyn Fn()>;
 /// destroyed by the library itself when the output disappears or the lock
 /// ends -- this struct only holds the widget handles needed to update it.
 struct LockWindow {
-    window: ApplicationWindow,
-    backdrop: gtk::Picture,
-    entry: gtk::PasswordEntry,
-    status: gtk::Label,
-    clock: gtk::Label,
-    date: gtk::Label,
-    caps: gtk::Label,
+    window: glib::WeakRef<ApplicationWindow>,
+    backdrop: glib::WeakRef<gtk::Picture>,
+    entry: glib::WeakRef<gtk::PasswordEntry>,
+    status: glib::WeakRef<gtk::Label>,
+    clock: glib::WeakRef<gtk::Label>,
+    date: glib::WeakRef<gtk::Label>,
+    caps: glib::WeakRef<gtk::Label>,
     connector: String,
 }
 
 impl LockWindow {
-    /// Builds the window and its widget tree. Deliberately does not touch
-    /// layer-shell or window-manager APIs of any kind: `assign_window_to_monitor`
-    /// is what gives this surface a role, and calling `present()` on it is
-    /// an error per the library's docs.
-    fn new(application: &Application, scale: f64, connector: String) -> Self {
+    /// `assign_window_to_monitor` gives this surface its role; `present()`
+    /// is an error per the library's docs.
+    fn new(application: &Application, scale: f64, connector: String) -> (Self, ApplicationWindow) {
         let window = ApplicationWindow::builder()
             .application(application)
             .title("mithshell lock")
@@ -132,6 +106,9 @@ impl LockWindow {
         let date = gtk::Label::new(None);
         date.add_css_class("hero-date");
         date.set_halign(Align::Center);
+        let (time_text, date_text) = clock_text();
+        clock.set_label(&time_text);
+        date.set_label(&date_text);
 
         let user = gtk::Label::new(Some(&crate::lock::current_user()));
         user.add_css_class("lock-user");
@@ -142,7 +119,7 @@ impl LockWindow {
         entry.add_css_class("lock-entry");
         entry.set_show_peek_icon(true);
         entry.set_activates_default(false);
-        entry.set_placeholder_text(Some("Password"));
+        entry.set_placeholder_text(Some("Password or TOTP; Enter for YubiKey"));
         entry.set_hexpand(true);
 
         let caps = gtk::Label::new(Some("CAPS LOCK"));
@@ -172,29 +149,37 @@ impl LockWindow {
         overlay.add_overlay(&card);
         window.set_child(Some(&overlay));
 
-        Self {
+        (
+            Self {
+                window: window.downgrade(),
+                backdrop: backdrop.downgrade(),
+                entry: entry.downgrade(),
+                status: status.downgrade(),
+                clock: clock.downgrade(),
+                date: date.downgrade(),
+                caps: caps.downgrade(),
+                connector,
+            },
             window,
-            backdrop,
-            entry,
-            status,
-            clock,
-            date,
-            caps,
-            connector,
-        }
+        )
     }
 
     fn set_backdrop(&self, texture: &gdk::Texture) {
-        self.backdrop.set_paintable(Some(texture));
-        self.backdrop.set_opacity(1.0);
+        if let Some(backdrop) = self.backdrop.upgrade() {
+            backdrop.set_paintable(Some(texture));
+            backdrop.set_opacity(1.0);
+        }
     }
 
     fn set_status(&self, message: &str, error: bool) {
-        self.status.set_label(message);
+        let Some(status) = self.status.upgrade() else {
+            return;
+        };
+        status.set_label(message);
         if error {
-            self.status.add_css_class("error");
+            status.add_css_class("error");
         } else {
-            self.status.remove_css_class("error");
+            status.remove_css_class("error");
         }
     }
 }
@@ -211,6 +196,7 @@ pub struct LockSession {
     config: LockConfig,
     scale: f64,
     submit: LockSubmitAction,
+    on_ended: LockEndedAction,
     /// Incremented per attempt so a verdict that arrives after the user has
     /// already typed something else is ignored.
     generation: Cell<u64>,
@@ -220,11 +206,14 @@ pub struct LockSession {
     /// Guards the entry mirroring so propagating text to the other outputs
     /// does not re-enter through their `changed` handlers.
     syncing: Cell<bool>,
-    /// Set by the `failed` signal handler. `failed` can fire synchronously,
-    /// before `Instance::lock()` even returns, so the caller checks this
-    /// after construction rather than relying solely on `on_ended`, which
-    /// is a no-op if the caller has not stored the session anywhere yet.
+    /// Set by the `failed` signal, which can fire synchronously inside
+    /// `lock()`; the caller checks this because `on_ended` may have already
+    /// fired before the session was stored anywhere.
     failed: Cell<bool>,
+    /// Prevents the signal from finishing an explicit unlock too early.
+    unlocking: Cell<bool>,
+    /// Captured before `lock()` so monitor callbacks can map immediately.
+    captures: RefCell<HashMap<String, backdrop::Image>>,
     backdrops: RefCell<Option<async_channel::Sender<Backdrop>>>,
     clock_source: RefCell<Option<glib::SourceId>>,
     caps_handler: RefCell<Option<(gdk::Device, glib::SignalHandlerId)>>,
@@ -237,13 +226,10 @@ struct Backdrop {
 }
 
 impl LockSession {
-    /// Requests a session lock and wires up the protocol's signals.
-    ///
-    /// `on_ended` is called from the `failed` and `unlocked` signal
-    /// handlers -- the caller's cue to drop its `Rc<LockSession>`. Check
-    /// [`has_failed`][Self::has_failed] after this returns before storing
-    /// the session anywhere: a synchronous `failed` means `on_ended` fired
-    /// before the caller had anywhere to record it.
+    /// Requests a session lock. `on_ended` fires from the `failed`/`unlocked`
+    /// signals -- the caller's cue to drop its `Rc<LockSession>`; check
+    /// [`has_failed`][Self::has_failed] first, since `failed` can fire
+    /// synchronously inside `lock()`.
     pub fn new(
         application: &Application,
         config: &LockConfig,
@@ -258,11 +244,14 @@ impl LockSession {
             config: config.clone(),
             scale: configured_scale,
             submit,
+            on_ended: on_ended.clone(),
             generation: Cell::new(0),
             busy: Cell::new(false),
             attempts: Cell::new(0),
             syncing: Cell::new(false),
             failed: Cell::new(false),
+            unlocking: Cell::new(false),
+            captures: RefCell::new(HashMap::new()),
             backdrops: RefCell::new(None),
             clock_source: RefCell::new(None),
             caps_handler: RefCell::new(None),
@@ -273,16 +262,15 @@ impl LockSession {
         session.attach_backdrops(receiver);
 
         let weak = Rc::downgrade(&session);
-        let ended = on_ended.clone();
         session.instance.connect_failed(move |_| {
             warn!(
                 "the compositor refused to lock the session (another lock holder, or ext-session-lock-v1 is unsupported)"
             );
             if let Some(session) = weak.upgrade() {
                 session.failed.set(true);
-                session.teardown();
+                let ended = session.on_ended.clone();
+                glib::idle_add_local_once(move || ended());
             }
-            ended();
         });
 
         let weak = Rc::downgrade(&session);
@@ -296,10 +284,12 @@ impl LockSession {
         let weak = Rc::downgrade(&session);
         session.instance.connect_unlocked(move |_| {
             info!("session unlocked");
-            if let Some(session) = weak.upgrade() {
-                session.teardown();
+            if let Some(session) = weak.upgrade()
+                && !session.unlocking.get()
+            {
+                let ended = session.on_ended.clone();
+                glib::idle_add_local_once(move || ended());
             }
-            on_ended();
         });
 
         let weak = Rc::downgrade(&session);
@@ -309,11 +299,11 @@ impl LockSession {
             }
         });
 
+        session.capture_existing_monitors();
+
         if !session.instance.lock() {
-            // Per the library's docs this is the "immediate fail" case;
-            // `failed` has either already fired synchronously (setting
-            // `session.failed`) or this instance was already locked, which
-            // cannot happen since we just constructed it.
+            // `failed` has already fired synchronously, or the instance was
+            // already locked -- impossible for a fresh instance.
             warn!("gtk_session_lock_instance_lock did not start");
         }
 
@@ -328,14 +318,7 @@ impl LockSession {
         self.failed.get()
     }
 
-    /// Builds and assigns a lock surface for one output.
-    ///
-    /// The screenshot is captured here, synchronously, before the window is
-    /// assigned to the monitor: the protocol explicitly gives clients a
-    /// grace window between `lock()` and the compositor actually blanking
-    /// the output (it waits for our first committed frame, or a timeout),
-    /// so the real desktop is still what's on screen at this point --
-    /// there is no race to lose here, unlike a hand-rolled overlay surface.
+    /// Builds and immediately assigns a lock surface for one output.
     fn add_monitor(self: &Rc<Self>, instance: &SessionLockInstance, monitor: &gdk::Monitor) {
         let Some(connector) = monitor.connector().map(|value| value.to_string()) else {
             warn!("ignoring a monitor without a connector name");
@@ -348,21 +331,16 @@ impl LockSession {
         }
 
         let scale = resolved_scale(self.scale, automatic_scale(monitor));
-        let window = Rc::new(LockWindow::new(&self.application, scale, connector.clone()));
+        let (window, gtk_window) = LockWindow::new(&self.application, scale, connector.clone());
+        let window = Rc::new(window);
         self.connect_window(&window);
 
-        let captured = match backdrop::capture(&connector) {
-            Ok(image) => Some(image),
-            Err(error) => {
-                // A flat black backdrop (the window's own background) is a
-                // perfectly secure fallback; it is only less pretty.
-                warn!("no lock backdrop for {connector}: {error:#}");
-                None
-            }
-        };
+        let captured = self.captures.borrow_mut().remove(&connector);
 
-        instance.assign_window_to_monitor(&window.window, monitor);
-        window.entry.grab_focus();
+        instance.assign_window_to_monitor(&gtk_window, monitor);
+        if let Some(entry) = window.entry.upgrade() {
+            entry.grab_focus();
+        }
         self.windows.borrow_mut().insert(connector.clone(), window);
 
         let Some(image) = captured else {
@@ -379,6 +357,28 @@ impl LockSession {
                 image: processed,
             });
         });
+    }
+
+    /// Hotplugged outputs use the black fallback because capture is no longer safe.
+    fn capture_existing_monitors(&self) {
+        let Some(display) = gdk::Display::default() else {
+            return;
+        };
+        let monitors = display.monitors();
+        for index in 0..monitors.n_items() {
+            let Some(monitor) = monitors.item(index).and_downcast::<gdk::Monitor>() else {
+                continue;
+            };
+            let Some(connector) = monitor.connector().map(|value| value.to_string()) else {
+                continue;
+            };
+            match backdrop::capture(&connector) {
+                Ok(image) => {
+                    self.captures.borrow_mut().insert(connector, image);
+                }
+                Err(error) => warn!("no lock backdrop for {connector}: {error:#}"),
+            }
+        }
     }
 
     fn attach_backdrops(self: &Rc<Self>, receiver: async_channel::Receiver<Backdrop>) {
@@ -406,18 +406,23 @@ impl LockSession {
     }
 
     fn connect_window(self: &Rc<Self>, window: &Rc<LockWindow>) {
-        // Submit on Enter.
+        let Some(entry) = window.entry.upgrade() else {
+            return;
+        };
+        let Some(gtk_window) = window.window.upgrade() else {
+            return;
+        };
+
         let weak = Rc::downgrade(self);
-        window.entry.connect_activate(move |entry| {
+        entry.connect_activate(move |entry| {
             if let Some(session) = weak.upgrade() {
                 session.submit(&entry.text());
             }
         });
 
-        // Mirror typing to every other output's entry.
         let weak = Rc::downgrade(self);
         let connector = window.connector.clone();
-        window.entry.connect_changed(move |entry| {
+        entry.connect_changed(move |entry| {
             if let Some(session) = weak.upgrade() {
                 session.mirror(&connector, &entry.text());
             }
@@ -436,13 +441,12 @@ impl LockSession {
             }
             glib::Propagation::Stop
         });
-        window.window.add_controller(keys);
+        gtk_window.add_controller(keys);
 
         // The compositor decides which lock surface has keyboard focus and
         // may move it as the pointer crosses outputs; make sure it always
         // lands on the entry rather than on the card.
-        let entry = window.entry.clone();
-        window.window.connect_is_active_notify(move |window| {
+        gtk_window.connect_is_active_notify(move |window| {
             if window.is_active() {
                 entry.grab_focus();
             }
@@ -456,8 +460,11 @@ impl LockSession {
         }
         self.syncing.set(true);
         for window in self.windows.borrow().values() {
-            if window.connector != source && window.entry.text() != text {
-                window.entry.set_text(text);
+            if window.connector != source
+                && let Some(entry) = window.entry.upgrade()
+                && entry.text() != text
+            {
+                entry.set_text(text);
             }
         }
         self.syncing.set(false);
@@ -466,17 +473,15 @@ impl LockSession {
     fn clear(&self) {
         self.syncing.set(true);
         for window in self.windows.borrow().values() {
-            window.entry.set_text("");
+            if let Some(entry) = window.entry.upgrade() {
+                entry.set_text("");
+            }
         }
         self.syncing.set(false);
     }
 
     fn submit(&self, password: &str) {
         if self.busy.get() {
-            return;
-        }
-        if password.is_empty() {
-            self.broadcast_status("Enter your password", false);
             return;
         }
         let generation = self.generation.get().wrapping_add(1);
@@ -486,9 +491,16 @@ impl LockSession {
         // after a bad password, and letting the user queue more attempts in
         // the meantime would make the UI feel broken.
         for window in self.windows.borrow().values() {
-            window.entry.set_sensitive(false);
+            if let Some(entry) = window.entry.upgrade() {
+                entry.set_sensitive(false);
+            }
         }
-        self.broadcast_status("Authenticating…", false);
+        let status = if password.is_empty() {
+            "Checking YubiKey…"
+        } else {
+            "Authenticating…"
+        };
+        self.broadcast_status(status, false);
         (self.submit)(generation, password.to_owned());
     }
 
@@ -514,11 +526,13 @@ impl LockSession {
         }
         self.busy.set(false);
         for window in self.windows.borrow().values() {
-            window.entry.set_sensitive(true);
+            if let Some(entry) = window.entry.upgrade() {
+                entry.set_sensitive(true);
+            }
         }
         match outcome {
             Outcome::Granted => {
-                self.instance.unlock();
+                self.unlock_after_library_cleanup();
             }
             Outcome::Denied(message) => {
                 let attempts = self.attempts.get().saturating_add(1);
@@ -544,27 +558,37 @@ impl LockSession {
         }
     }
 
-    /// Unlocks without authenticating. Used for `mithshell unlock`, which
-    /// exists as a same-user, same-machine escape hatch: the IPC socket is
-    /// already restricted to this user by filesystem permissions and a
-    /// peer-credential check (see `ipc::handle_connection`), so reaching
-    /// this at all already proves the caller is this user, just on a
-    /// different session or TTY.
+    /// Unlocks without authenticating. `mithshell unlock` is a same-user,
+    /// same-machine escape hatch: the IPC socket is restricted to this user
+    /// by filesystem permissions and a peer-credential check.
     pub fn force_unlock(&self) {
+        self.unlock_after_library_cleanup();
+    }
+
+    fn unlock_after_library_cleanup(&self) {
+        self.unlocking.set(true);
         self.instance.unlock();
+        self.unlocking.set(false);
+        // The C library has finished destroying its assigned windows.
+        (self.on_ended)();
     }
 
     fn focus_active_entry(&self) {
         for window in self.windows.borrow().values() {
-            if window.window.is_active() {
-                window.entry.grab_focus();
+            if let (Some(gtk_window), Some(entry)) =
+                (window.window.upgrade(), window.entry.upgrade())
+                && gtk_window.is_active()
+            {
+                entry.grab_focus();
                 return;
             }
         }
         // No output reported itself active yet (can happen right after
         // `locked` fires); focus the first one so typing is never lost.
-        if let Some(window) = self.windows.borrow().values().next() {
-            window.entry.grab_focus();
+        if let Some(window) = self.windows.borrow().values().next()
+            && let Some(entry) = window.entry.upgrade()
+        {
+            entry.grab_focus();
         }
     }
 
@@ -587,20 +611,14 @@ impl LockSession {
     }
 
     fn tick_clock(&self) {
-        let now = glib::DateTime::now_local().ok();
-        let time = now
-            .as_ref()
-            .and_then(|now| now.format("%H:%M").ok())
-            .map(|text| text.to_string())
-            .unwrap_or_default();
-        let date = now
-            .as_ref()
-            .and_then(|now| now.format("%A, %e %B").ok())
-            .map(|text| text.trim().to_string())
-            .unwrap_or_default();
+        let (time, date) = clock_text();
         for window in self.windows.borrow().values() {
-            window.clock.set_label(&time);
-            window.date.set_label(&date);
+            if let Some(clock) = window.clock.upgrade() {
+                clock.set_label(&time);
+            }
+            if let Some(date_label) = window.date.upgrade() {
+                date_label.set_label(&date);
+            }
         }
     }
 
@@ -625,7 +643,9 @@ impl LockSession {
 
     fn apply_caps_lock(&self, active: bool) {
         for window in self.windows.borrow().values() {
-            window.caps.set_visible(active);
+            if let Some(caps) = window.caps.upgrade() {
+                caps.set_visible(active);
+            }
         }
     }
 
@@ -643,11 +663,8 @@ impl LockSession {
         })
     }
 
-    /// Releases everything this session owns that isn't the lock surfaces
-    /// themselves -- the library unmaps and destroys those on its own once
-    /// the lock ends, per its docs, so this only drops our references and
-    /// stops our own timers/watchers. Idempotent: called from both the
-    /// `failed` and `unlocked` signal handlers, and again from `Drop`.
+    /// Drops our references and stops our own timers; the library destroys
+    /// the lock surfaces itself. Idempotent (`failed`/`unlocked` + `Drop`).
     fn teardown(&self) {
         if let Some((keyboard, handler)) = self.caps_handler.borrow_mut().take() {
             keyboard.disconnect(handler);
@@ -660,6 +677,21 @@ impl LockSession {
         }
         self.windows.borrow_mut().clear();
     }
+}
+
+fn clock_text() -> (String, String) {
+    let now = glib::DateTime::now_local().ok();
+    let time = now
+        .as_ref()
+        .and_then(|now| now.format("%H:%M").ok())
+        .map(|text| text.to_string())
+        .unwrap_or_default();
+    let date = now
+        .as_ref()
+        .and_then(|now| now.format("%A, %e %B").ok())
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default();
+    (time, date)
 }
 
 impl Drop for LockSession {

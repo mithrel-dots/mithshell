@@ -1354,6 +1354,12 @@ impl IslandWindow {
         }
     }
 
+    /// Forces a fresh commit; the compositor stops compositing this surface
+    /// while the session is locked, so it may not resume until we submit one.
+    pub fn recomposite(&self) {
+        self.window.queue_draw();
+    }
+
     pub fn update_shell_config(&self, config: &ShellConfig, animations_enabled: bool) {
         self.window
             .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
