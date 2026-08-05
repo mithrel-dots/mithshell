@@ -179,13 +179,20 @@ changes.
 
 Mithshell reconnects automatically (see
 [`docs/tarragon.md`](docs/tarragon.md) for the socket resolution order) and
-displays an offline state when TarraGon is unavailable. Start TarraGon
-separately:
+displays an offline state when TarraGon is unavailable. Install and enable it
+with:
 
 ```sh
-systemctl --user enable --now tarragon.service
+mithshell setup tarragon
 mithshell search --monitor focused
 ```
+
+This clones and builds TarraGon (unless a `tarragon` binary is already on
+PATH), generates a default config through TarraGon's own binary, and
+installs and enables its systemd user service. It requires `git` and a Go
+toolchain and is safe to run more than once. See
+[`docs/tarragon.md`](docs/tarragon.md#installation) for flags and the
+manual install steps it automates.
 
 The current TarraGon checkout provides applications, files, calculator, web
 search, and other installed plugins. Wallpaper and clipboard history will

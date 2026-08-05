@@ -5,11 +5,57 @@ owns discovery, querying, ranking, plugin lifecycle, and action execution;
 Mithshell only presents the protocol data. New result-producing plugins do not
 require Mithshell changes.
 
-## Starting and opening
+## Installation
 
-TarraGon must expose its UI socket:
+TarraGon must expose its UI socket. The primary install path is:
 
 ```sh
+mithshell setup tarragon
+```
+
+This is a standalone local command -- it never talks to the mithshell
+daemon over IPC, so it works even before mithshell has ever been started.
+In order:
+
+1. Checks that `git` and a Go toolchain (`go`) are on PATH.
+2. Clones TarraGon (or fast-forward pulls an existing checkout) unless a
+   `tarragon` binary is already on PATH and `--force` was not passed.
+3. Builds it -- `just build` inside the checkout if it has a `justfile`,
+   otherwise `go build -o build/tarragon ./cmd/` -- and copies the result to
+   `~/.local/bin/tarragon`.
+4. Generates a default config with `tarragon config generate` unless
+   `~/.config/tarragon/tarragon.{toml,yaml,json}` already exists.
+5. Installs and enables `systemd/tarragon.service` from the checkout as
+   `~/.config/systemd/user/tarragon.service`, unless `--no-service` was
+   passed.
+
+Flags:
+
+```sh
+mithshell setup tarragon \
+  --repo https://github.com/mithrel-dots/TarraGon.git \
+  --src-dir ~/.cache/mithshell/tarragon-src \
+  --no-service \
+  --force
+```
+
+`--repo` and `--src-dir` override the clone URL and local checkout
+directory (which otherwise defaults under `$XDG_CACHE_HOME/mithshell`).
+`--no-service` skips the systemd unit. `--force` rebuilds and reinstalls
+even when a `tarragon` binary is already on PATH; without it, running the
+command again is a no-op past the config/service steps.
+
+### Manual install
+
+If you'd rather not use the automated flow, the same steps done by hand:
+
+```sh
+git clone --depth 1 https://github.com/mithrel-dots/TarraGon.git
+cd TarraGon && just build   # or: go build -o build/tarragon ./cmd/
+install -Dm755 build/tarragon ~/.local/bin/tarragon
+tarragon config generate    # only if ~/.config/tarragon/tarragon.toml doesn't exist
+install -Dm644 systemd/tarragon.service ~/.config/systemd/user/tarragon.service
+systemctl --user daemon-reload
 systemctl --user enable --now tarragon.service
 mithshell search --monitor focused
 ```
