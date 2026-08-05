@@ -1365,6 +1365,15 @@ impl IslandWindow {
         }
     }
 
+    /// Right-clicking the pill always dismisses the current notification,
+    /// regardless of whether it declared a default action.
+    fn dismiss_current_notification(self: &Rc<Self>) {
+        let Some(notification) = self.notification_current.borrow().clone() else {
+            return;
+        };
+        (self.actions.notification_dismiss)(notification.id);
+    }
+
     fn show_notification_toast(self: &Rc<Self>, notification: Notification) {
         let Some(toasts) = &self.notification_toasts else {
             return;
@@ -1820,10 +1829,13 @@ impl IslandWindow {
         let click = GestureClick::new();
         let weak = Rc::downgrade(self);
         click.connect_released(move |gesture, _, _, _| {
-            if gesture.current_button() == 1
-                && let Some(island) = weak.upgrade()
-            {
-                island.activate_current_notification();
+            let Some(island) = weak.upgrade() else {
+                return;
+            };
+            match gesture.current_button() {
+                gdk::BUTTON_PRIMARY => island.activate_current_notification(),
+                gdk::BUTTON_SECONDARY => island.dismiss_current_notification(),
+                _ => {}
             }
         });
         self.notification.add_controller(click);
@@ -2475,7 +2487,7 @@ impl IslandWindow {
         self.search.set_can_target(view == View::Search);
         self.weather.set_can_target(view == View::Weather);
         self.osd.set_can_target(false);
-        self.notification.set_can_target(false);
+        self.notification.set_can_target(view == View::Notification);
         self.window
             .set_keyboard_mode(if matches!(view, View::Search | View::Weather) {
                 KeyboardMode::Exclusive
