@@ -1827,6 +1827,10 @@ impl IslandWindow {
         self.media.add_controller(click);
 
         let click = GestureClick::new();
+        // `GestureSingle::button` defaults to the primary button only; ask
+        // for every button so the right-click dismiss below actually gets
+        // delivered (`current_button()` still filters which one fired).
+        click.set_button(0);
         let weak = Rc::downgrade(self);
         click.connect_released(move |gesture, _, _, _| {
             let Some(island) = weak.upgrade() else {
