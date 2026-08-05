@@ -177,8 +177,10 @@ inventory, status refresh, and daemon reload. Result and plugin metadata come
 directly from TarraGon, so newly installed plugins work without Mithshell
 changes.
 
-Mithshell reconnects to `/tmp/tarragon-ui.sock` automatically and displays an
-offline state when TarraGon is unavailable. Start TarraGon separately:
+Mithshell reconnects automatically (see
+[`docs/tarragon.md`](docs/tarragon.md) for the socket resolution order) and
+displays an offline state when TarraGon is unavailable. Start TarraGon
+separately:
 
 ```sh
 systemctl --user enable --now tarragon.service

@@ -1,9 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
+    env,
+    ffi::OsString,
     io::{BufRead, BufReader, ErrorKind, Write},
     os::unix::net::UnixStream,
+    path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -14,9 +17,55 @@ use async_channel::{Receiver, Sender};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
-const SOCKET_PATH: &str = "/tmp/tarragon-ui.sock";
 const CLIENT_ID: &str = "mithshell";
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+const ENV_SOCKET_OVERRIDE: &str = "TARRAGON_UI_SOCKET";
+const ENV_XDG_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
+
+/// Resolves and caches the TarraGon UI socket path for the lifetime of the
+/// process.
+///
+/// TarraGon's own daemon-side implementation resolves its listening path
+/// with the exact same algorithm, so this must not drift from
+/// [`resolve_ui_socket_path`] independently.
+fn ui_socket_path() -> &'static Path {
+    static SOCKET_PATH: OnceLock<PathBuf> = OnceLock::new();
+    SOCKET_PATH.get_or_init(resolve_ui_socket_path)
+}
+
+/// Reads the environment once and delegates to the pure, testable
+/// [`resolve_ui_socket_path_from`].
+fn resolve_ui_socket_path() -> PathBuf {
+    // SAFETY: `geteuid()` is a pure syscall with no invalid return value;
+    // this mirrors the same call already made in `ipc::verify_peer_is_this_user`.
+    let euid = unsafe { libc::geteuid() };
+    resolve_ui_socket_path_from(
+        env::var_os(ENV_SOCKET_OVERRIDE),
+        env::var_os(ENV_XDG_RUNTIME_DIR),
+        euid,
+    )
+}
+
+/// The resolution order, in priority:
+///
+/// 1. `TARRAGON_UI_SOCKET`, used verbatim, when set and non-empty.
+/// 2. `$XDG_RUNTIME_DIR/tarragon/ui.sock`, when `XDG_RUNTIME_DIR` is set and
+///    non-empty.
+/// 3. `/tmp/tarragon-{euid}/ui.sock`, the effective UID formatted as a
+///    decimal string.
+fn resolve_ui_socket_path_from(
+    socket_override: Option<OsString>,
+    xdg_runtime_dir: Option<OsString>,
+    euid: u32,
+) -> PathBuf {
+    if let Some(path) = socket_override.filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+    if let Some(dir) = xdg_runtime_dir.filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir).join("tarragon").join("ui.sock");
+    }
+    PathBuf::from(format!("/tmp/tarragon-{euid}/ui.sock"))
+}
 
 #[derive(Debug, Clone)]
 pub enum TarragonCommand {
@@ -269,7 +318,7 @@ fn run(
 ) {
     let mut reported_disconnected = false;
     while !command_receiver.is_closed() {
-        match UnixStream::connect(SOCKET_PATH) {
+        match UnixStream::connect(ui_socket_path()) {
             Ok(stream) => {
                 reported_disconnected = false;
                 let _ = event_sender.send_blocking(TarragonEvent::Connection {
@@ -544,6 +593,44 @@ mod tests {
             &sender,
         );
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn socket_override_env_var_wins_verbatim() {
+        let path = resolve_ui_socket_path_from(
+            Some(OsString::from("/custom/path.sock")),
+            Some(OsString::from("/run/user/1000")),
+            1000,
+        );
+        assert_eq!(path, PathBuf::from("/custom/path.sock"));
+    }
+
+    #[test]
+    fn empty_socket_override_falls_through_to_xdg_runtime_dir() {
+        let path = resolve_ui_socket_path_from(
+            Some(OsString::new()),
+            Some(OsString::from("/run/user/1000")),
+            1000,
+        );
+        assert_eq!(path, PathBuf::from("/run/user/1000/tarragon/ui.sock"));
+    }
+
+    #[test]
+    fn falls_back_to_xdg_runtime_dir_when_unset() {
+        let path = resolve_ui_socket_path_from(None, Some(OsString::from("/run/user/1000")), 1000);
+        assert_eq!(path, PathBuf::from("/run/user/1000/tarragon/ui.sock"));
+    }
+
+    #[test]
+    fn falls_back_to_tmp_with_euid_when_neither_is_set() {
+        let path = resolve_ui_socket_path_from(None, None, 1000);
+        assert_eq!(path, PathBuf::from("/tmp/tarragon-1000/ui.sock"));
+    }
+
+    #[test]
+    fn empty_xdg_runtime_dir_falls_through_to_tmp_fallback() {
+        let path = resolve_ui_socket_path_from(None, Some(OsString::new()), 1000);
+        assert_eq!(path, PathBuf::from("/tmp/tarragon-1000/ui.sock"));
     }
 
     #[test]

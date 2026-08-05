@@ -17,8 +17,18 @@ mithshell search --monitor focused
 The same frontend opens from the dashboard's search button. The example
 Hyprland binding in `contrib/hyprland.conf` uses `SUPER+SPACE`.
 
-Mithshell reconnects to `/tmp/tarragon-ui.sock` every second. The search entry,
-plugin inventory, and reload controls become unavailable while disconnected.
+Mithshell resolves TarraGon's UI socket path in this order:
+
+1. `TARRAGON_UI_SOCKET`, used verbatim, when set and non-empty.
+2. `$XDG_RUNTIME_DIR/tarragon/ui.sock`, when `XDG_RUNTIME_DIR` is set and
+   non-empty (the common case on any systemd or elogind session).
+3. `/tmp/tarragon-{euid}/ui.sock`, the effective UID as a decimal string,
+   when neither of the above is available.
+
+The path is resolved once per process and reconnected to every second. The
+search entry, plugin inventory, and reload controls become unavailable while
+disconnected. TarraGon's own daemon-side resolution follows the exact same
+order, so the two agree on a default without any shared configuration.
 
 ## Launcher geometry
 
