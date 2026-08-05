@@ -3,8 +3,8 @@
 `mithshell` is a small GTK4 layer-shell surface for Hyprland. It rests as a
 top-center workspace pill and expands into a focused dashboard with system
 controls. It includes workspaces, active window and media state, automatic
-volume OSD feedback, brightness and battery state, Material You colors, and a
-local IPC command line.
+volume OSD feedback, brightness and battery state, desktop notifications,
+Material You colors, and a local IPC command line.
 
 The visual structure takes inspiration from the projects under `reference/`,
 while the implementation uses native Rust services rather than Quickshell.
@@ -122,6 +122,48 @@ player's desktop icon, title, and Cava's live PipeWire spectrum in the middle.
 Paused or stopped players return the pill to its normal compact state, and
 `playerctld` mirrors are ignored. MPRIS queries run on a dedicated GLib context
 so an unresponsive player cannot block GTK rendering.
+
+### Notifications
+
+Mithshell implements `org.freedesktop.Notifications` itself -- no external
+notification daemon (dunst, mako, ...) is needed, and running one alongside
+mithshell means whichever process claims the D-Bus name first wins; only one
+can own it at a time.
+
+```toml
+[notifications]
+position = "pill"
+timeout_ms = 5000
+max_visible = 5
+max_history = 50
+gap = 8
+margin = 12
+```
+
+`position` controls where an incoming notification appears:
+
+* `"pill"` (the default) -- reuses the island's own surface exactly like the
+  OSD does: one notification at a time, in place of the compact pill,
+  auto-advancing through a queue if more arrive while one is showing.
+* `"below-pill"` -- a separate small popup centered directly under the
+  island, holding up to `max_visible` stacked toasts.
+* `"top-left"`, `"top-right"`, `"bottom-left"`, `"bottom-right"` -- the same
+  popup, anchored to a screen corner instead of following the island.
+
+`timeout_ms` is the fallback shown-for duration when a sender doesn't
+request an explicit one. A sender that explicitly asks for persistence
+(`expire_timeout = 0`) is honored in `below-pill`/corner positions, which
+have a close button; in `pill` position it instead falls back to
+`timeout_ms`, since the pill has no interactive dismiss control and a
+persistent entry would otherwise block the queue forever.
+
+Every notification is also kept in the dashboard's notification card
+(up to `max_history`), independent of `position` and of whether its popup
+has already timed out, with its own dismiss button.
+
+Changing `notifications.position`, `gap`, or `margin` takes effect on the
+next daemon restart rather than `mithshell reload`, the same as
+`media`/`weather` settings.
 
 ### TarraGon search
 
@@ -264,7 +306,8 @@ Mithshell's stylesheet (`src/ui/style.css`) references 15 `@ms_*` role colors
 from is controlled by `theme.engine`, and can always be overridden with a
 `colors.css` file.
 
-The dashboard, compact bar, media popup, OSD, and weather popup use
+The dashboard, compact bar, media popup, OSD, notification popup, and
+weather popup use
 [Monocraft](https://github.com/IdreesInc/Monocraft) as their display font,
 falling back to `JetBrainsMono Nerd Font` and the system monospace font if
 it isn't installed. Install `ttf-monocraft-git` (AUR) or the upstream release

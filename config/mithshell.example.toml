@@ -11,6 +11,28 @@ scale = 0
 # Maximum media-pill width as a multiple of the compact pill width.
 max_width_factor = 1.8
 
+[notifications]
+# "pill" shows one notification at a time in place of the compact pill,
+# exactly like the volume/brightness/workspace OSD. "below-pill" instead
+# pops a small popup directly under the island. "top-left", "top-right",
+# "bottom-left" and "bottom-right" anchor that same popup to a screen
+# corner instead of following the island.
+position = "pill"
+# Fallback duration a notification stays visible for, honored when the
+# sender does not request an explicit expiry.
+timeout_ms = 5000
+# Maximum simultaneously visible toasts. Only applies to "below-pill" and
+# the corner positions; "pill" always shows one at a time and queues the
+# rest.
+max_visible = 5
+# Notifications kept in the dashboard's notification history.
+max_history = 50
+# Spacing between stacked toasts, and between the island and the popup in
+# "below-pill" position.
+gap = 8
+# Distance from the screen edges for the corner positions.
+margin = 12
+
 [lock]
 # PAM service the lock screen authenticates against. When unset, mithshell
 # uses /etc/pam.d/mithshell if it exists and otherwise inherits

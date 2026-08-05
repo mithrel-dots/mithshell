@@ -20,9 +20,11 @@ use crate::{
     latency,
     lock::{self, AuthEvent, AuthRequest},
     media,
+    notifications::{self, CloseReason, NotificationCommand, NotificationEvent},
     preview::{self, PreviewEvent, PreviewRequest},
     state::{
-        AudioState, HyprlandSnapshot, MediaState, OsdState, Palette, SystemSnapshot, WeatherState,
+        AudioState, HyprlandSnapshot, MediaState, Notification, OsdState, Palette, SystemSnapshot,
+        WeatherState,
     },
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
@@ -364,9 +366,15 @@ struct Controller {
     auth_sender: Sender<AuthRequest>,
     tarragon_sender: Sender<TarragonCommand>,
     preview_sender: Sender<PreviewRequest>,
+    /// Bounded, most-recent-first notification history backing every
+    /// island's dashboard notification card. Capacity comes from
+    /// `notifications.max_history`, re-read each time a notification lands.
+    notifications: RefCell<Vec<Notification>>,
+    notification_command_sender: Sender<NotificationCommand>,
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
     _weather_listener: thread::JoinHandle<()>,
+    _notification_listener: thread::JoinHandle<()>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
     auth_listener: Option<thread::JoinHandle<()>>,
@@ -406,6 +414,9 @@ impl Controller {
         let (preview_sender, preview_listener) = preview::start_loader(preview_event_sender);
         let (gtk_css_sender, gtk_css_receiver) = async_channel::unbounded();
         let gtk_css_watcher = theme::watch_gtk_css(gtk_css_sender);
+        let (notification_event_sender, notification_event_receiver) = async_channel::unbounded();
+        let (notification_command_sender, notification_listener) =
+            notifications::start_server(notification_event_sender);
         // Resolved once here rather than at lock time so a broken PAM
         // configuration shows up in the log at startup, while the user can
         // still do something about it.
@@ -438,9 +449,12 @@ impl Controller {
             auth_sender,
             tarragon_sender,
             preview_sender,
+            notifications: RefCell::new(Vec::new()),
+            notification_command_sender,
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
             _weather_listener: weather_listener,
+            _notification_listener: notification_listener,
             tarragon_listener: Some(tarragon_listener),
             preview_listener: Some(preview_listener),
             auth_listener: Some(auth_listener),
@@ -468,6 +482,7 @@ impl Controller {
         controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
         controller.attach_auth(auth_event_receiver);
+        controller.attach_notifications(notification_event_receiver);
         controller.attach_gtk_theme_watch();
         controller.attach_gtk_css_watch(gtk_css_receiver);
 
@@ -750,6 +765,103 @@ impl Controller {
         });
     }
 
+    /// Routes `org.freedesktop.Notifications` traffic from
+    /// `notifications::start_server` to the focused island (matching how
+    /// the volume/brightness/workspace OSD picks a target) and keeps the
+    /// bounded history behind every dashboard's notification card in sync.
+    fn attach_notifications(self: &Rc<Self>, receiver: Receiver<NotificationEvent>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(event) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                match event {
+                    NotificationEvent::Show(notification) => {
+                        if !controller.config.borrow().notifications.enabled {
+                            continue;
+                        }
+                        controller.record_notification(notification.clone());
+                        match controller.target_islands(&MonitorTarget::Focused) {
+                            Ok(islands) => {
+                                for island in islands {
+                                    island.show_notification(notification.clone());
+                                }
+                            }
+                            Err(error) => warn!("cannot show notification: {error:#}"),
+                        }
+                    }
+                    NotificationEvent::Closed { id, .. } => {
+                        for island in controller.islands.borrow().values() {
+                            island.close_notification(id);
+                        }
+                        controller.remove_notification_record(id);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Inserts (or, for a `replaces_id` call, updates) a notification at
+    /// the front of the history and trims it back to
+    /// `notifications.max_history`.
+    fn record_notification(self: &Rc<Self>, notification: Notification) {
+        {
+            let mut history = self.notifications.borrow_mut();
+            history.retain(|existing| existing.id != notification.id);
+            history.insert(0, notification);
+            let max_history = self.config.borrow().notifications.max_history;
+            history.truncate(max_history.max(1));
+        }
+        self.refresh_notification_dashboard();
+    }
+
+    fn remove_notification_record(self: &Rc<Self>, id: u32) {
+        self.notifications
+            .borrow_mut()
+            .retain(|existing| existing.id != id);
+        self.refresh_notification_dashboard();
+    }
+
+    fn refresh_notification_dashboard(self: &Rc<Self>) {
+        let history = self.notifications.borrow();
+        for island in self.islands.borrow().values() {
+            island.update_notification_history(history.as_slice());
+        }
+    }
+
+    /// User-initiated dismissal (a toast's or the dashboard history's close
+    /// button): tells the D-Bus server to announce `NotificationClosed`,
+    /// and -- unlike a timer expiring -- also drops it from history and
+    /// closes it on every island right away, rather than waiting on the
+    /// round trip back through `attach_notifications`.
+    fn dismiss_notification(self: &Rc<Self>, id: u32) {
+        let _ = self
+            .notification_command_sender
+            .try_send(NotificationCommand::Close {
+                id,
+                reason: CloseReason::Dismissed,
+            });
+        for island in self.islands.borrow().values() {
+            island.close_notification(id);
+        }
+        self.remove_notification_record(id);
+    }
+
+    /// A notification (or one of its actions) was activated. Announces
+    /// `ActionInvoked` and then tears it down the same way
+    /// `dismiss_notification` does, matching the common desktop convention
+    /// that activating a notification also closes it.
+    fn invoke_notification_action(self: &Rc<Self>, id: u32, action_key: String) {
+        let _ = self
+            .notification_command_sender
+            .try_send(NotificationCommand::InvokeAction { id, action_key });
+        for island in self.islands.borrow().values() {
+            island.close_notification(id);
+        }
+        self.remove_notification_record(id);
+    }
+
     fn attach_theme(self: &Rc<Self>, receiver: Receiver<Result<Palette, String>>) {
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
@@ -938,6 +1050,7 @@ impl Controller {
                     "system": &*self.system.borrow(),
                     "media": &*self.media.borrow(),
                     "weather": &*self.weather.borrow(),
+                    "notifications": &*self.notifications.borrow(),
                     "tarragon": {
                         "connected": self.tarragon_connected.get(),
                         "results": self.tarragon_snapshot.borrow().as_ref().map_or(0, |snapshot| snapshot.list.len()),
@@ -1276,6 +1389,25 @@ impl Controller {
                     }
                 });
             });
+            let notification_command_sender = self.notification_command_sender.clone();
+            let notification_expired = Rc::new(move |id: u32| {
+                let _ = notification_command_sender.try_send(NotificationCommand::Close {
+                    id,
+                    reason: CloseReason::Expired,
+                });
+            });
+            let weak = Rc::downgrade(self);
+            let notification_dismiss = Rc::new(move |id: u32| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.dismiss_notification(id);
+                }
+            });
+            let weak = Rc::downgrade(self);
+            let notification_invoke = Rc::new(move |id: u32, action_key: String| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.invoke_notification_action(id, action_key);
+                }
+            });
             let island = IslandWindow::new(
                 &self.application,
                 &monitor,
@@ -1293,6 +1425,9 @@ impl Controller {
                     media_play_pause,
                     media_next,
                     media_previous,
+                    notification_expired,
+                    notification_dismiss,
+                    notification_invoke,
                 },
                 self.animations,
             );
@@ -1309,6 +1444,7 @@ impl Controller {
             if let Some(status) = self.tarragon_status.borrow().as_ref() {
                 island.update_tarragon_status(status);
             }
+            island.update_notification_history(self.notifications.borrow().as_slice());
             self.islands.borrow_mut().insert(connector, island);
         }
 

@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub theme: ThemeConfig,
     pub weather: WeatherConfig,
     pub lock: LockConfig,
+    pub notifications: NotificationConfig,
 }
 
 impl AppConfig {
@@ -141,6 +142,78 @@ impl LockConfig {
                 Self::default().dim
             },
         }
+    }
+}
+
+/// Desktop notification (`org.freedesktop.Notifications`) popup behavior.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationConfig {
+    /// When `false`, incoming notifications are still acknowledged over
+    /// D-Bus (so senders don't error out) but nothing is shown or recorded.
+    pub enabled: bool,
+    /// Where a notification appears.
+    pub position: NotificationPosition,
+    /// Fallback duration a notification stays visible for, honored when the
+    /// sender does not request an explicit `expire_timeout`.
+    pub timeout_ms: u64,
+    /// Maximum simultaneously visible toasts. Only applies to
+    /// `below-pill`/corner positions; `pill` shows one notification at a
+    /// time, queueing the rest.
+    pub max_visible: usize,
+    /// Number of notifications kept in the dashboard's notification history.
+    pub max_history: usize,
+    /// Spacing between stacked toasts, and between the island and the
+    /// popup in `below-pill` position.
+    pub gap: i32,
+    /// Distance from the screen edges for the corner positions.
+    pub margin: i32,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            position: NotificationPosition::default(),
+            timeout_ms: 5_000,
+            max_visible: 5,
+            max_history: 50,
+            gap: 8,
+            margin: 12,
+        }
+    }
+}
+
+/// Where an incoming notification is rendered.
+///
+/// `Pill` reuses the island's own surface exactly like the OSD does --
+/// showing one notification at a time in place of the compact pill -- and
+/// is the default so a fresh install behaves consistently with the
+/// existing OSD without opening any extra surface. The remaining variants
+/// spawn a separate small popup instead of touching the pill: `BelowPill`
+/// centers it directly under the island, and the four corner variants
+/// anchor it to a screen corner.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotificationPosition {
+    #[default]
+    Pill,
+    BelowPill,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl NotificationPosition {
+    /// `true` for the four screen-corner variants, i.e. positions that
+    /// anchor to two adjacent layer-shell edges rather than following the
+    /// island.
+    pub fn is_corner(self) -> bool {
+        matches!(
+            self,
+            Self::TopLeft | Self::TopRight | Self::BottomLeft | Self::BottomRight
+        )
     }
 }
 
@@ -448,5 +521,51 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.weather.city.as_deref(), Some("Athens"));
+    }
+
+    #[test]
+    fn notifications_default_to_the_pill_position() {
+        let config = NotificationConfig::default();
+        assert_eq!(config.position, NotificationPosition::Pill);
+        assert!(config.enabled);
+        assert!(!config.position.is_corner());
+    }
+
+    #[test]
+    fn parses_a_notification_corner_position() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [notifications]
+            position = "top-right"
+            timeout_ms = 4000
+            max_visible = 3
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.notifications.position,
+            NotificationPosition::TopRight
+        );
+        assert!(config.notifications.position.is_corner());
+        assert_eq!(config.notifications.timeout_ms, 4000);
+        assert_eq!(config.notifications.max_visible, 3);
+    }
+
+    #[test]
+    fn parses_the_below_pill_notification_position() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [notifications]
+            position = "below-pill"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.notifications.position,
+            NotificationPosition::BelowPill
+        );
+        assert!(!config.notifications.position.is_corner());
     }
 }

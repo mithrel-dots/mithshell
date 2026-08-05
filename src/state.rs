@@ -245,3 +245,80 @@ pub struct OsdState {
     pub muted: bool,
     pub timeout_ms: u64,
 }
+
+/// Urgency hint (`org.freedesktop.Notifications`) carried by a notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Urgency {
+    Low,
+    Normal,
+    Critical,
+}
+
+impl Urgency {
+    /// Maps the raw `urgency` hint byte (0/1/2); anything else falls back
+    /// to `Normal`, matching well-behaved senders that omit the hint.
+    pub fn from_hint_byte(value: u8) -> Self {
+        match value {
+            0 => Self::Low,
+            2 => Self::Critical,
+            _ => Self::Normal,
+        }
+    }
+}
+
+/// One `key`/`label` pair from a `Notify` call's `actions` array. A pair
+/// whose key is `"default"` represents the action invoked by activating
+/// the notification itself, rather than a labeled button.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotificationAction {
+    pub key: String,
+    pub label: String,
+}
+
+/// How long a notification stays visible before it is treated as expired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum NotificationTimeout {
+    /// The sender did not request a specific duration; fall back to
+    /// `notifications.timeout_ms`.
+    Default,
+    /// The sender explicitly asked for the notification to persist
+    /// (`expire_timeout == 0`) until closed or dismissed.
+    Never,
+    Millis(u64),
+}
+
+impl NotificationTimeout {
+    /// Resolves this into a concrete duration, or `None` when the
+    /// notification should persist until explicitly closed.
+    pub fn resolve(self, default_ms: u64) -> Option<u64> {
+        match self {
+            Self::Default => Some(default_ms),
+            Self::Never => None,
+            Self::Millis(ms) => Some(ms),
+        }
+    }
+}
+
+/// A single desktop notification, as received through
+/// `org.freedesktop.Notifications`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Notification {
+    pub id: u32,
+    pub app_name: String,
+    /// Either a themed icon name, or an absolute path to an image file.
+    pub app_icon: Option<String>,
+    pub summary: String,
+    pub body: String,
+    pub urgency: Urgency,
+    pub actions: Vec<NotificationAction>,
+    pub timeout: NotificationTimeout,
+}
+
+impl Notification {
+    /// The action invoked when the notification itself (rather than one of
+    /// its labeled buttons) is activated, if the sender declared one.
+    pub fn default_action(&self) -> Option<&NotificationAction> {
+        self.actions.iter().find(|action| action.key == "default")
+    }
+}

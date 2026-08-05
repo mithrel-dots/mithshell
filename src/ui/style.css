@@ -1,7 +1,9 @@
 window.mithshell-window,
 window.mithshell-window > contents,
 window.mithshell-dismiss,
-window.mithshell-dismiss > contents {
+window.mithshell-dismiss > contents,
+window.mithshell-notifications,
+window.mithshell-notifications > contents {
   background: transparent;
   box-shadow: none;
 }
@@ -11,6 +13,61 @@ window.mithshell-dismiss > contents {
   border: 1px solid alpha(@ms_outline_variant, 0.4);
   border-radius: 22px;
   box-shadow: 0 16px 38px alpha(black, 0.55), inset 0 1px alpha(white, 0.045);
+}
+
+/* `below-pill`/corner notification popup (window.mithshell-notifications).
+   A separate small surface, not part of the island, so it repeats rather
+   than shares `.island-surface`'s look. */
+.notification-stack {
+  padding: 0;
+}
+
+.notification-toast {
+  background: alpha(@ms_surface, 0.97);
+  border: 1px solid alpha(@ms_outline_variant, 0.4);
+  border-radius: 16px;
+  padding: 12px 14px;
+  box-shadow: 0 10px 24px alpha(black, 0.45), inset 0 1px alpha(white, 0.045);
+}
+
+.notification-toast.urgency-critical {
+  border-color: alpha(@ms_error, 0.6);
+}
+
+.notification-toast-clickable {
+  cursor: pointer;
+}
+
+.notification-toast-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 32px;
+}
+
+.notification-toast-summary {
+  color: @ms_on_surface;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.notification-toast-body {
+  color: alpha(@ms_on_surface_variant, 0.85);
+  font-size: 16px;
+}
+
+.notification-toast-close {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: alpha(@ms_on_surface_variant, 0.7);
+}
+
+.notification-toast-close:hover {
+  background: alpha(@ms_outline_variant, 0.35);
+  color: @ms_on_surface;
 }
 
 .compact-content {
@@ -130,6 +187,48 @@ window.mithshell-dismiss > contents {
   color: alpha(@ms_on_surface_variant, 0.7);
   font-size: 11px;
   padding: 4px 0;
+}
+
+.notification-row {
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: alpha(@ms_surface_container, 0.55);
+}
+
+.notification-row.urgency-critical {
+  border-left: 2px solid @ms_error;
+}
+
+.notification-row-icon {
+  -gtk-icon-size: 16px;
+  color: @ms_primary;
+}
+
+.notification-row-summary {
+  color: @ms_on_surface;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.notification-row-body {
+  color: alpha(@ms_on_surface_variant, 0.85);
+  font-size: 11px;
+}
+
+.notification-row-dismiss {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: alpha(@ms_on_surface_variant, 0.7);
+}
+
+.notification-row-dismiss:hover {
+  background: alpha(@ms_outline_variant, 0.35);
+  color: @ms_on_surface;
 }
 
 .player-card {
@@ -580,6 +679,28 @@ progressbar.osd-progress progress {
   background: @ms_primary;
 }
 
+.notification-content {
+  padding: 0 8px 0 16px;
+  cursor: pointer;
+}
+
+.notification-icon {
+  color: @ms_primary;
+  -gtk-icon-size: 32px;
+}
+
+.notification-app {
+  color: @ms_on_surface;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.notification-body {
+  color: alpha(@ms_on_surface_variant, 0.85);
+  font-size: 16px;
+}
+
 .weather-content {
   padding: 12px 16px;
 }
@@ -798,6 +919,14 @@ window.mithshell-lock > contents {
 .scale-medium .osd-icon { -gtk-icon-size: 20px; }
 .scale-medium .osd-title { min-width: 82px; font-size: 13px; }
 .scale-medium .osd-value { min-width: 37px; font-size: 12px; }
+.scale-medium .notification-content { padding: 0 9px 0 19px; }
+.scale-medium .notification-icon,
+.scale-medium .notification-toast-icon { -gtk-icon-size: 37px; }
+.scale-medium .notification-app,
+.scale-medium .notification-toast-summary { font-size: 22px; }
+.scale-medium .notification-body,
+.scale-medium .notification-toast-body { font-size: 17px; }
+.scale-medium .notification-toast { border-radius: 18px; padding: 14px 17px; }
 .scale-medium .weather-content { padding: 16px 21px; }
 .scale-medium .weather-location { font-size: 19px; }
 .scale-medium .weather-hero-temp { font-size: 30px; }
@@ -887,6 +1016,14 @@ window.mithshell-lock > contents {
 .scale-large .osd-icon { -gtk-icon-size: 25px; }
 .scale-large .osd-title { min-width: 99px; font-size: 16px; }
 .scale-large .osd-value { min-width: 45px; font-size: 14px; }
+.scale-large .notification-content { padding: 0 12px 0 24px; }
+.scale-large .notification-icon,
+.scale-large .notification-toast-icon { -gtk-icon-size: 43px; }
+.scale-large .notification-app,
+.scale-large .notification-toast-summary { font-size: 25px; }
+.scale-large .notification-body,
+.scale-large .notification-toast-body { font-size: 19px; }
+.scale-large .notification-toast { border-radius: 20px; padding: 17px 20px; }
 .scale-large .weather-content { padding: 18px 24px; }
 .scale-large .weather-location { font-size: 21px; }
 .scale-large .weather-hero-temp { font-size: 32px; }
