@@ -100,6 +100,12 @@ pub enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+
+    /// Install and configure optional integrations.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
 }
 
 #[derive(Debug, Clone, Args)]
@@ -163,4 +169,35 @@ pub enum ThemeCommand {
 pub enum ThemeModeArg {
     Dark,
     Light,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SetupCommand {
+    /// Install and enable the optional TarraGon launcher backend.
+    ///
+    /// Clones and builds TarraGon if it is not already on PATH, generates a
+    /// default config through TarraGon's own binary, and installs its
+    /// systemd user service. Safe to run more than once: an already
+    /// installed `tarragon` binary is left alone unless `--force` is given.
+    Tarragon(SetupTarragonArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SetupTarragonArgs {
+    /// Git URL to clone TarraGon from.
+    #[arg(long, default_value = "https://github.com/mithrel-dots/TarraGon.git")]
+    pub repo: String,
+
+    /// Local directory to clone and build TarraGon in. Defaults to a
+    /// directory under `$XDG_CACHE_HOME/mithshell`.
+    #[arg(long)]
+    pub src_dir: Option<PathBuf>,
+
+    /// Skip installing and enabling the systemd user service.
+    #[arg(long)]
+    pub no_service: bool,
+
+    /// Rebuild and reinstall even if a `tarragon` binary is already on PATH.
+    #[arg(long)]
+    pub force: bool,
 }

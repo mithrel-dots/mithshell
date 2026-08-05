@@ -9,6 +9,7 @@ pub mod lock;
 pub mod media;
 pub mod notifications;
 pub mod preview;
+pub mod setup;
 pub mod state;
 pub mod system;
 pub mod tarragon;

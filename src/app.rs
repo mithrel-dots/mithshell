@@ -13,7 +13,7 @@ use gtk::{Application, CssProvider, gdk, gio, glib, prelude::*};
 use log::{error, info, warn};
 
 use crate::{
-    cli::{self, Cli, Command, ThemeCommand, ThemeModeArg},
+    cli::{self, Cli, Command, SetupCommand, ThemeCommand, ThemeModeArg},
     config::{self, AppConfig, PaletteEngine, ThemeMode, ThemeSource},
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
@@ -22,6 +22,7 @@ use crate::{
     media,
     notifications::{self, CloseReason, NotificationCommand, NotificationEvent},
     preview::{self, PreviewEvent, PreviewRequest},
+    setup,
     state::{
         AudioState, HyprlandSnapshot, MediaState, Notification, OsdState, Palette, SystemSnapshot,
         WeatherState,
@@ -39,6 +40,14 @@ pub fn run(cli: Cli) -> Result<()> {
     if let Command::Completions { shell } = &cli.command {
         generate_completions(*shell);
         return Ok(());
+    }
+    // Setup is a standalone local operation -- installing/enabling an
+    // optional integration -- and must work even without a running daemon
+    // or a resolvable runtime socket path, exactly like `Completions` above.
+    if let Command::Setup { command } = cli.command {
+        return match command {
+            SetupCommand::Tarragon(args) => setup::install_tarragon(args),
+        };
     }
     let socket_path = ipc::socket_path(cli.socket)?;
     match cli.command {
@@ -280,6 +289,7 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
         },
         Command::Daemon { .. } => bail!("daemon command cannot be sent over IPC"),
         Command::Completions { .. } => bail!("completions are generated locally, not over IPC"),
+        Command::Setup { .. } => bail!("setup commands are handled locally, not over IPC"),
     };
     Ok((Request::new(command), json))
 }

@@ -325,6 +325,10 @@ pub fn state_dir() -> Result<PathBuf> {
     Ok(xdg_dir("XDG_STATE_HOME", ".local/state")?.join("mithshell"))
 }
 
+pub fn cache_dir() -> Result<PathBuf> {
+    Ok(xdg_dir("XDG_CACHE_HOME", ".cache")?.join("mithshell"))
+}
+
 pub fn runtime_dir() -> Result<PathBuf> {
     let directory = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -349,7 +353,11 @@ pub fn expand_home(path: PathBuf) -> PathBuf {
     path
 }
 
-fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
+/// Resolves an XDG base directory, falling back to `$HOME/{fallback}` when
+/// the variable is unset. `pub(crate)` so other modules resolving their own
+/// paths under a standard XDG directory (e.g. `setup::install_tarragon`
+/// under `XDG_CONFIG_HOME`) don't have to duplicate this fallback.
+pub(crate) fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
     if let Some(path) = env::var_os(variable) {
         return Ok(PathBuf::from(path));
     }
