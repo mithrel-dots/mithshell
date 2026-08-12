@@ -114,58 +114,90 @@ window.mithshell-notifications > contents {
 }
 
 .tray-icon {
-  min-width: 22px;
-  min-height: 22px;
-  padding: 3px;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 1px;
   border: none;
   border-radius: 7px;
   background: transparent;
   box-shadow: none;
+  color: @window_fg_color;
 }
 
 .tray-icon:hover {
-  background: alpha(@ms_outline_variant, 0.35);
+  background: alpha(@window_fg_color, 0.12);
 }
 
 .tray-icon.needs-attention {
-  background: alpha(@ms_error, 0.25);
+  color: @error_color;
+  background: alpha(@error_color, 0.18);
 }
 
 .tray-icon.needs-attention:hover {
-  background: alpha(@ms_error, 0.4);
+  background: alpha(@error_color, 0.28);
 }
 
 .tray-menu {
-  background: alpha(@ms_surface_container, 0.98);
-  border: 1px solid alpha(@ms_outline_variant, 0.4);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* The popover's own background/border/padding live on its `contents` node,
+   which carries the theme's default padding on top of `.tray-menu-list`'s.
+   Style that node directly instead of the outer one, and zero its padding
+   so the list controls its own spacing. */
+.tray-menu > contents {
+  padding: 0;
+  background: @window_bg_color;
+  border: 1px solid @borders;
   border-radius: 12px;
+  box-shadow: 0 10px 24px alpha(black, 0.45);
 }
 
 .tray-menu-list {
-  padding: 6px;
-  min-width: 160px;
+  padding: 4px;
+  min-width: 120px;
+}
+
+.tray-menu-list separator {
+  margin: 3px 6px;
+  background: @borders;
 }
 
 .tray-menu-item {
-  padding: 6px 10px;
+  min-height: 0;
+  padding: 3px 9px;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   box-shadow: none;
-  color: @ms_on_surface;
+  color: @window_fg_color;
+  font-size: 12px;
 }
 
 .tray-menu-item:hover {
-  background: alpha(@ms_outline_variant, 0.35);
+  background: alpha(@window_fg_color, 0.12);
 }
 
 .tray-menu-item.checked {
-  color: @ms_primary;
+  color: @accent_color;
   font-weight: 700;
 }
 
 .tray-menu-submenu {
-  color: @ms_on_surface;
+  color: @window_fg_color;
+  font-size: 12px;
+}
+
+.tray-menu-submenu > title {
+  min-height: 0;
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+
+.tray-menu-submenu > title:hover {
+  background: alpha(@window_fg_color, 0.12);
 }
 
 .dashboard-content {
@@ -916,7 +948,12 @@ window.mithshell-lock > contents {
 .scale-medium .compact-workspace { font-size: 12px; }
 .scale-medium .workspace-dot { min-width: 9px; min-height: 9px; }
 .scale-medium .workspace-dot.active { min-width: 23px; }
-.scale-medium .tray-icon { min-width: 26px; min-height: 26px; }
+.scale-medium .tray-icon { min-width: 22px; min-height: 22px; }
+.scale-medium .tray-menu-list { padding: 5px; min-width: 150px; }
+.scale-medium .tray-menu-item,
+.scale-medium .tray-menu-submenu { font-size: 14px; }
+.scale-medium .tray-menu-item,
+.scale-medium .tray-menu-submenu > title { padding: 4px 11px; }
 .scale-medium .dashboard-content { padding: 29px 29px 0 29px; }
 .scale-medium .eyebrow { font-size: 11px; letter-spacing: 1.4px; }
 .scale-medium .hero-time { font-size: 38px; }
@@ -1014,7 +1051,12 @@ window.mithshell-lock > contents {
 .scale-large .compact-workspace { font-size: 14px; }
 .scale-large .workspace-dot { min-width: 10px; min-height: 10px; }
 .scale-large .workspace-dot.active { min-width: 28px; }
-.scale-large .tray-icon { min-width: 30px; min-height: 30px; }
+.scale-large .tray-icon { min-width: 26px; min-height: 26px; }
+.scale-large .tray-menu-list { padding: 6px; min-width: 175px; }
+.scale-large .tray-menu-item,
+.scale-large .tray-menu-submenu { font-size: 16px; }
+.scale-large .tray-menu-item,
+.scale-large .tray-menu-submenu > title { padding: 5px 13px; }
 .scale-large .dashboard-content { padding: 35px 35px 0 35px; }
 .scale-large .eyebrow { font-size: 13px; letter-spacing: 1.7px; }
 .scale-large .hero-time { font-size: 46px; }

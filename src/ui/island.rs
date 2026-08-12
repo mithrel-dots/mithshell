@@ -51,6 +51,7 @@ const COMPACT_TRAY_MAX_WIDTH: i32 = 120;
 /// (which instead bounds how many icons fit before the row stops growing
 /// and clips instead).
 const COMPACT_TRAY_ICON_SIZE: i32 = 16;
+const COMPACT_TRAY_ICON_SCALE: f64 = 0.9;
 const MEDIA_HEIGHT: i32 = 32;
 const DASHBOARD_WIDTH: i32 = 448;
 const DASHBOARD_HEIGHT: i32 = 400;
@@ -132,7 +133,8 @@ impl Metrics {
             compact_clock_max_width: scaled(COMPACT_CLOCK_MAX_WIDTH, scale),
             compact_battery_max_width: scaled(COMPACT_BATTERY_MAX_WIDTH, scale),
             compact_tray_max_width: scaled(COMPACT_TRAY_MAX_WIDTH, scale),
-            tray_icon_size: scaled(COMPACT_TRAY_ICON_SIZE, scale),
+            tray_icon_size: (f64::from(COMPACT_TRAY_ICON_SIZE) * COMPACT_TRAY_ICON_SCALE * scale)
+                .round() as i32,
             media_max_width: (f64::from(COMPACT_WIDTH) * media_width_factor * scale).round() as i32,
             media_height: scaled(MEDIA_HEIGHT, scale),
             dashboard_width: scaled(DASHBOARD_WIDTH, scale),
@@ -319,7 +321,7 @@ pub struct IslandWindow {
     content: Fixed,
     surface: gtk::ScrolledWindow,
     compact: gtk::Box,
-    media: gtk::CenterBox,
+    media: gtk::Box,
     dashboard: gtk::Box,
     search: gtk::Box,
     weather: gtk::Box,
@@ -340,6 +342,12 @@ pub struct IslandWindow {
     /// is set and at least one tray item exists.
     tray_hovered: Cell<bool>,
     tray_item_count: Cell<usize>,
+    /// `true` while a tray item's context menu popover is up. Opening a
+    /// popover takes a pointer grab, which makes the pill's motion
+    /// controller report a `leave` -- without pinning the tray open here,
+    /// the row (and the popover's own anchor widget with it) would collapse
+    /// out from under the menu the instant it appeared.
+    tray_menu_open: Cell<bool>,
     media_workspaces: gtk::Box,
     media_clock: gtk::Label,
     media_center: gtk::Box,
@@ -347,6 +355,7 @@ pub struct IslandWindow {
     media_title: gtk::Label,
     media_visualizer: gtk::DrawingArea,
     media_levels: Rc<RefCell<VisualizerLevels>>,
+    media_tray: gtk::Box,
     hero_time: gtk::Label,
     hero_date: gtk::Label,
     battery_chip: gtk::Box,
@@ -636,6 +645,7 @@ impl IslandWindow {
             compact_width: Cell::new(metrics.compact_width),
             tray_hovered: Cell::new(false),
             tray_item_count: Cell::new(0),
+            tray_menu_open: Cell::new(false),
             media_workspaces: media_widgets.workspaces,
             media_clock: media_widgets.clock,
             media_center: media_widgets.center,
@@ -643,6 +653,7 @@ impl IslandWindow {
             media_title: media_widgets.title,
             media_visualizer: media_widgets.visualizer,
             media_levels: media_widgets.levels,
+            media_tray: media_widgets.tray,
             hero_time: dashboard_widgets.hero_time,
             hero_date: dashboard_widgets.hero_date,
             battery_chip: dashboard_widgets.battery_chip,
@@ -812,7 +823,9 @@ impl IslandWindow {
                 .map_or(0, |toasts| toasts.entries.borrow().len()),
             "tray_item_count": self.tray_item_count.get(),
             "tray_hovered": self.tray_hovered.get(),
+            "tray_menu_open": self.tray_menu_open.get(),
             "tray_visible": self.compact_tray.is_visible(),
+            "tray_visible_media": self.media_tray.is_visible(),
         })
     }
 
@@ -1838,11 +1851,17 @@ impl IslandWindow {
     /// the bookkeeping.
     pub fn update_tray(self: &Rc<Self>, items: &[TrayItem]) {
         clear_box(&self.compact_tray);
+        clear_box(&self.media_tray);
         for item in items {
+            // A widget can only have one parent, so each pill gets its own
+            // freshly built icon -- the same duplication `update_hyprland`
+            // already does for `compact_workspaces`/`media_workspaces`.
             self.compact_tray.append(&self.build_tray_icon(item));
+            self.media_tray.append(&self.build_tray_icon(item));
         }
         self.tray_item_count.set(items.len());
         self.resize_compact();
+        self.resize_media();
     }
 
     fn build_tray_icon(self: &Rc<Self>, item: &TrayItem) -> gtk::Button {
@@ -1861,48 +1880,81 @@ impl IslandWindow {
         apply_tray_icon(&image, &item.icon);
         button.set_child(Some(&image));
 
-        let click = GestureClick::new();
-        click.set_button(0);
+        // Primary click goes through `GtkButton`'s own `clicked` signal
+        // rather than an extra `GestureClick`: the button already has an
+        // internal click gesture that claims the primary-button sequence,
+        // so a second gesture watching the same button loses the claim and
+        // never fires. Middle/secondary are free for gestures below, but
+        // each is restricted to exactly the button it handles -- a
+        // catch-all `button(0)` gesture competes with that same internal
+        // one (which is itself "any button", it just only *emits* for the
+        // primary) and can swallow those clicks too.
+        let weak = Rc::downgrade(self);
+        let service = item.service.clone();
+        let object_path = item.object_path.clone();
+        let primary_menu_path = item.menu_path.clone();
+        // Items advertising `ItemIsMenu` declare they have no meaningful
+        // activation at all and expect their menu on a plain left click.
+        let item_is_menu = item.item_is_menu;
+        button.connect_clicked(move |button| {
+            let Some(island) = weak.upgrade() else {
+                return;
+            };
+            match primary_menu_path.clone().filter(|_| item_is_menu) {
+                Some(menu_path) => {
+                    island.open_tray_menu(button.clone(), service.clone(), menu_path);
+                }
+                None => {
+                    // The spec's x/y are screen coordinates used by items
+                    // that position their own menu; there is no way to get
+                    // those for a Wayland client, and items treat 0,0 as
+                    // "unspecified".
+                    (island.actions.tray_activate)(service.clone(), object_path.clone(), 0, 0);
+                }
+            }
+        });
+
+        let middle_click = GestureClick::new();
+        middle_click.set_button(gdk::BUTTON_MIDDLE);
+        let weak = Rc::downgrade(self);
+        let service = item.service.clone();
+        let object_path = item.object_path.clone();
+        middle_click.connect_released(move |_, _, _, _| {
+            if let Some(island) = weak.upgrade() {
+                (island.actions.tray_secondary_activate)(
+                    service.clone(),
+                    object_path.clone(),
+                    0,
+                    0,
+                );
+            }
+        });
+        button.add_controller(middle_click);
+
+        let context_click = GestureClick::new();
+        context_click.set_button(gdk::BUTTON_SECONDARY);
         let weak = Rc::downgrade(self);
         let service = item.service.clone();
         let object_path = item.object_path.clone();
         let menu_path = item.menu_path.clone();
         let button_weak = button.downgrade();
-        click.connect_released(move |gesture, _, x, y| {
+        context_click.connect_pressed(move |gesture, _, _, _| {
             let Some(island) = weak.upgrade() else {
                 return;
             };
-            let x = x.round() as i32;
-            let y = y.round() as i32;
-            match gesture.current_button() {
-                gdk::BUTTON_PRIMARY => {
-                    (island.actions.tray_activate)(service.clone(), object_path.clone(), x, y);
+            // Claim the sequence so the press can't also bubble up to the
+            // pill's own click gesture, which would toggle the dashboard.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            match (menu_path.clone(), button_weak.upgrade()) {
+                (Some(menu_path), Some(button)) => {
+                    island.open_tray_menu(button, service.clone(), menu_path);
                 }
-                gdk::BUTTON_MIDDLE => {
-                    (island.actions.tray_secondary_activate)(
-                        service.clone(),
-                        object_path.clone(),
-                        x,
-                        y,
-                    );
+                _ => {
+                    (island.actions.tray_context_menu)(service.clone(), object_path.clone(), 0, 0);
                 }
-                gdk::BUTTON_SECONDARY => match (menu_path.clone(), button_weak.upgrade()) {
-                    (Some(menu_path), Some(button)) => {
-                        island.open_tray_menu(button, service.clone(), menu_path);
-                    }
-                    _ => {
-                        (island.actions.tray_context_menu)(
-                            service.clone(),
-                            object_path.clone(),
-                            x,
-                            y,
-                        );
-                    }
-                },
-                _ => {}
             }
         });
-        button.add_controller(click);
+        button.add_controller(context_click);
 
         let scroll = EventControllerScroll::new(EventControllerScrollFlags::BOTH_AXES);
         let action = self.actions.tray_scroll.clone();
@@ -1959,11 +2011,45 @@ impl IslandWindow {
         let popover = gtk::Popover::new();
         popover.set_parent(anchor);
         popover.add_css_class("tray-menu");
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.set_has_arrow(false);
         let content = self.build_tray_menu_box(&popover, service, menu_path, &menu.children);
         popover.set_child(Some(&content));
-        let unparent_popover = popover.clone();
-        popover.connect_closed(move |_| unparent_popover.unparent());
+
+        // Pin the tray open for as long as the menu is: popping up takes a
+        // pointer grab, so the pill immediately sees a `leave` and would
+        // otherwise collapse the row this popover is anchored to.
+        self.tray_menu_open.set(true);
+        // An autohide popover needs to be able to take focus to grab, which
+        // a `KeyboardMode::None` layer surface never can; without this the
+        // menu is dismissed the moment it appears.
+        self.refresh_keyboard_mode();
+        self.resize_compact();
+        self.resize_media();
+
+        let weak = Rc::downgrade(self);
+        popover.connect_closed(move |popover| {
+            popover.unparent();
+            if let Some(island) = weak.upgrade() {
+                island.tray_menu_open.set(false);
+                island.refresh_keyboard_mode();
+                island.resize_compact();
+                island.resize_media();
+            }
+        });
         popover.popup();
+    }
+
+    /// Re-applies the keyboard mode the current state wants. Split out of
+    /// `set_view` so showing/dismissing a tray menu can borrow the surface's
+    /// focus without having to know what the active view expects.
+    fn refresh_keyboard_mode(&self) {
+        let mode = match self.current_view.get() {
+            View::Search | View::Weather => KeyboardMode::Exclusive,
+            _ if self.tray_menu_open.get() => KeyboardMode::OnDemand,
+            _ => KeyboardMode::None,
+        };
+        self.window.set_keyboard_mode(mode);
     }
 
     fn build_tray_menu_box(
@@ -1973,7 +2059,7 @@ impl IslandWindow {
         menu_path: &str,
         items: &[TrayMenuItem],
     ) -> gtk::Box {
-        let list = gtk::Box::new(Orientation::Vertical, 2);
+        let list = gtk::Box::new(Orientation::Vertical, 0);
         list.add_css_class("tray-menu-list");
         for entry in items {
             if !entry.visible {
@@ -1984,7 +2070,14 @@ impl IslandWindow {
                 continue;
             }
             if entry.children.is_empty() {
-                let button = gtk::Button::with_label(&entry.label);
+                // An explicit label child rather than `Button::with_label`:
+                // a button centers its child, and menu entries read far
+                // better left-aligned against a ragged-width list.
+                let label = gtk::Label::new(Some(&entry.label));
+                label.set_halign(Align::Start);
+                label.set_xalign(0.0);
+                let button = gtk::Button::new();
+                button.set_child(Some(&label));
                 button.add_css_class("tray-menu-item");
                 button.set_has_frame(false);
                 button.set_sensitive(entry.enabled);
@@ -2091,6 +2184,21 @@ impl IslandWindow {
             }
         });
         self.media.add_controller(click);
+
+        let motion = EventControllerMotion::new();
+        let weak = Rc::downgrade(self);
+        motion.connect_enter(move |_, _, _| {
+            if let Some(island) = weak.upgrade() {
+                island.set_tray_hovered(true);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        motion.connect_leave(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.set_tray_hovered(false);
+            }
+        });
+        self.media.add_controller(motion);
 
         let click = GestureClick::new();
         // `GestureSingle::button` defaults to the primary button only; ask
@@ -2693,7 +2801,7 @@ impl IslandWindow {
         self.set_view(view);
     }
 
-    fn resize_media(&self) {
+    fn resize_media(self: &Rc<Self>) {
         self.media.set_width_request(-1);
         self.media_title
             .set_ellipsize(gtk::pango::EllipsizeMode::None);
@@ -2709,13 +2817,28 @@ impl IslandWindow {
         } else {
             0
         };
+
+        // The tray is a sibling of the `CenterBox` rather than part of its
+        // `end` slot, so it only adds to the total -- it deliberately does
+        // not participate in the `start`/`end` symmetry that keeps the
+        // track title centered.
+        let tray_visible = self.tray_visible();
+        self.media_tray.set_visible(tray_visible);
+        let tray_width = if tray_visible {
+            self.metrics.spacing(8)
+                + measure_clamped(&self.media_tray, self.metrics.compact_tray_max_width)
+        } else {
+            0
+        };
+
         let center_gaps = self.metrics.spacing(if icon_width > 0 { 14 } else { 7 });
         let natural = self.metrics.spacing(36)
             + workspace_width.max(clock_width) * 2
             + icon_width
             + visualizer_width
             + center_gaps
-            + title_width;
+            + title_width
+            + tray_width;
         let width = natural.clamp(self.metrics.compact_width, self.metrics.media_max_width);
         self.media
             .set_size_request(width, self.metrics.media_height);
@@ -2725,6 +2848,10 @@ impl IslandWindow {
             0.0,
         );
         self.media_width.set(width);
+
+        if self.current_view.get() == View::Media {
+            self.set_view(View::Media);
+        }
     }
 
     /// Recomputes the compact pill's width from the combined (individually
@@ -2748,7 +2875,7 @@ impl IslandWindow {
             0
         };
 
-        let tray_visible = self.tray_hovered.get() && self.tray_item_count.get() > 0;
+        let tray_visible = self.tray_visible();
         self.compact_tray.set_visible(tray_visible);
         let tray_width = if tray_visible {
             measure_clamped(&self.compact_tray, self.metrics.compact_tray_max_width)
@@ -2778,13 +2905,23 @@ impl IslandWindow {
         }
     }
 
-    /// Hides/reveals the tray row on hover, and resizes the pill to match.
+    /// Whether the tray row should be shown: at least one item exists, and
+    /// either the pill (compact or media, whichever is active) is hovered
+    /// or one of the items' menus is currently open.
+    fn tray_visible(&self) -> bool {
+        (self.tray_hovered.get() || self.tray_menu_open.get()) && self.tray_item_count.get() > 0
+    }
+
+    /// Hides/reveals the tray row on hover, and resizes both pills (only
+    /// the currently active one animates; the other silently follows so
+    /// it's already correct if the view switches while hovered).
     fn set_tray_hovered(self: &Rc<Self>, hovered: bool) {
         if self.tray_hovered.get() == hovered {
             return;
         }
         self.tray_hovered.set(hovered);
         self.resize_compact();
+        self.resize_media();
     }
 
     fn geometry_for_view(&self, view: View) -> Geometry {
@@ -2823,12 +2960,7 @@ impl IslandWindow {
         self.weather.set_can_target(view == View::Weather);
         self.osd.set_can_target(false);
         self.notification.set_can_target(view == View::Notification);
-        self.window
-            .set_keyboard_mode(if matches!(view, View::Search | View::Weather) {
-                KeyboardMode::Exclusive
-            } else {
-                KeyboardMode::None
-            });
+        self.refresh_keyboard_mode();
         let start = self.geometry.get();
         let generation = self.animation_generation.get().wrapping_add(1);
         self.animation_generation.set(generation);
@@ -2978,7 +3110,7 @@ fn compact_view(metrics: Metrics) -> (gtk::Box, gtk::Box, gtk::Label, gtk::Label
     // Hidden by default (`update_tray`/`set_tray_hovered`): only shown while
     // the pointer is over the pill and at least one tray item exists, per
     // `resize_compact`.
-    let tray = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    let tray = gtk::Box::new(Orientation::Horizontal, metrics.spacing(3));
     tray.add_css_class("compact-tray");
     tray.set_hexpand(false);
     tray.set_halign(Align::End);
@@ -2993,7 +3125,7 @@ fn compact_view(metrics: Metrics) -> (gtk::Box, gtk::Box, gtk::Label, gtk::Label
 }
 
 struct MediaWidgets {
-    root: gtk::CenterBox,
+    root: gtk::Box,
     workspaces: gtk::Box,
     clock: gtk::Label,
     center: gtk::Box,
@@ -3001,13 +3133,22 @@ struct MediaWidgets {
     title: gtk::Label,
     visualizer: gtk::DrawingArea,
     levels: Rc<RefCell<VisualizerLevels>>,
+    /// Same role as `compact_tray`, but for the media pill. Deliberately a
+    /// sibling of the `CenterBox` rather than a child of its `end` slot:
+    /// `CenterBox` keeps its center child centered by giving `start`/`end`
+    /// equal width, so anything added to `end` visibly pads `start` (the
+    /// workspace dots) by the same amount.
+    tray: gtk::Box,
 }
 
 fn media_view(metrics: Metrics) -> MediaWidgets {
-    let root = gtk::CenterBox::new();
+    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
     root.set_size_request(metrics.compact_width, metrics.media_height);
     root.add_css_class("media-content");
     root.set_valign(Align::Start);
+
+    let center_box = gtk::CenterBox::new();
+    center_box.set_hexpand(true);
 
     let workspaces = gtk::Box::new(Orientation::Horizontal, metrics.spacing(5));
     workspaces.set_halign(Align::Start);
@@ -3068,12 +3209,23 @@ fn media_view(metrics: Metrics) -> MediaWidgets {
     clock.set_halign(Align::End);
     clock.set_valign(Align::Center);
 
+    // Hidden by default, same as `compact_tray`: only shown while hovering
+    // the pill and at least one tray item exists.
+    let tray = gtk::Box::new(Orientation::Horizontal, metrics.spacing(3));
+    tray.add_css_class("compact-tray");
+    tray.set_halign(Align::End);
+    tray.set_valign(Align::Center);
+    tray.set_visible(false);
+
     media.append(&icon);
     media.append(&visualizer);
     media.append(&title);
-    root.set_start_widget(Some(&workspaces));
-    root.set_center_widget(Some(&media));
-    root.set_end_widget(Some(&clock));
+    center_box.set_start_widget(Some(&workspaces));
+    center_box.set_center_widget(Some(&media));
+    center_box.set_end_widget(Some(&clock));
+
+    root.append(&center_box);
+    root.append(&tray);
     MediaWidgets {
         root,
         workspaces,
@@ -3083,6 +3235,7 @@ fn media_view(metrics: Metrics) -> MediaWidgets {
         title,
         visualizer,
         levels,
+        tray,
     }
 }
 
