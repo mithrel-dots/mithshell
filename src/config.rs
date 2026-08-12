@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub weather: WeatherConfig,
     pub lock: LockConfig,
     pub notifications: NotificationConfig,
+    pub tray: TrayConfig,
 }
 
 impl AppConfig {
@@ -214,6 +215,22 @@ impl NotificationPosition {
             self,
             Self::TopLeft | Self::TopRight | Self::BottomLeft | Self::BottomRight
         )
+    }
+}
+
+/// System tray (`org.kde.StatusNotifierItem`) support.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TrayConfig {
+    /// When `false`, mithshell neither hosts nor watches for
+    /// `org.kde.StatusNotifierItem` tray icons, and the pill never grows a
+    /// tray section.
+    pub enabled: bool,
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -558,6 +575,24 @@ mod tests {
         assert!(config.notifications.position.is_corner());
         assert_eq!(config.notifications.timeout_ms, 4000);
         assert_eq!(config.notifications.max_visible, 3);
+    }
+
+    #[test]
+    fn tray_defaults_to_enabled() {
+        assert!(TrayConfig::default().enabled);
+    }
+
+    #[test]
+    fn parses_a_disabled_tray_section() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [tray]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+
+        assert!(!config.tray.enabled);
     }
 
     #[test]

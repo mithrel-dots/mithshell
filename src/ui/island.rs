@@ -5,8 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use std::thread;
+
 use gtk::{
-    Align, Application, ApplicationWindow, Fixed, GestureClick, Orientation, Overflow,
+    Align, Application, ApplicationWindow, EventControllerMotion, EventControllerScroll,
+    EventControllerScrollFlags, Fixed, GestureClick, Orientation, Overflow,
     gdk::{self, prelude::*},
     glib,
     prelude::*,
@@ -21,16 +24,33 @@ use crate::{
     preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData},
     state::{
         HyprlandSnapshot, MediaPlayer, MediaState, Notification, OsdState, PlaybackStatus,
-        SystemSnapshot, Urgency, WeatherCondition, WeatherDay, WeatherState,
+        SystemSnapshot, TrayIcon, TrayItem, TrayMenuItem, TrayStatus, Urgency, WeatherCondition,
+        WeatherDay, WeatherState,
     },
     tarragon::{
         TarragonPlugin, TarragonPluginState, TarragonSelection, TarragonSnapshot, TarragonStatus,
     },
+    tray,
 };
 
 const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
+/// Floor for the pill's content-driven width (`resize_compact`), so it
+/// never shrinks to an oddly narrow sliver when nothing but the clock is
+/// showing.
+const COMPACT_MIN_WIDTH: i32 = 128;
+/// Per-element caps `resize_compact` clamps each compact-pill child to
+/// before summing them into the pill's width. Kept separate from a single
+/// shared cap so a long workspace list can't crowd out the clock, etc.
+const COMPACT_WORKSPACES_MAX_WIDTH: i32 = 110;
+const COMPACT_CLOCK_MAX_WIDTH: i32 = 70;
+const COMPACT_BATTERY_MAX_WIDTH: i32 = 50;
+const COMPACT_TRAY_MAX_WIDTH: i32 = 120;
+/// Rendered size of each tray icon, independent of `COMPACT_TRAY_MAX_WIDTH`
+/// (which instead bounds how many icons fit before the row stops growing
+/// and clips instead).
+const COMPACT_TRAY_ICON_SIZE: i32 = 16;
 const MEDIA_HEIGHT: i32 = 32;
 const DASHBOARD_WIDTH: i32 = 448;
 const DASHBOARD_HEIGHT: i32 = 400;
@@ -71,6 +91,12 @@ struct Metrics {
     window_height: i32,
     compact_width: i32,
     compact_height: i32,
+    compact_min_width: i32,
+    compact_workspaces_max_width: i32,
+    compact_clock_max_width: i32,
+    compact_battery_max_width: i32,
+    compact_tray_max_width: i32,
+    tray_icon_size: i32,
     media_max_width: i32,
     media_height: i32,
     dashboard_width: i32,
@@ -101,6 +127,12 @@ impl Metrics {
             window_height: search_y + search_height,
             compact_width: scaled(COMPACT_WIDTH, scale),
             compact_height: scaled(COMPACT_HEIGHT, scale),
+            compact_min_width: scaled(COMPACT_MIN_WIDTH, scale),
+            compact_workspaces_max_width: scaled(COMPACT_WORKSPACES_MAX_WIDTH, scale),
+            compact_clock_max_width: scaled(COMPACT_CLOCK_MAX_WIDTH, scale),
+            compact_battery_max_width: scaled(COMPACT_BATTERY_MAX_WIDTH, scale),
+            compact_tray_max_width: scaled(COMPACT_TRAY_MAX_WIDTH, scale),
+            tray_icon_size: scaled(COMPACT_TRAY_ICON_SIZE, scale),
             media_max_width: (f64::from(COMPACT_WIDTH) * media_width_factor * scale).round() as i32,
             media_height: scaled(MEDIA_HEIGHT, scale),
             dashboard_width: scaled(DASHBOARD_WIDTH, scale),
@@ -141,6 +173,15 @@ pub type MediaAction = Rc<dyn Fn(String)>;
 pub type NotificationCloseAction = Rc<dyn Fn(u32)>;
 /// Arguments are a notification id and the invoked action's key.
 pub type NotificationInvokeAction = Rc<dyn Fn(u32, String)>;
+/// Arguments are a tray item's `service`/`object_path` and pointer
+/// coordinates, for `Activate`/`SecondaryActivate`/`ContextMenu`.
+pub type TrayPointAction = Rc<dyn Fn(String, String, i32, i32)>;
+/// Arguments are a tray item's `service`/`object_path`, a scroll delta and
+/// whether it was along the horizontal axis.
+pub type TrayScrollAction = Rc<dyn Fn(String, String, i32, bool)>;
+/// Arguments are a tray item's `service`, its DBusMenu object path, and the
+/// clicked entry's id.
+pub type TrayMenuEventAction = Rc<dyn Fn(String, String, i32)>;
 
 #[derive(Clone)]
 pub struct IslandActions {
@@ -158,6 +199,11 @@ pub struct IslandActions {
     pub notification_expired: NotificationCloseAction,
     pub notification_dismiss: NotificationCloseAction,
     pub notification_invoke: NotificationInvokeAction,
+    pub tray_activate: TrayPointAction,
+    pub tray_secondary_activate: TrayPointAction,
+    pub tray_context_menu: TrayPointAction,
+    pub tray_scroll: TrayScrollAction,
+    pub tray_menu_event: TrayMenuEventAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,10 +227,10 @@ struct Geometry {
 }
 
 impl Geometry {
-    fn for_view(view: View, metrics: Metrics, media_width: i32) -> Self {
+    fn for_view(view: View, metrics: Metrics, media_width: i32, compact_width: i32) -> Self {
         match view {
             View::Compact => Self {
-                width: f64::from(metrics.compact_width),
+                width: f64::from(compact_width),
                 height: f64::from(metrics.compact_height),
                 y: 0.0,
             },
@@ -284,6 +330,16 @@ pub struct IslandWindow {
     compact_workspaces: gtk::Box,
     compact_clock: gtk::Label,
     compact_battery: gtk::Label,
+    compact_tray: gtk::Box,
+    /// Current animated/target width of the compact pill, recomputed by
+    /// `resize_compact` from the combined width of its (individually
+    /// capped) children -- the `View::Compact` analogue of `media_width`.
+    compact_width: Cell<i32>,
+    /// `true` while the pointer is over the compact pill; the tray row is
+    /// only shown (and only then counted into `resize_compact`) while this
+    /// is set and at least one tray item exists.
+    tray_hovered: Cell<bool>,
+    tray_item_count: Cell<usize>,
     media_workspaces: gtk::Box,
     media_clock: gtk::Label,
     media_center: gtk::Box,
@@ -486,7 +542,8 @@ impl IslandWindow {
         content.set_size_request(metrics.search_width, metrics.search_height);
         surface.set_child(Some(&content));
 
-        let (compact, compact_workspaces, compact_clock, compact_battery) = compact_view(metrics);
+        let (compact, compact_workspaces, compact_clock, compact_battery, compact_tray) =
+            compact_view(metrics);
         content.put(
             &compact,
             f64::from((metrics.search_width - metrics.compact_width) / 2),
@@ -575,6 +632,10 @@ impl IslandWindow {
             compact_workspaces,
             compact_clock,
             compact_battery,
+            compact_tray,
+            compact_width: Cell::new(metrics.compact_width),
+            tray_hovered: Cell::new(false),
+            tray_item_count: Cell::new(0),
             media_workspaces: media_widgets.workspaces,
             media_clock: media_widgets.clock,
             media_center: media_widgets.center,
@@ -669,6 +730,7 @@ impl IslandWindow {
                 View::Compact,
                 metrics,
                 metrics.compact_width,
+                metrics.compact_width,
             )),
             animation_generation: Cell::new(0),
             animation_ms: Cell::new(shell.animation_ms),
@@ -698,6 +760,7 @@ impl IslandWindow {
             },
             &dismiss_area,
         );
+        island.resize_compact();
         island.start_clock();
         island.start_player_progress_timer();
         let weak = Rc::downgrade(&island);
@@ -747,6 +810,9 @@ impl IslandWindow {
                 .notification_toasts
                 .as_ref()
                 .map_or(0, |toasts| toasts.entries.borrow().len()),
+            "tray_item_count": self.tray_item_count.get(),
+            "tray_hovered": self.tray_hovered.get(),
+            "tray_visible": self.compact_tray.is_visible(),
         })
     }
 
@@ -1723,9 +1789,10 @@ impl IslandWindow {
                 .connect_clicked(move |_| (actions.switch_workspace)(&monitor_name, workspace_id));
             self.workspace_row.append(&button);
         }
+        self.resize_compact();
     }
 
-    pub fn update_system(&self, snapshot: &SystemSnapshot) {
+    pub fn update_system(self: &Rc<Self>, snapshot: &SystemSnapshot) {
         self.updating_controls.set(true);
         if let Some(audio) = snapshot.audio {
             self.volume_scale.set_value(f64::from(audio.percent));
@@ -1762,6 +1829,190 @@ impl IslandWindow {
             self.compact_battery.set_visible(false);
         }
         self.updating_controls.set(false);
+        self.resize_compact();
+    }
+
+    /// Rebuilds the tray row from a fresh snapshot, the same
+    /// clear-and-rebuild approach `update_hyprland` uses for workspace
+    /// dots -- tray churn is rare enough that reusing widgets isn't worth
+    /// the bookkeeping.
+    pub fn update_tray(self: &Rc<Self>, items: &[TrayItem]) {
+        clear_box(&self.compact_tray);
+        for item in items {
+            self.compact_tray.append(&self.build_tray_icon(item));
+        }
+        self.tray_item_count.set(items.len());
+        self.resize_compact();
+    }
+
+    fn build_tray_icon(self: &Rc<Self>, item: &TrayItem) -> gtk::Button {
+        let button = gtk::Button::new();
+        button.add_css_class("tray-icon");
+        button.set_has_frame(false);
+        if item.status == TrayStatus::NeedsAttention {
+            button.add_css_class("needs-attention");
+        }
+        if let Some(tooltip) = item.tooltip.as_deref().filter(|text| !text.is_empty()) {
+            button.set_tooltip_text(Some(tooltip));
+        }
+
+        let image = gtk::Image::new();
+        image.set_pixel_size(self.metrics.tray_icon_size);
+        apply_tray_icon(&image, &item.icon);
+        button.set_child(Some(&image));
+
+        let click = GestureClick::new();
+        click.set_button(0);
+        let weak = Rc::downgrade(self);
+        let service = item.service.clone();
+        let object_path = item.object_path.clone();
+        let menu_path = item.menu_path.clone();
+        let button_weak = button.downgrade();
+        click.connect_released(move |gesture, _, x, y| {
+            let Some(island) = weak.upgrade() else {
+                return;
+            };
+            let x = x.round() as i32;
+            let y = y.round() as i32;
+            match gesture.current_button() {
+                gdk::BUTTON_PRIMARY => {
+                    (island.actions.tray_activate)(service.clone(), object_path.clone(), x, y);
+                }
+                gdk::BUTTON_MIDDLE => {
+                    (island.actions.tray_secondary_activate)(
+                        service.clone(),
+                        object_path.clone(),
+                        x,
+                        y,
+                    );
+                }
+                gdk::BUTTON_SECONDARY => match (menu_path.clone(), button_weak.upgrade()) {
+                    (Some(menu_path), Some(button)) => {
+                        island.open_tray_menu(button, service.clone(), menu_path);
+                    }
+                    _ => {
+                        (island.actions.tray_context_menu)(
+                            service.clone(),
+                            object_path.clone(),
+                            x,
+                            y,
+                        );
+                    }
+                },
+                _ => {}
+            }
+        });
+        button.add_controller(click);
+
+        let scroll = EventControllerScroll::new(EventControllerScrollFlags::BOTH_AXES);
+        let action = self.actions.tray_scroll.clone();
+        let service = item.service.clone();
+        let object_path = item.object_path.clone();
+        scroll.connect_scroll(move |_, dx, dy| {
+            let (delta, horizontal) = if dx.abs() > dy.abs() {
+                (dx, true)
+            } else {
+                (dy, false)
+            };
+            if delta != 0.0 {
+                action(
+                    service.clone(),
+                    object_path.clone(),
+                    (delta * 10.0).round() as i32,
+                    horizontal,
+                );
+            }
+            glib::Propagation::Proceed
+        });
+        button.add_controller(scroll);
+
+        button
+    }
+
+    /// Fetches a right-clicked item's DBusMenu layout on a throwaway
+    /// thread (mirroring how `preview`/`theme` results are round-tripped
+    /// back onto the GTK thread elsewhere) and shows it as a popover
+    /// anchored to the icon that was clicked.
+    fn open_tray_menu(self: &Rc<Self>, anchor: gtk::Button, service: String, menu_path: String) {
+        let (sender, receiver) = async_channel::bounded(1);
+        let fetch_service = service.clone();
+        let fetch_menu_path = menu_path.clone();
+        thread::spawn(move || {
+            let result = tray::menu_layout(&fetch_service, &fetch_menu_path);
+            let _ = sender.send_blocking(result.map_err(|error| error.to_string()));
+        });
+        let island = self.clone();
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(Ok(menu)) = receiver.recv().await {
+                island.show_tray_menu(&anchor, &service, &menu_path, &menu);
+            }
+        });
+    }
+
+    fn show_tray_menu(
+        self: &Rc<Self>,
+        anchor: &gtk::Button,
+        service: &str,
+        menu_path: &str,
+        menu: &TrayMenuItem,
+    ) {
+        let popover = gtk::Popover::new();
+        popover.set_parent(anchor);
+        popover.add_css_class("tray-menu");
+        let content = self.build_tray_menu_box(&popover, service, menu_path, &menu.children);
+        popover.set_child(Some(&content));
+        let unparent_popover = popover.clone();
+        popover.connect_closed(move |_| unparent_popover.unparent());
+        popover.popup();
+    }
+
+    fn build_tray_menu_box(
+        self: &Rc<Self>,
+        popover: &gtk::Popover,
+        service: &str,
+        menu_path: &str,
+        items: &[TrayMenuItem],
+    ) -> gtk::Box {
+        let list = gtk::Box::new(Orientation::Vertical, 2);
+        list.add_css_class("tray-menu-list");
+        for entry in items {
+            if !entry.visible {
+                continue;
+            }
+            if entry.separator {
+                list.append(&gtk::Separator::new(Orientation::Horizontal));
+                continue;
+            }
+            if entry.children.is_empty() {
+                let button = gtk::Button::with_label(&entry.label);
+                button.add_css_class("tray-menu-item");
+                button.set_has_frame(false);
+                button.set_sensitive(entry.enabled);
+                if entry.checked == Some(true) {
+                    button.add_css_class("checked");
+                }
+                let action = self.actions.tray_menu_event.clone();
+                let service = service.to_owned();
+                let menu_path = menu_path.to_owned();
+                let id = entry.id;
+                let popover_weak = popover.downgrade();
+                button.connect_clicked(move |_| {
+                    action(service.clone(), menu_path.clone(), id);
+                    if let Some(popover) = popover_weak.upgrade() {
+                        popover.popdown();
+                    }
+                });
+                list.append(&button);
+            } else {
+                let expander = gtk::Expander::new(Some(&entry.label));
+                expander.add_css_class("tray-menu-submenu");
+                let submenu =
+                    self.build_tray_menu_box(popover, service, menu_path, &entry.children);
+                expander.set_child(Some(&submenu));
+                list.append(&expander);
+            }
+        }
+        list
     }
 
     /// Redraws any active custom Cairo drawing after a theme change --
@@ -1814,6 +2065,21 @@ impl IslandWindow {
             }
         });
         self.compact.add_controller(click);
+
+        let motion = EventControllerMotion::new();
+        let weak = Rc::downgrade(self);
+        motion.connect_enter(move |_, _, _| {
+            if let Some(island) = weak.upgrade() {
+                island.set_tray_hovered(true);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        motion.connect_leave(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.set_tray_hovered(false);
+            }
+        });
+        self.compact.add_controller(motion);
 
         let click = GestureClick::new();
         let weak = Rc::downgrade(self);
@@ -2461,8 +2727,73 @@ impl IslandWindow {
         self.media_width.set(width);
     }
 
+    /// Recomputes the compact pill's width from the combined (individually
+    /// capped) natural width of its children, and repositions it within
+    /// `content` to match, the same way `resize_media` does for the media
+    /// pill. Called whenever a child's content changes (workspaces,
+    /// battery, tray) or the tray's hover-visibility toggles.
+    fn resize_compact(self: &Rc<Self>) {
+        let workspaces_width = measure_clamped(
+            &self.compact_workspaces,
+            self.metrics.compact_workspaces_max_width,
+        );
+        let clock_width =
+            measure_clamped(&self.compact_clock, self.metrics.compact_clock_max_width);
+        let battery_width = if self.compact_battery.is_visible() {
+            measure_clamped(
+                &self.compact_battery,
+                self.metrics.compact_battery_max_width,
+            )
+        } else {
+            0
+        };
+
+        let tray_visible = self.tray_hovered.get() && self.tray_item_count.get() > 0;
+        self.compact_tray.set_visible(tray_visible);
+        let tray_width = if tray_visible {
+            measure_clamped(&self.compact_tray, self.metrics.compact_tray_max_width)
+        } else {
+            0
+        };
+
+        let segments = 2 + i32::from(battery_width > 0) + i32::from(tray_width > 0);
+        let spacing = self.metrics.spacing(10) * (segments - 1).max(0);
+        // Matches `.compact-content { padding: 0 15px; }` (both sides).
+        let padding = self.metrics.spacing(30);
+        let natural =
+            workspaces_width + clock_width + battery_width + tray_width + spacing + padding;
+        let width = natural.clamp(self.metrics.compact_min_width, self.metrics.media_max_width);
+
+        self.compact
+            .set_size_request(width, self.metrics.compact_height);
+        self.content.move_(
+            &self.compact,
+            f64::from((self.metrics.search_width - width) / 2),
+            0.0,
+        );
+        self.compact_width.set(width);
+
+        if self.current_view.get() == View::Compact {
+            self.set_view(View::Compact);
+        }
+    }
+
+    /// Hides/reveals the tray row on hover, and resizes the pill to match.
+    fn set_tray_hovered(self: &Rc<Self>, hovered: bool) {
+        if self.tray_hovered.get() == hovered {
+            return;
+        }
+        self.tray_hovered.set(hovered);
+        self.resize_compact();
+    }
+
     fn geometry_for_view(&self, view: View) -> Geometry {
-        Geometry::for_view(view, self.metrics, self.media_width.get())
+        Geometry::for_view(
+            view,
+            self.metrics,
+            self.media_width.get(),
+            self.compact_width.get(),
+        )
     }
 
     fn set_view(self: &Rc<Self>, view: View) {
@@ -2620,7 +2951,7 @@ impl IslandWindow {
     }
 }
 
-fn compact_view(metrics: Metrics) -> (gtk::Box, gtk::Box, gtk::Label, gtk::Label) {
+fn compact_view(metrics: Metrics) -> (gtk::Box, gtk::Box, gtk::Label, gtk::Label, gtk::Box) {
     let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
     root.set_size_request(metrics.compact_width, metrics.compact_height);
     root.add_css_class("compact-content");
@@ -2644,10 +2975,21 @@ fn compact_view(metrics: Metrics) -> (gtk::Box, gtk::Box, gtk::Label, gtk::Label
     battery.set_valign(Align::Center);
     battery.set_visible(false);
 
+    // Hidden by default (`update_tray`/`set_tray_hovered`): only shown while
+    // the pointer is over the pill and at least one tray item exists, per
+    // `resize_compact`.
+    let tray = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    tray.add_css_class("compact-tray");
+    tray.set_hexpand(false);
+    tray.set_halign(Align::End);
+    tray.set_valign(Align::Center);
+    tray.set_visible(false);
+
     root.append(&workspaces);
     root.append(&clock);
     root.append(&battery);
-    (root, workspaces, clock, battery)
+    root.append(&tray);
+    (root, workspaces, clock, battery, tray)
 }
 
 struct MediaWidgets {
@@ -3848,6 +4190,52 @@ fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
     }
+}
+
+/// A widget's natural horizontal size, capped at `max_width` -- the "max
+/// width" half of `resize_compact`'s per-element clamping (the widget
+/// itself is left free to report whatever it wants; only the width fed
+/// into the pill's total is bounded).
+fn measure_clamped<W: IsA<gtk::Widget>>(widget: &W, max_width: i32) -> i32 {
+    let (_, natural, _, _) = widget.measure(Orientation::Horizontal, -1);
+    natural.min(max_width)
+}
+
+fn apply_tray_icon(image: &gtk::Image, icon: &TrayIcon) {
+    const FALLBACK: &str = "application-x-executable-symbolic";
+    match icon {
+        TrayIcon::Name(name) => image.set_icon_name(Some(name)),
+        TrayIcon::Pixmap {
+            width,
+            height,
+            argb,
+        } => match tray_texture_from_pixmap(*width, *height, argb) {
+            Some(texture) => image.set_paintable(Some(&texture)),
+            None => image.set_icon_name(Some(FALLBACK)),
+        },
+        TrayIcon::None => image.set_icon_name(Some(FALLBACK)),
+    }
+}
+
+/// Converts a `TrayIcon::Pixmap`'s raw bytes (32-bit ARGB, network/big-endian
+/// byte order, i.e. each pixel is `[A, R, G, B]`) into a paintable.
+fn tray_texture_from_pixmap(width: i32, height: i32, argb: &[u8]) -> Option<gdk::Texture> {
+    if width <= 0 || height <= 0 || argb.len() != (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    let mut rgba = vec![0_u8; argb.len()];
+    for (pixel_in, pixel_out) in argb.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+        pixel_out.copy_from_slice(&[pixel_in[1], pixel_in[2], pixel_in[3], pixel_in[0]]);
+    }
+    let bytes = glib::Bytes::from_owned(rgba);
+    let texture = gdk::MemoryTexture::new(
+        width,
+        height,
+        gdk::MemoryFormat::R8g8b8a8,
+        &bytes,
+        (width * 4) as usize,
+    );
+    Some(texture.upcast())
 }
 
 fn clear_list_box(container: &gtk::ListBox) {

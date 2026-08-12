@@ -33,6 +33,12 @@ gap = 8
 # Distance from the screen edges for the corner positions.
 margin = 12
 
+[tray]
+# When false, mithshell neither hosts nor watches for
+# org.kde.StatusNotifierItem tray icons, and the pill never grows a tray
+# section. Icons only appear while hovering the pill.
+enabled = true
+
 [lock]
 # PAM service the lock screen authenticates against. When unset, mithshell
 # uses /etc/pam.d/mithshell if it exists and otherwise inherits

@@ -25,11 +25,11 @@ use crate::{
     setup,
     state::{
         AudioState, HyprlandSnapshot, MediaState, Notification, OsdState, Palette, SystemSnapshot,
-        WeatherState,
+        TrayItem, WeatherState,
     },
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
-    theme,
+    theme, tray,
     ui::{self, IslandActions, IslandWindow, LockSession, LockSubmitAction},
     weather,
 };
@@ -363,6 +363,7 @@ struct Controller {
     system: RefCell<SystemSnapshot>,
     media: RefCell<Option<MediaState>>,
     weather: RefCell<Option<WeatherState>>,
+    tray: RefCell<Vec<TrayItem>>,
     visualizer: RefCell<media::VisualizerLevels>,
     tarragon_connected: Cell<bool>,
     tarragon_snapshot: RefCell<Option<TarragonSnapshot>>,
@@ -384,6 +385,7 @@ struct Controller {
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
     _weather_listener: thread::JoinHandle<()>,
+    _tray_listener: Option<thread::JoinHandle<()>>,
     _notification_listener: thread::JoinHandle<()>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
@@ -418,6 +420,11 @@ impl Controller {
             config.weather.city.clone(),
             weather_sender,
         );
+        let (tray_sender, tray_receiver) = async_channel::unbounded();
+        let tray_listener = config
+            .tray
+            .enabled
+            .then(|| tray::start_listener(tray_sender));
         let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
         let (tarragon_sender, tarragon_listener) = tarragon::start_listener(tarragon_event_sender);
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
@@ -447,6 +454,7 @@ impl Controller {
             system: RefCell::new(SystemSnapshot::default()),
             media: RefCell::new(None),
             weather: RefCell::new(None),
+            tray: RefCell::new(Vec::new()),
             visualizer: RefCell::new([0; media::VISUALIZER_BARS]),
             tarragon_connected: Cell::new(false),
             tarragon_snapshot: RefCell::new(None),
@@ -464,6 +472,7 @@ impl Controller {
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
             _weather_listener: weather_listener,
+            _tray_listener: tray_listener,
             _notification_listener: notification_listener,
             tarragon_listener: Some(tarragon_listener),
             preview_listener: Some(preview_listener),
@@ -487,6 +496,7 @@ impl Controller {
         controller.attach_audio(audio_receiver);
         controller.attach_media(media_receiver);
         controller.attach_weather(weather_receiver);
+        controller.attach_tray(tray_receiver);
         controller.attach_visualizer(visualizer_receiver);
         controller.attach_tarragon(tarragon_event_receiver);
         controller.attach_preview(preview_event_receiver);
@@ -635,6 +645,21 @@ impl Controller {
                     island.update_weather(Some(&state));
                 }
                 *controller.weather.borrow_mut() = Some(state);
+            }
+        });
+    }
+
+    fn attach_tray(self: &Rc<Self>, receiver: Receiver<Vec<TrayItem>>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(items) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                for island in controller.islands.borrow().values() {
+                    island.update_tray(&items);
+                }
+                *controller.tray.borrow_mut() = items;
             }
         });
     }
@@ -1418,6 +1443,50 @@ impl Controller {
                     controller.invoke_notification_action(id, action_key);
                 }
             });
+            let tray_activate = Rc::new(
+                move |service: String, object_path: String, x: i32, y: i32| {
+                    thread::spawn(move || {
+                        if let Err(error) = tray::activate(&service, &object_path, x, y) {
+                            warn!("failed to activate tray item: {error:#}");
+                        }
+                    });
+                },
+            );
+            let tray_secondary_activate = Rc::new(
+                move |service: String, object_path: String, x: i32, y: i32| {
+                    thread::spawn(move || {
+                        if let Err(error) = tray::secondary_activate(&service, &object_path, x, y) {
+                            warn!("failed to secondary-activate tray item: {error:#}");
+                        }
+                    });
+                },
+            );
+            let tray_context_menu = Rc::new(
+                move |service: String, object_path: String, x: i32, y: i32| {
+                    thread::spawn(move || {
+                        if let Err(error) = tray::context_menu(&service, &object_path, x, y) {
+                            warn!("failed to open tray item context menu: {error:#}");
+                        }
+                    });
+                },
+            );
+            let tray_scroll = Rc::new(
+                move |service: String, object_path: String, delta: i32, horizontal: bool| {
+                    thread::spawn(move || {
+                        if let Err(error) = tray::scroll(&service, &object_path, delta, horizontal)
+                        {
+                            warn!("failed to scroll tray item: {error:#}");
+                        }
+                    });
+                },
+            );
+            let tray_menu_event = Rc::new(move |service: String, menu_path: String, id: i32| {
+                thread::spawn(move || {
+                    if let Err(error) = tray::menu_event(&service, &menu_path, id, "clicked") {
+                        warn!("failed to send tray menu event: {error:#}");
+                    }
+                });
+            });
             let island = IslandWindow::new(
                 &self.application,
                 &monitor,
@@ -1438,6 +1507,11 @@ impl Controller {
                     notification_expired,
                     notification_dismiss,
                     notification_invoke,
+                    tray_activate,
+                    tray_secondary_activate,
+                    tray_context_menu,
+                    tray_scroll,
+                    tray_menu_event,
                 },
                 self.animations,
             );
@@ -1445,6 +1519,7 @@ impl Controller {
             island.update_system(&self.system.borrow());
             island.update_media(self.media.borrow().as_ref());
             island.update_weather(self.weather.borrow().as_ref());
+            island.update_tray(self.tray.borrow().as_slice());
             island.update_visualizer(*self.visualizer.borrow());
             island.update_palette();
             island.update_tarragon_connection(self.tarragon_connected.get(), None);

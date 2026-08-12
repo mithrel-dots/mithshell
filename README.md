@@ -123,6 +123,28 @@ Paused or stopped players return the pill to its normal compact state, and
 `playerctld` mirrors are ignored. MPRIS queries run on a dedicated GLib context
 so an unresponsive player cannot block GTK rendering.
 
+### System tray
+
+Mithshell hosts a `org.kde.StatusNotifierItem` tray itself -- no external
+tray/watcher process is needed, and if another one is already running (a
+previous mithshell instance, another bar), mithshell simply attaches to it
+as a host instead of competing for the watcher role.
+
+Tray icons are hidden by default and only reveal themselves while hovering
+the pill; the pill's width grows to fit them and shrinks back once the
+pointer leaves. Left click activates an item, middle click sends its
+secondary activation, and right click opens its context menu (built from
+the item's own DBusMenu when it has one, or the item's own `ContextMenu`
+otherwise). Scrolling over an icon forwards the wheel delta to the item too.
+
+```toml
+[tray]
+enabled = true
+```
+
+Set `enabled = false` to turn this off entirely; mithshell then neither
+hosts nor watches for tray items, and the pill never grows a tray section.
+
 ### Notifications
 
 Mithshell implements `org.freedesktop.Notifications` itself -- no external

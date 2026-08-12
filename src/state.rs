@@ -300,6 +300,72 @@ impl NotificationTimeout {
     }
 }
 
+/// A `org.kde.StatusNotifierItem` tray icon, as tracked by `tray::start_listener`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayItem {
+    /// Stable UI identity (`service` D-Bus name + object path joined), used
+    /// to key widgets/popovers across snapshots and to route click actions
+    /// back to the right item.
+    pub key: String,
+    /// The item's D-Bus service (bus) name, addressed for `Activate`/
+    /// `Scroll`/... method calls.
+    pub service: String,
+    /// The item's D-Bus object path, on `service`.
+    pub object_path: String,
+    pub id: String,
+    pub title: String,
+    pub tooltip: Option<String>,
+    pub icon: TrayIcon,
+    pub status: TrayStatus,
+    pub item_is_menu: bool,
+    /// Object path of a `com.canonical.dbusmenu` menu on `service`, when the
+    /// item advertises one. Absent items fall back to the `ContextMenu`
+    /// method on right click instead.
+    pub menu_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayStatus {
+    Passive,
+    Active,
+    NeedsAttention,
+}
+
+/// A tray item's icon, as reported over D-Bus. Kept as plain data (rather
+/// than a `gdk::Texture`) so it can cross the thread boundary from the
+/// listener thread; the UI converts it to a paintable when applying a
+/// snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrayIcon {
+    /// A themed icon name (`IconName`), resolved through the regular icon
+    /// theme -- most well-behaved items report one of these.
+    Name(String),
+    /// Raw pixel data (`IconPixmap`), for items that ship their own bitmap.
+    /// `argb` is 32-bit ARGB, network (big-endian) byte order, i.e. each
+    /// pixel is the four bytes `[A, R, G, B]`, per the `org.kde.StatusNotifierItem`
+    /// spec -- the largest reported size wins.
+    Pixmap {
+        width: i32,
+        height: i32,
+        argb: Vec<u8>,
+    },
+    None,
+}
+
+/// One entry of a `com.canonical.dbusmenu` layout, fetched on demand when a
+/// tray item's context menu is opened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayMenuItem {
+    pub id: i32,
+    pub label: String,
+    pub enabled: bool,
+    pub visible: bool,
+    pub separator: bool,
+    /// `Some(true/false)` for a checkmark/radio entry; `None` for a plain one.
+    pub checked: Option<bool>,
+    pub children: Vec<TrayMenuItem>,
+}
+
 /// A single desktop notification, as received through
 /// `org.freedesktop.Notifications`.
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -109,6 +109,65 @@ window.mithshell-notifications > contents {
   background: @ms_primary;
 }
 
+.compact-tray {
+  padding: 0;
+}
+
+.tray-icon {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 3px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.tray-icon:hover {
+  background: alpha(@ms_outline_variant, 0.35);
+}
+
+.tray-icon.needs-attention {
+  background: alpha(@ms_error, 0.25);
+}
+
+.tray-icon.needs-attention:hover {
+  background: alpha(@ms_error, 0.4);
+}
+
+.tray-menu {
+  background: alpha(@ms_surface_container, 0.98);
+  border: 1px solid alpha(@ms_outline_variant, 0.4);
+  border-radius: 12px;
+}
+
+.tray-menu-list {
+  padding: 6px;
+  min-width: 160px;
+}
+
+.tray-menu-item {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  color: @ms_on_surface;
+}
+
+.tray-menu-item:hover {
+  background: alpha(@ms_outline_variant, 0.35);
+}
+
+.tray-menu-item.checked {
+  color: @ms_primary;
+  font-weight: 700;
+}
+
+.tray-menu-submenu {
+  color: @ms_on_surface;
+}
+
 .dashboard-content {
   padding: 14px 14px 0 14px;
 }
@@ -857,6 +916,7 @@ window.mithshell-lock > contents {
 .scale-medium .compact-workspace { font-size: 12px; }
 .scale-medium .workspace-dot { min-width: 9px; min-height: 9px; }
 .scale-medium .workspace-dot.active { min-width: 23px; }
+.scale-medium .tray-icon { min-width: 26px; min-height: 26px; }
 .scale-medium .dashboard-content { padding: 29px 29px 0 29px; }
 .scale-medium .eyebrow { font-size: 11px; letter-spacing: 1.4px; }
 .scale-medium .hero-time { font-size: 38px; }
@@ -954,6 +1014,7 @@ window.mithshell-lock > contents {
 .scale-large .compact-workspace { font-size: 14px; }
 .scale-large .workspace-dot { min-width: 10px; min-height: 10px; }
 .scale-large .workspace-dot.active { min-width: 28px; }
+.scale-large .tray-icon { min-width: 30px; min-height: 30px; }
 .scale-large .dashboard-content { padding: 35px 35px 0 35px; }
 .scale-large .eyebrow { font-size: 13px; letter-spacing: 1.7px; }
 .scale-large .hero-time { font-size: 46px; }
