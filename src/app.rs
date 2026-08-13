@@ -220,6 +220,9 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
         Command::Search(args) => IpcCommand::Search {
             monitor: MonitorTarget::parse(&args.monitor)?,
         },
+        Command::Weather(args) => IpcCommand::Weather {
+            monitor: MonitorTarget::parse(&args.monitor)?,
+        },
         Command::Close(args) => IpcCommand::Close {
             monitor: MonitorTarget::parse(&args.monitor)?,
         },
@@ -991,7 +994,10 @@ impl Controller {
         if self.lock.borrow().is_some()
             && matches!(
                 command,
-                IpcCommand::Toggle { .. } | IpcCommand::Open { .. } | IpcCommand::Search { .. }
+                IpcCommand::Toggle { .. }
+                    | IpcCommand::Open { .. }
+                    | IpcCommand::Search { .. }
+                    | IpcCommand::Weather { .. }
             )
         {
             bail!("the session is locked");
@@ -1018,6 +1024,12 @@ impl Controller {
                     island.open_search();
                 }
                 Ok(Response::ok("TarraGon search opened"))
+            }
+            IpcCommand::Weather { monitor } => {
+                for island in self.target_islands(&monitor)? {
+                    island.open_weather();
+                }
+                Ok(Response::ok("weather forecast opened"))
             }
             IpcCommand::Close { monitor } => {
                 for island in self.target_islands(&monitor)? {

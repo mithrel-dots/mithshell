@@ -818,7 +818,7 @@ progressbar.osd-progress progress {
 }
 
 .weather-day-card {
-  padding: 6px 4px;
+  padding: 4px 2px;
   background: alpha(@ms_surface_low, 0.9);
   border: 1px solid alpha(@ms_outline_variant, 0.3);
   border-radius: 10px;
@@ -827,7 +827,7 @@ progressbar.osd-progress progress {
 .weather-day-label {
   color: @ms_primary;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.6px;
 }
@@ -835,7 +835,7 @@ progressbar.osd-progress progress {
 .weather-day-high {
   color: @ms_on_surface;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   font-feature-settings: "tnum";
 }
@@ -843,13 +843,13 @@ progressbar.osd-progress progress {
 .weather-day-low {
   color: alpha(@ms_on_surface_variant, 0.75);
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 11px;
+  font-size: 10px;
   font-feature-settings: "tnum";
 }
 
 calendar.weather-calendar {
-  padding: 2px 6px;
-  font-size: 18px;
+  padding: 1px 4px;
+  font-size: 14px;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   color: @ms_on_surface;
   background: alpha(@ms_surface_low, 0.9);

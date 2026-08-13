@@ -33,9 +33,9 @@ pub(crate) fn resolved_scale(configured: f64, automatic: f64) -> f64 {
 /// to stay proportional. Shared by every window so the island and the lock
 /// screen never disagree about which tier an output is in.
 pub(crate) fn scale_class(scale: f64) -> Option<&'static str> {
-    if scale >= 1.35 {
+    if scale >= 1.6 {
         Some("scale-large")
-    } else if scale >= 1.12 {
+    } else if scale >= 1.35 {
         Some("scale-medium")
     } else {
         None
@@ -56,7 +56,10 @@ pub fn install_styles(palette: &Palette) -> CssProvider {
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            // Stay above gtk.css so broad user-theme selectors such as
+            // `.background` and `button` cannot repaint shell surfaces or
+            // override their geometry.
+            gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
         );
     }
     provider
@@ -78,7 +81,7 @@ pub fn install_user_styles(path: &Path) -> CssProvider {
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_USER,
+            gtk::STYLE_PROVIDER_PRIORITY_USER + 2,
         );
     }
     provider

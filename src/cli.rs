@@ -36,6 +36,9 @@ pub enum Command {
     /// Open the TarraGon search frontend.
     Search(MonitorArgs),
 
+    /// Open the weather forecast.
+    Weather(MonitorArgs),
+
     /// Collapse the island.
     Close(MonitorArgs),
 

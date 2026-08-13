@@ -47,6 +47,9 @@ pub enum IpcCommand {
     Search {
         monitor: MonitorTarget,
     },
+    Weather {
+        monitor: MonitorTarget,
+    },
     Close {
         monitor: MonitorTarget,
     },

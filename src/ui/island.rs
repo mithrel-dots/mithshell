@@ -70,8 +70,8 @@ const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
 const SEARCH_PREVIEW_MIN_WIDTH: i32 = 260;
 // Kept comfortably under SEARCH_HEIGHT/SEARCH_WIDTH, which size the shared
 // Fixed container every view is centered inside of.
-const WEATHER_WIDTH: i32 = 320;
-const WEATHER_HEIGHT: i32 = 360;
+const WEATHER_WIDTH: i32 = 380;
+const WEATHER_HEIGHT: i32 = 390;
 /// Minimum spacing between dispatched queries.
 ///
 /// This throttles on the leading edge: the first keystroke after an idle
@@ -359,6 +359,7 @@ pub struct IslandWindow {
     hero_time: gtk::Label,
     hero_date: gtk::Label,
     battery_chip: gtk::Box,
+    battery_icon: gtk::Image,
     battery_label: gtk::Label,
     player_card: gtk::Box,
     player_icon: gtk::Image,
@@ -385,7 +386,7 @@ pub struct IslandWindow {
     selected_media_service: RefCell<Option<String>>,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
-    workspace_row: gtk::Box,
+    workspace_row: gtk::FlowBox,
     volume_scale: gtk::Scale,
     volume_value: gtk::Label,
     brightness_row: gtk::Box,
@@ -657,6 +658,7 @@ impl IslandWindow {
             hero_time: dashboard_widgets.hero_time,
             hero_date: dashboard_widgets.hero_date,
             battery_chip: dashboard_widgets.battery_chip,
+            battery_icon: dashboard_widgets.battery_icon,
             battery_label: dashboard_widgets.battery_label,
             player_card: dashboard_widgets.player_card,
             player_icon: dashboard_widgets.player_icon,
@@ -1759,7 +1761,12 @@ impl IslandWindow {
 
         clear_box(&self.compact_workspaces);
         clear_box(&self.media_workspaces);
-        clear_box(&self.workspace_row);
+        while let Some(child) = self.workspace_row.first_child() {
+            let child = child
+                .downcast::<gtk::FlowBoxChild>()
+                .expect("flow box children are wrapped by GTK");
+            self.workspace_row.remove(&child);
+        }
         let workspaces = snapshot.workspaces_for(&self.monitor_name);
         for workspace in workspaces
             .iter()
@@ -1800,7 +1807,7 @@ impl IslandWindow {
             let workspace_id = workspace.id;
             button
                 .connect_clicked(move |_| (actions.switch_workspace)(&monitor_name, workspace_id));
-            self.workspace_row.append(&button);
+            self.workspace_row.insert(&button, -1);
         }
         self.resize_compact();
     }
@@ -1831,6 +1838,8 @@ impl IslandWindow {
         }
 
         if let Some(battery) = &snapshot.battery {
+            self.battery_icon
+                .set_icon_name(Some(battery_icon_name(battery.percent, &battery.status)));
             self.battery_label
                 .set_label(&format!("{}%", battery.percent));
             self.compact_battery
@@ -3567,6 +3576,7 @@ struct DashboardWidgets {
     hero_time: gtk::Label,
     hero_date: gtk::Label,
     battery_chip: gtk::Box,
+    battery_icon: gtk::Image,
     battery_label: gtk::Label,
     player_card: gtk::Box,
     player_icon: gtk::Image,
@@ -3584,7 +3594,7 @@ struct DashboardWidgets {
     player_switch_next: gtk::Button,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
-    workspace_row: gtk::Box,
+    workspace_row: gtk::FlowBox,
     volume_scale: gtk::Scale,
     volume_value: gtk::Label,
     brightness_row: gtk::Box,
@@ -3623,7 +3633,8 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     battery_chip.add_css_class("battery-chip");
     battery_chip.set_valign(Align::Center);
     battery_chip.set_visible(false);
-    battery_chip.append(&gtk::Image::from_icon_name("battery-level-100-symbolic"));
+    let battery_icon = gtk::Image::from_icon_name("xsi-battery-symbolic");
+    battery_chip.append(&battery_icon);
     let battery_label = gtk::Label::new(None);
     battery_chip.append(&battery_label);
 
@@ -3748,7 +3759,12 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     let workspace_label = gtk::Label::new(Some("WORKSPACES"));
     workspace_label.add_css_class("eyebrow");
     workspace_label.set_halign(Align::Start);
-    let workspace_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
+    let workspace_row = gtk::FlowBox::new();
+    workspace_row.set_column_spacing(metrics.spacing(4) as u32);
+    workspace_row.set_row_spacing(metrics.spacing(4) as u32);
+    workspace_row.set_max_children_per_line(5);
+    workspace_row.set_min_children_per_line(5);
+    workspace_row.set_selection_mode(gtk::SelectionMode::None);
     workspace_row.set_halign(Align::Start);
     workspace_card.append(&workspace_label);
     workspace_card.append(&workspace_row);
@@ -3799,6 +3815,7 @@ fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
         hero_time: time,
         hero_date: date,
         battery_chip,
+        battery_icon,
         battery_label,
         player_card,
         player_icon,
@@ -3847,6 +3864,48 @@ fn control_row(icon: &str, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Sca
     row.append(&scale);
     row.append(&value);
     (row, scale, value)
+}
+
+fn battery_icon_name(percent: u8, status: &str) -> &'static str {
+    let level = match percent {
+        0..=4 => 0,
+        5..=14 => 10,
+        15..=24 => 20,
+        25..=34 => 30,
+        35..=44 => 40,
+        45..=54 => 50,
+        55..=64 => 60,
+        65..=74 => 70,
+        75..=84 => 80,
+        85..=94 => 90,
+        _ => 100,
+    };
+    let charging = status.eq_ignore_ascii_case("charging");
+    match (level, charging) {
+        (0, false) => "xsi-battery-level-0-symbolic",
+        (10, false) => "xsi-battery-level-10-symbolic",
+        (20, false) => "xsi-battery-level-20-symbolic",
+        (30, false) => "xsi-battery-level-30-symbolic",
+        (40, false) => "xsi-battery-level-40-symbolic",
+        (50, false) => "xsi-battery-level-50-symbolic",
+        (60, false) => "xsi-battery-level-60-symbolic",
+        (70, false) => "xsi-battery-level-70-symbolic",
+        (80, false) => "xsi-battery-level-80-symbolic",
+        (90, false) => "xsi-battery-level-90-symbolic",
+        (100, false) => "xsi-battery-level-100-symbolic",
+        (0, true) => "xsi-battery-level-0-charging-symbolic",
+        (10, true) => "xsi-battery-level-10-charging-symbolic",
+        (20, true) => "xsi-battery-level-20-charging-symbolic",
+        (30, true) => "xsi-battery-level-30-charging-symbolic",
+        (40, true) => "xsi-battery-level-40-charging-symbolic",
+        (50, true) => "xsi-battery-level-50-charging-symbolic",
+        (60, true) => "xsi-battery-level-60-charging-symbolic",
+        (70, true) => "xsi-battery-level-70-charging-symbolic",
+        (80, true) => "xsi-battery-level-80-charging-symbolic",
+        (90, true) => "xsi-battery-level-90-charging-symbolic",
+        (100, true) => "xsi-battery-level-100-charging-symbolic",
+        _ => "xsi-battery-symbolic",
+    }
 }
 
 struct WeatherWidgets {
@@ -3940,7 +3999,7 @@ fn weather_day_card(day: &WeatherDay, metrics: Metrics) -> (gtk::Box, gtk::Drawi
     let weekday = gtk::Label::new(Some(short_weekday(&day.weekday)));
     weekday.add_css_class("weather-day-label");
 
-    let icon = weather_icon_area("weather-day-icon", metrics.spacing(30));
+    let icon = weather_icon_area("weather-day-icon", metrics.spacing(24));
     draw_weather_condition(&icon, day.condition);
 
     let high = gtk::Label::new(Some(&format_temp(day.max_c)));
@@ -4496,7 +4555,7 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_media_time, media_state_for_player, resolved_scale};
+    use super::{battery_icon_name, format_media_time, media_state_for_player, resolved_scale};
     use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
@@ -4528,6 +4587,18 @@ mod tests {
         assert_eq!(format_media_time(65_000_000), "1:05");
         assert_eq!(format_media_time(3_661_000_000), "1:01:01");
         assert_eq!(format_media_time(-5_000_000), "0:00");
+    }
+
+    #[test]
+    fn picks_battery_icons_for_level_and_charge_state() {
+        assert_eq!(
+            battery_icon_name(12, "Discharging"),
+            "xsi-battery-level-10-symbolic"
+        );
+        assert_eq!(
+            battery_icon_name(87, "Charging"),
+            "xsi-battery-level-90-charging-symbolic"
+        );
     }
 
     #[test]
