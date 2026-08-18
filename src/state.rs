@@ -258,7 +258,7 @@ pub struct OsdState {
 }
 
 /// Urgency hint (`org.freedesktop.Notifications`) carried by a notification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Urgency {
     Low,
@@ -277,6 +277,17 @@ impl Urgency {
         }
     }
 
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Normal => 1,
+            Self::Critical => 2,
+        }
+    }
+
+    pub fn at_least(self, threshold: Self) -> bool {
+        self.rank() >= threshold.rank()
+    }
 }
 
 /// One `key`/`label` pair from a `Notify` call's `actions` array. A pair
@@ -398,5 +409,19 @@ impl Notification {
     /// its labeled buttons) is activated, if the sender declared one.
     pub fn default_action(&self) -> Option<&NotificationAction> {
         self.actions.iter().find(|action| action.key == "default")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urgency_thresholds_are_explicit() {
+        assert!(Urgency::Critical.at_least(Urgency::Critical));
+        assert!(Urgency::Critical.at_least(Urgency::Normal));
+        assert!(Urgency::Normal.at_least(Urgency::Low));
+        assert!(!Urgency::Normal.at_least(Urgency::Critical));
+        assert!(!Urgency::Low.at_least(Urgency::Normal));
     }
 }

@@ -12,6 +12,18 @@ scale = 0
 max_width_factor = 1.8
 
 [notifications]
+# What to do when the focused monitor has a fullscreen window and the
+# notification does not qualify for overlay rendering: "ignore" keeps it on
+# the focused monitor, "fallback" picks one non-fullscreen monitor, and
+# "all-non-fullscreen" shows it on every non-fullscreen monitor.
+fullscreen_strategy = "fallback"
+# Preferred connector order for "fallback". If none are usable, mithshell
+# continues to any available non-fullscreen monitor in Hyprland monitor-id
+# order. An empty list uses that automatic order immediately.
+fallback_monitors = []
+# Minimum urgency allowed to use the Wayland Overlay layer while its target
+# monitor is fullscreen: "off", "low", "normal", or "critical".
+overlay_over_fullscreen = "off"
 # "pill" shows one notification at a time in place of the compact pill,
 # exactly like the volume/brightness/workspace OSD. "below-pill" instead
 # pops a small popup directly under the island. "top-left", "top-right",

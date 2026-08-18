@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::weather::WeatherProvider;
+use crate::{state::Urgency, weather::WeatherProvider};
 
 pub const DEFAULT_SOURCE_COLOR: &str = "#9aa7ff";
 
@@ -169,6 +169,12 @@ pub struct NotificationConfig {
     pub gap: i32,
     /// Distance from the screen edges for the corner positions.
     pub margin: i32,
+    /// How notifications are routed when the focused monitor is fullscreen.
+    pub fullscreen_strategy: FullscreenStrategy,
+    /// Preferred fallback monitor connectors, in priority order.
+    pub fallback_monitors: Vec<String>,
+    /// Minimum urgency rendered above fullscreen windows, or `off`.
+    pub overlay_over_fullscreen: NotificationOverlay,
 }
 
 impl Default for NotificationConfig {
@@ -181,6 +187,49 @@ impl Default for NotificationConfig {
             max_history: 50,
             gap: 8,
             margin: 12,
+            fullscreen_strategy: FullscreenStrategy::default(),
+            fallback_monitors: Vec::new(),
+            overlay_over_fullscreen: NotificationOverlay::default(),
+        }
+    }
+}
+
+impl NotificationConfig {
+    pub fn overlay_applies(&self, urgency: Urgency, fullscreen: bool) -> bool {
+        fullscreen
+            && self
+                .overlay_over_fullscreen
+                .threshold()
+                .is_some_and(|threshold| urgency.at_least(threshold))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FullscreenStrategy {
+    Ignore,
+    #[default]
+    Fallback,
+    AllNonFullscreen,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotificationOverlay {
+    #[default]
+    Off,
+    Low,
+    Normal,
+    Critical,
+}
+
+impl NotificationOverlay {
+    pub fn threshold(self) -> Option<Urgency> {
+        match self {
+            Self::Off => None,
+            Self::Low => Some(Urgency::Low),
+            Self::Normal => Some(Urgency::Normal),
+            Self::Critical => Some(Urgency::Critical),
         }
     }
 }
@@ -554,6 +603,9 @@ mod tests {
         assert_eq!(config.position, NotificationPosition::Pill);
         assert!(config.enabled);
         assert!(!config.position.is_corner());
+        assert_eq!(config.fullscreen_strategy, FullscreenStrategy::Fallback);
+        assert!(config.fallback_monitors.is_empty());
+        assert_eq!(config.overlay_over_fullscreen, NotificationOverlay::Off);
     }
 
     #[test]
@@ -564,6 +616,9 @@ mod tests {
             position = "top-right"
             timeout_ms = 4000
             max_visible = 3
+            fullscreen_strategy = "all-non-fullscreen"
+            fallback_monitors = ["DP-2", "HDMI-A-1"]
+            overlay_over_fullscreen = "critical"
             "#,
         )
         .unwrap();
@@ -575,6 +630,26 @@ mod tests {
         assert!(config.notifications.position.is_corner());
         assert_eq!(config.notifications.timeout_ms, 4000);
         assert_eq!(config.notifications.max_visible, 3);
+        assert_eq!(
+            config.notifications.fullscreen_strategy,
+            FullscreenStrategy::AllNonFullscreen
+        );
+        assert_eq!(config.notifications.fallback_monitors, ["DP-2", "HDMI-A-1"]);
+        assert_eq!(
+            config.notifications.overlay_over_fullscreen,
+            NotificationOverlay::Critical
+        );
+        assert!(
+            config
+                .notifications
+                .overlay_applies(Urgency::Critical, true)
+        );
+        assert!(!config.notifications.overlay_applies(Urgency::Normal, true));
+        assert!(
+            !config
+                .notifications
+                .overlay_applies(Urgency::Critical, false)
+        );
     }
 
     #[test]
@@ -610,5 +685,21 @@ mod tests {
             NotificationPosition::BelowPill
         );
         assert!(!config.notifications.position.is_corner());
+    }
+
+    #[test]
+    fn parses_disabled_fullscreen_overlay() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [notifications]
+            overlay_over_fullscreen = "off"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.notifications.overlay_over_fullscreen,
+            NotificationOverlay::Off
+        );
     }
 }

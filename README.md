@@ -154,6 +154,9 @@ can own it at a time.
 
 ```toml
 [notifications]
+fullscreen_strategy = "fallback"
+fallback_monitors = []
+overlay_over_fullscreen = "off"
 position = "pill"
 timeout_ms = 5000
 max_visible = 5
@@ -161,6 +164,41 @@ max_history = 50
 gap = 8
 margin = 12
 ```
+
+`fullscreen_strategy` controls notifications that would otherwise land on a
+fullscreen focused monitor:
+
+* `"fallback"` (the default) uses the first configured, connected,
+  non-fullscreen output in `fallback_monitors`. If none of those outputs are
+  usable, it continues to any configured non-fullscreen output in Hyprland
+  monitor-id order. The default empty list uses that automatic order
+  immediately.
+* `"all-non-fullscreen"` shows one view of the notification on every configured,
+  connected, non-fullscreen output.
+* `"ignore"` keeps using the focused output.
+
+If no non-fullscreen output is available, `fallback` and
+`all-non-fullscreen` log a warning and use the focused output. Fullscreen
+detection includes both a monitor's normal active workspace and any visible
+special workspace.
+
+`overlay_over_fullscreen` can be `"off"` (the default), `"low"`, `"normal"`,
+or `"critical"`. The urgency value is a minimum threshold: `"normal"` includes
+normal and critical notifications. A qualifying notification stays on the
+focused output and uses the Wayland Overlay layer, but only while that output
+is fullscreen. Critical notifications otherwise remain on the normal Top
+layer.
+
+For `pill`, qualifying notifications use a dedicated Overlay window at the
+pill's normal location rather than changing the layer of the entire island.
+The surface is selected when each queued notification starts displaying and
+does not migrate between surfaces if fullscreen starts or ends mid-display.
+
+Toast positions use one dynamically layered window per output. If a
+qualifying toast promotes that window to Overlay, lower-urgency rows are hidden
+so they remain effectively occluded by the fullscreen window. Their timers
+continue and they still count toward `max_visible`; an unexpired row becomes
+visible again if the toast window returns to Top before it expires.
 
 `position` controls where an incoming notification appears:
 
@@ -183,9 +221,8 @@ Every notification is also kept in the dashboard's notification card
 (up to `max_history`), independent of `position` and of whether its popup
 has already timed out, with its own dismiss button.
 
-Changing `notifications.position`, `gap`, or `margin` takes effect on the
-next daemon restart rather than `mithshell reload`, the same as
-`media`/`weather` settings.
+Notification layout and fullscreen settings take effect after running
+`mithshell reload` or restarting the daemon.
 
 ### TarraGon search
 
@@ -509,4 +546,3 @@ and `total`.
 Reading the numbers: `backend` is TarraGon's own cost, `build` is the shell's
 rendering work, and `paint` is mostly waiting for the next vsync, so it has a
 floor of roughly one frame interval.
-

@@ -300,10 +300,12 @@ struct NotificationToasts {
     /// `entries` (a `HashMap`) purely to know which toast is oldest once
     /// `max_visible` is exceeded.
     order: RefCell<Vec<u32>>,
+    overlay: Cell<bool>,
 }
 
 struct ToastEntry {
     row: gtk::Box,
+    urgency: Urgency,
     /// Cancelled on manual dismissal so an already-removed row can't be
     /// double-removed when its timer later fires.
     timeout_source: Option<glib::SourceId>,
@@ -313,6 +315,19 @@ struct ToastEntry {
 struct PendingNotification {
     notification: Notification,
     epoch: u64,
+}
+
+struct CurrentNotification {
+    pending: PendingNotification,
+    overlay: bool,
+}
+
+struct PillOverlay {
+    window: ApplicationWindow,
+    root: gtk::Box,
+    icon: gtk::Image,
+    app: gtk::Label,
+    body: gtk::Label,
 }
 
 pub struct IslandWindow {
@@ -470,12 +485,12 @@ pub struct IslandWindow {
     /// currently displayed one advances or expires.
     notification_queue: RefCell<VecDeque<PendingNotification>>,
     /// `pill`-position only: the notification currently occupying the pill.
-    notification_current: RefCell<Option<PendingNotification>>,
+    notification_current: RefCell<Option<CurrentNotification>>,
     notification_active: Cell<bool>,
     notification_generation: Cell<u64>,
-    /// `below-pill`/corner positions only; `None` when `notifications` is
-    /// `pill` (the default), since no extra popup window is needed then.
+    /// `below-pill`/corner positions only.
     notification_toasts: Option<NotificationToasts>,
+    pill_overlay: Option<PillOverlay>,
     actions: IslandActions,
 }
 
@@ -615,6 +630,13 @@ impl IslandWindow {
                     metrics,
                 )
             });
+        let pill_overlay = (config.notifications.position == NotificationPosition::Pill
+            && config
+                .notifications
+                .overlay_over_fullscreen
+                .threshold()
+                .is_some())
+        .then(|| build_pill_overlay(application, monitor, shell, metrics));
 
         let weather_widgets = weather_view(metrics);
         content.put(
@@ -762,6 +784,7 @@ impl IslandWindow {
             notification_active: Cell::new(false),
             notification_generation: Cell::new(0),
             notification_toasts,
+            pill_overlay,
             actions,
         });
 
@@ -1275,8 +1298,8 @@ impl IslandWindow {
     }
 
     /// Displays an incoming notification according to
-    /// `notifications.position`. `pill` queues it into the same animated
-    /// surface the OSD uses; every other position pushes a toast into the
+    /// `notifications.position`. `pill` queues it into the island or its
+    /// overlay counterpart; every other position pushes a toast into the
     /// separate popup window built alongside this island.
     pub fn show_notification(self: &Rc<Self>, notification: Notification, epoch: u64) {
         let pending = PendingNotification {
@@ -1299,7 +1322,7 @@ impl IslandWindow {
             .notification_current
             .borrow()
             .as_ref()
-            .is_some_and(|current| current.notification.id == id)
+            .is_some_and(|current| current.pending.notification.id == id)
         {
             self.notification_generation
                 .set(self.notification_generation.get().wrapping_add(1));
@@ -1383,7 +1406,7 @@ impl IslandWindow {
             .notification_current
             .borrow()
             .as_ref()
-            .is_some_and(|current| current.notification.id == pending.notification.id)
+            .is_some_and(|current| current.pending.notification.id == pending.notification.id)
         {
             self.present_notification_pill(pending);
             return;
@@ -1417,6 +1440,9 @@ impl IslandWindow {
         let Some(pending) = self.notification_queue.borrow_mut().pop_front() else {
             self.notification_active.set(false);
             self.notification_current.borrow_mut().take();
+            if let Some(overlay) = &self.pill_overlay {
+                overlay.window.set_visible(false);
+            }
             self.reconcile_view();
             return;
         };
@@ -1424,7 +1450,37 @@ impl IslandWindow {
     }
 
     fn present_notification_pill(self: &Rc<Self>, pending: PendingNotification) {
-        self.render_notification(&pending.notification);
+        let fullscreen = self
+            .latest_hyprland
+            .borrow()
+            .monitor(&self.monitor_name)
+            .is_some_and(|monitor| monitor.fullscreen);
+        let overlay_active = self
+            .notifications
+            .overlay_applies(pending.notification.urgency, fullscreen)
+            && self.pill_overlay.is_some();
+        if overlay_active {
+            let overlay = self.pill_overlay.as_ref().expect("checked above");
+            apply_notification_content(
+                &overlay.icon,
+                &overlay.app,
+                &overlay.body,
+                &pending.notification,
+            );
+            overlay.window.set_visible(true);
+            overlay.window.present();
+        } else {
+            apply_notification_content(
+                &self.notification_icon,
+                &self.notification_app,
+                &self.notification_body,
+                &pending.notification,
+            );
+            if let Some(overlay) = &self.pill_overlay {
+                overlay.window.set_visible(false);
+            }
+        }
+
         let timeout_ms = pending
             .notification
             .timeout
@@ -1433,7 +1489,10 @@ impl IslandWindow {
         let id = pending.notification.id;
         let epoch = pending.epoch;
         self.notification_active.set(true);
-        *self.notification_current.borrow_mut() = Some(pending);
+        *self.notification_current.borrow_mut() = Some(CurrentNotification {
+            pending,
+            overlay: overlay_active,
+        });
         self.reconcile_view();
 
         let generation = self.notification_generation.get().wrapping_add(1);
@@ -1448,20 +1507,6 @@ impl IslandWindow {
         });
     }
 
-    fn render_notification(&self, notification: &Notification) {
-        apply_notification_icon(
-            &self.notification_icon,
-            notification.app_icon.as_deref(),
-            "preferences-system-notifications-symbolic",
-        );
-        self.notification_app.set_label(&notification.summary);
-        self.notification_app
-            .set_tooltip_text(Some(&notification.app_name));
-        self.notification_body.set_label(&notification.body);
-        self.notification_body
-            .set_visible(!notification.body.is_empty());
-    }
-
     /// Handles a click on the `pill`-position notification view. Invokes
     /// the current notification's default action if it declared one, or
     /// simply dismisses it otherwise -- clicking the pill should always do
@@ -1471,7 +1516,7 @@ impl IslandWindow {
             .notification_current
             .borrow()
             .as_ref()
-            .map(|current| current.notification.clone())
+            .map(|current| current.pending.notification.clone())
         else {
             return;
         };
@@ -1489,7 +1534,7 @@ impl IslandWindow {
             .notification_current
             .borrow()
             .as_ref()
-            .map(|current| current.notification.clone())
+            .map(|current| current.pending.notification.clone())
         else {
             return;
         };
@@ -1505,7 +1550,7 @@ impl IslandWindow {
         let epoch = pending.epoch;
         // `replaces_id` may reference a toast that's already showing.
         self.remove_toast(id);
-        let row = self.build_toast_row(&notification);
+        let row = self.build_toast_row(notification);
         toasts.stack.prepend(&row);
         toasts.order.borrow_mut().insert(0, id);
 
@@ -1524,13 +1569,14 @@ impl IslandWindow {
             id,
             ToastEntry {
                 row,
+                urgency: notification.urgency,
                 timeout_source,
             },
         );
 
-        toasts.window.set_visible(true);
-        toasts.window.present();
         self.trim_toasts();
+        self.reconcile_notification_toasts();
+        toasts.window.present();
     }
 
     fn build_toast_row(self: &Rc<Self>, notification: &Notification) -> gtk::Box {
@@ -1603,9 +1649,50 @@ impl IslandWindow {
             toasts.stack.remove(&entry.row);
         }
         toasts.order.borrow_mut().retain(|existing| *existing != id);
-        if toasts.entries.borrow().is_empty() {
-            toasts.window.set_visible(false);
+        self.reconcile_notification_toasts();
+    }
+
+    fn reconcile_notification_toasts(&self) {
+        let Some(toasts) = &self.notification_toasts else {
+            return;
+        };
+        let fullscreen = self
+            .latest_hyprland
+            .borrow()
+            .monitor(&self.monitor_name)
+            .is_some_and(|monitor| monitor.fullscreen);
+        let overlay = fullscreen
+            && toasts.entries.borrow().values().any(|entry| {
+                self.notifications
+                    .overlay_applies(entry.urgency, fullscreen)
+            });
+        let update_rows = || {
+            for entry in toasts.entries.borrow().values() {
+                entry.row.set_visible(
+                    !overlay
+                        || self
+                            .notifications
+                            .overlay_applies(entry.urgency, fullscreen),
+                );
+            }
+        };
+        let layer_changed = toasts.overlay.replace(overlay) != overlay;
+        // Hide before promotion and reveal after demotion so Top-only rows
+        // never flash above a fullscreen window during the layer transition.
+        if overlay {
+            update_rows();
+            if layer_changed {
+                toasts.window.set_layer(Layer::Overlay);
+            }
+        } else {
+            if layer_changed {
+                toasts.window.set_layer(Layer::Top);
+            }
+            update_rows();
         }
+        toasts
+            .window
+            .set_visible(!toasts.entries.borrow().is_empty());
     }
 
     /// Drops the oldest toasts past `notifications.max_visible`.
@@ -1780,6 +1867,7 @@ impl IslandWindow {
 
     pub fn update_hyprland(self: &Rc<Self>, snapshot: &HyprlandSnapshot) {
         *self.latest_hyprland.borrow_mut() = snapshot.clone();
+        self.reconcile_notification_toasts();
         let monitor = snapshot.monitor(&self.monitor_name);
         let active_workspace = monitor.map(|monitor| monitor.active_workspace.id);
         self.active_eyebrow.set_label(&format!(
@@ -2176,6 +2264,11 @@ impl IslandWindow {
     pub fn update_shell_config(&self, config: &ShellConfig, animations_enabled: bool) {
         self.window
             .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
+        if let Some(overlay) = &self.pill_overlay {
+            overlay
+                .window
+                .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
+        }
         self.window
             .set_exclusive_zone(self.metrics.spacing(config.exclusive_zone));
         self.animation_ms.set(config.animation_ms);
@@ -2187,6 +2280,9 @@ impl IslandWindow {
         self.window.close();
         if let Some(toasts) = &self.notification_toasts {
             toasts.window.close();
+        }
+        if let Some(overlay) = &self.pill_overlay {
+            overlay.window.close();
         }
     }
 
@@ -2251,23 +2347,26 @@ impl IslandWindow {
         });
         self.media.add_controller(motion);
 
-        let click = GestureClick::new();
-        // `GestureSingle::button` defaults to the primary button only; ask
-        // for every button so the right-click dismiss below actually gets
-        // delivered (`current_button()` still filters which one fired).
-        click.set_button(0);
-        let weak = Rc::downgrade(self);
-        click.connect_released(move |gesture, _, _, _| {
-            let Some(island) = weak.upgrade() else {
-                return;
-            };
-            match gesture.current_button() {
-                gdk::BUTTON_PRIMARY => island.activate_current_notification(),
-                gdk::BUTTON_SECONDARY => island.dismiss_current_notification(),
-                _ => {}
-            }
-        });
-        self.notification.add_controller(click);
+        let mut notification_views = vec![self.notification.clone()];
+        if let Some(overlay) = &self.pill_overlay {
+            notification_views.push(overlay.root.clone());
+        }
+        for notification in notification_views {
+            let click = GestureClick::new();
+            click.set_button(0);
+            let weak = Rc::downgrade(self);
+            click.connect_released(move |gesture, _, _, _| {
+                let Some(island) = weak.upgrade() else {
+                    return;
+                };
+                match gesture.current_button() {
+                    gdk::BUTTON_PRIMARY => island.activate_current_notification(),
+                    gdk::BUTTON_SECONDARY => island.dismiss_current_notification(),
+                    _ => {}
+                }
+            });
+            notification.add_controller(click);
+        }
 
         let weak = Rc::downgrade(self);
         search_button.connect_clicked(move |_| {
@@ -2834,7 +2933,13 @@ impl IslandWindow {
     }
 
     fn reconcile_view(self: &Rc<Self>) {
-        let view = if self.notification_active.get() {
+        let view = if self.notification_active.get()
+            && self
+                .notification_current
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| !current.overlay)
+        {
             View::Notification
         } else if self.osd_active.get() {
             View::Osd
@@ -4344,6 +4449,68 @@ fn notification_view(metrics: Metrics) -> (gtk::Box, gtk::Image, gtk::Label, gtk
     (root, icon, app, body)
 }
 
+fn apply_notification_content(
+    icon: &gtk::Image,
+    app: &gtk::Label,
+    body: &gtk::Label,
+    notification: &Notification,
+) {
+    apply_notification_icon(
+        icon,
+        notification.app_icon.as_deref(),
+        "preferences-system-notifications-symbolic",
+    );
+    app.set_label(&notification.summary);
+    app.set_tooltip_text(Some(&notification.app_name));
+    body.set_label(&notification.body);
+    body.set_visible(!notification.body.is_empty());
+}
+
+fn build_pill_overlay(
+    application: &Application,
+    monitor: &gdk::Monitor,
+    shell: &ShellConfig,
+    metrics: Metrics,
+) -> PillOverlay {
+    let window = ApplicationWindow::builder()
+        .application(application)
+        .title("mithshell notification overlay")
+        .decorated(false)
+        .resizable(false)
+        .default_width(metrics.notification_width)
+        .default_height(metrics.notification_height)
+        .build();
+    window.add_css_class("mithshell-window");
+    if let Some(class) = metrics.css_class() {
+        window.add_css_class(class);
+    }
+    window.init_layer_shell();
+    window.set_namespace(Some("mithshell-notification-overlay"));
+    window.set_layer(Layer::Overlay);
+    window.set_keyboard_mode(KeyboardMode::None);
+    window.set_monitor(Some(monitor));
+    window.set_anchor(Edge::Top, true);
+    window.set_margin(Edge::Top, metrics.spacing(shell.top_margin));
+    window.set_exclusive_zone(0);
+
+    let surface = gtk::ScrolledWindow::new();
+    surface.add_css_class("island-surface");
+    surface.set_overflow(Overflow::Hidden);
+    surface.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+    surface.set_size_request(metrics.notification_width, metrics.notification_height);
+    let (root, icon, app, body) = notification_view(metrics);
+    surface.set_child(Some(&root));
+    window.set_child(Some(&surface));
+
+    PillOverlay {
+        window,
+        root,
+        icon,
+        app,
+        body,
+    }
+}
+
 /// Builds the separate popup window used for `below-pill`/corner
 /// notification positions. Must only be called with a non-`Pill` position.
 fn build_notification_toasts(
@@ -4426,6 +4593,7 @@ fn build_notification_toasts(
         stack,
         entries: RefCell::new(HashMap::new()),
         order: RefCell::new(Vec::new()),
+        overlay: Cell::new(false),
     }
 }
 

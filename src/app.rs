@@ -14,7 +14,7 @@ use log::{error, info, warn};
 
 use crate::{
     cli::{self, Cli, Command, SetupCommand, ThemeCommand, ThemeModeArg},
-    config::{self, AppConfig, PaletteEngine, ThemeMode, ThemeSource},
+    config::{self, AppConfig, FullscreenStrategy, PaletteEngine, ThemeMode, ThemeSource},
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
     latency,
@@ -835,10 +835,8 @@ impl Controller {
         });
     }
 
-    /// Routes `org.freedesktop.Notifications` traffic from
-    /// `notifications::start_server` to the focused island (matching how
-    /// the volume/brightness/workspace OSD picks a target) and keeps the
-    /// bounded history behind every dashboard's notification card in sync.
+    /// Routes `org.freedesktop.Notifications` traffic to the configured
+    /// monitor targets and keeps every dashboard's bounded history in sync.
     fn attach_notifications(self: &Rc<Self>, receiver: Receiver<NotificationEvent>) {
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
@@ -851,18 +849,31 @@ impl Controller {
                         if !controller.config.borrow().notifications.enabled {
                             continue;
                         }
-                        let (epoch, _) = controller
-                            .notification_epochs
-                            .borrow_mut()
-                            .register(notification.id);
+                        let (epoch, replacing) = controller.register_notification(notification.id);
                         controller.record_notification(notification.clone());
-                        match controller.target_islands(&MonitorTarget::Focused) {
+                        match controller.notification_target_islands(&notification) {
                             Ok(islands) => {
+                                if replacing {
+                                    let target_names: HashSet<_> = islands
+                                        .iter()
+                                        .map(|island| island.monitor_name())
+                                        .collect();
+                                    for island in controller.islands.borrow().values() {
+                                        if !target_names.contains(island.monitor_name()) {
+                                            island.close_notification(notification.id);
+                                        }
+                                    }
+                                }
                                 for island in islands {
                                     island.show_notification(notification.clone(), epoch);
                                 }
                             }
-                            Err(error) => warn!("cannot show notification: {error:#}"),
+                            Err(error) => {
+                                for island in controller.islands.borrow().values() {
+                                    island.close_notification(notification.id);
+                                }
+                                warn!("cannot show notification: {error:#}");
+                            }
                         }
                     }
                     NotificationEvent::Closed { id, .. } => {
@@ -875,6 +886,10 @@ impl Controller {
                 }
             }
         });
+    }
+
+    fn register_notification(&self, id: u32) -> (u64, bool) {
+        self.notification_epochs.borrow_mut().register(id)
     }
 
     fn notification_expired(&self, id: u32, epoch: u64) {
@@ -1324,6 +1339,71 @@ impl Controller {
             bail!("no configured island matches target {target:?}");
         }
         Ok(targets)
+    }
+
+    fn notification_target_islands(
+        &self,
+        notification: &Notification,
+    ) -> Result<Vec<Rc<IslandWindow>>> {
+        let notifications = self.config.borrow().notifications.clone();
+        let snapshot = self.hyprland.borrow();
+        let Some(focused) = snapshot.focused_monitor() else {
+            drop(snapshot);
+            return self.target_islands(&MonitorTarget::Focused);
+        };
+        if !focused.fullscreen
+            || notifications.fullscreen_strategy == FullscreenStrategy::Ignore
+            || notifications.overlay_applies(notification.urgency, true)
+        {
+            drop(snapshot);
+            return self.target_islands(&MonitorTarget::Focused);
+        }
+
+        let islands = self.islands.borrow();
+        let mut usable: Vec<_> = snapshot
+            .monitors
+            .iter()
+            .filter(|monitor| !monitor.fullscreen && islands.contains_key(&monitor.name))
+            .collect();
+        usable.sort_by_key(|monitor| monitor.id);
+
+        let names: Vec<String> = match notifications.fullscreen_strategy {
+            FullscreenStrategy::Fallback => notifications
+                .fallback_monitors
+                .iter()
+                .find(|name| {
+                    usable
+                        .iter()
+                        .any(|monitor| monitor.name.as_str() == name.as_str())
+                })
+                .cloned()
+                .or_else(|| usable.first().map(|monitor| monitor.name.clone()))
+                .into_iter()
+                .collect(),
+            FullscreenStrategy::AllNonFullscreen => usable
+                .into_iter()
+                .map(|monitor| monitor.name.clone())
+                .collect(),
+            FullscreenStrategy::Ignore => unreachable!("handled above"),
+        };
+
+        if names.is_empty() {
+            warn!(
+                "no non-fullscreen notification output is available; using focused monitor `{}`",
+                focused.name
+            );
+            let focused_name = focused.name.clone();
+            let target = islands
+                .get(&focused_name)
+                .cloned()
+                .context("focused monitor has no configured island")?;
+            return Ok(vec![target]);
+        }
+
+        Ok(names
+            .iter()
+            .filter_map(|name| islands.get(name).cloned())
+            .collect())
     }
 
     fn reload_config(self: &Rc<Self>) -> Result<()> {
