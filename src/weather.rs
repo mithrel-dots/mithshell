@@ -23,7 +23,7 @@ pub enum WeatherProvider {
 }
 
 impl WeatherProvider {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Wttr => "wttr.in",
             Self::OpenMeteo => "open-meteo.com",

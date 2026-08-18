@@ -31,6 +31,7 @@ use crate::{
         TarragonPlugin, TarragonPluginState, TarragonSelection, TarragonSnapshot, TarragonStatus,
     },
     tray,
+    weather::WeatherProvider,
 };
 
 const WINDOW_WIDTH: i32 = 860;
@@ -440,6 +441,7 @@ pub struct IslandWindow {
     notification_app: gtk::Label,
     notification_body: gtk::Label,
     weather_location: gtk::Label,
+    weather_eyebrow: gtk::Label,
     weather_hero_icon: gtk::DrawingArea,
     weather_hero_temp: gtk::Label,
     weather_hero_description: gtk::Label,
@@ -638,7 +640,7 @@ impl IslandWindow {
                 .is_some())
         .then(|| build_pill_overlay(application, monitor, shell, metrics));
 
-        let weather_widgets = weather_view(metrics);
+        let weather_widgets = weather_view(metrics, config.weather.provider);
         content.put(
             &weather_widgets.root,
             f64::from((metrics.search_width - metrics.weather_width) / 2),
@@ -740,6 +742,7 @@ impl IslandWindow {
             notification_app,
             notification_body,
             weather_location: weather_widgets.location,
+            weather_eyebrow: weather_widgets.eyebrow,
             weather_hero_icon: weather_widgets.hero_icon,
             weather_hero_temp: weather_widgets.hero_temp,
             weather_hero_description: weather_widgets.hero_description,
@@ -907,11 +910,14 @@ impl IslandWindow {
             return;
         };
         self.weather_location.set_label(&state.location);
+        self.weather_eyebrow
+            .set_label(&weather_provider_label("WEATHER", state.provider));
         self.weather_hero_temp
             .set_label(&format!("{}°", state.current_c));
         self.weather_hero_description.set_label(&state.description);
         draw_weather_condition(&self.weather_hero_icon, state.condition);
-        self.weather_status.set_label("UPDATED  //  WTTR.IN");
+        self.weather_status
+            .set_label(&weather_provider_label("UPDATED", state.provider));
 
         clear_box(&self.weather_forecast_row);
         let mut icons = vec![self.weather_hero_icon.clone()];
@@ -4058,6 +4064,7 @@ fn battery_icon_name(percent: u8, status: &str) -> &'static str {
 struct WeatherWidgets {
     root: gtk::Box,
     back_button: gtk::Button,
+    eyebrow: gtk::Label,
     location: gtk::Label,
     hero_icon: gtk::DrawingArea,
     hero_temp: gtk::Label,
@@ -4066,7 +4073,11 @@ struct WeatherWidgets {
     forecast_row: gtk::Box,
 }
 
-fn weather_view(metrics: Metrics) -> WeatherWidgets {
+fn weather_provider_label(prefix: &str, provider: WeatherProvider) -> String {
+    format!("{prefix}  //  {}", provider.name().to_ascii_uppercase())
+}
+
+fn weather_view(metrics: Metrics, provider: WeatherProvider) -> WeatherWidgets {
     let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(7));
     root.set_size_request(metrics.weather_width, metrics.weather_height);
     root.add_css_class("weather-content");
@@ -4081,7 +4092,7 @@ fn weather_view(metrics: Metrics) -> WeatherWidgets {
     let heading = gtk::Box::new(Orientation::Vertical, 0);
     heading.set_hexpand(true);
     heading.set_valign(Align::Center);
-    let eyebrow = gtk::Label::new(Some("WEATHER  //  WTTR.IN"));
+    let eyebrow = gtk::Label::new(Some(&weather_provider_label("WEATHER", provider)));
     eyebrow.add_css_class("eyebrow");
     eyebrow.set_halign(Align::Start);
     let location = gtk::Label::new(Some("Locating..."));
@@ -4127,6 +4138,7 @@ fn weather_view(metrics: Metrics) -> WeatherWidgets {
     WeatherWidgets {
         root,
         back_button,
+        eyebrow,
         location,
         hero_icon,
         hero_temp,
@@ -4765,8 +4777,12 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{battery_icon_name, format_media_time, media_state_for_player, resolved_scale};
+    use super::{
+        battery_icon_name, format_media_time, media_state_for_player, resolved_scale,
+        weather_provider_label,
+    };
     use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
+    use crate::weather::WeatherProvider;
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
         MediaPlayer {
@@ -4808,6 +4824,18 @@ mod tests {
         assert_eq!(
             battery_icon_name(87, "Charging"),
             "xsi-battery-level-90-charging-symbolic"
+        );
+    }
+
+    #[test]
+    fn labels_the_selected_weather_provider() {
+        assert_eq!(
+            weather_provider_label("WEATHER", WeatherProvider::Wttr),
+            "WEATHER  //  WTTR.IN"
+        );
+        assert_eq!(
+            weather_provider_label("UPDATED", WeatherProvider::OpenMeteo),
+            "UPDATED  //  OPEN-METEO.COM"
         );
     }
 

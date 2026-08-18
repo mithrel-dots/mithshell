@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{config::ThemeMode, ipc::OsdKind};
+use crate::{config::ThemeMode, ipc::OsdKind, weather::WeatherProvider};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct HyprlandSnapshot {
@@ -182,6 +182,7 @@ pub struct WeatherDay {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherState {
+    pub provider: WeatherProvider,
     pub location: String,
     pub current_c: i32,
     pub condition: WeatherCondition,

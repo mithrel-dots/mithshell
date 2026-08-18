@@ -48,6 +48,7 @@ fn parse_response(body: &str) -> Result<WeatherState> {
         .collect();
     pad_forecast(&mut days);
     Ok(WeatherState {
+        provider: super::WeatherProvider::Wttr,
         location,
         current_c: current.temp_c.parse().unwrap_or_default(),
         condition: condition_from_code(&current.weather_code),
@@ -218,6 +219,7 @@ mod tests {
             ]
         }"#;
         let state = parse_response(body).unwrap();
+        assert_eq!(state.provider, crate::weather::WeatherProvider::Wttr);
         assert_eq!(state.location, "Athens, Greece");
         assert_eq!(state.current_c, 21);
         assert_eq!(state.condition, WeatherCondition::PartlyCloudy);

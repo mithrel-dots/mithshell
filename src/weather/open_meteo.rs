@@ -100,6 +100,7 @@ fn parse_response(body: &str, geo: &GeoResponse) -> Result<WeatherState> {
         .collect();
     pad_forecast(&mut days);
     Ok(WeatherState {
+        provider: super::WeatherProvider::OpenMeteo,
         location: geo.label(),
         current_c: current
             .temperature_2m
@@ -229,6 +230,7 @@ mod tests {
             country: "Greece".to_owned(),
         };
         let state = parse_response(body, &geo).unwrap();
+        assert_eq!(state.provider, crate::weather::WeatherProvider::OpenMeteo);
         assert_eq!(state.location, "Athens, Greece");
         assert_eq!(state.current_c, 27);
         assert_eq!(state.condition, WeatherCondition::PartlyCloudy);
