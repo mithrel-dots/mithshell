@@ -36,12 +36,23 @@ pub struct HyprlandMonitor {
     pub focused: bool,
     #[serde(rename = "activeWorkspace")]
     pub active_workspace: WorkspaceRef,
+    #[serde(rename = "specialWorkspace", default)]
+    pub special_workspace: WorkspaceRef,
+    #[serde(default, skip_deserializing)]
+    pub fullscreen: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct WorkspaceRef {
     pub id: i64,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HyprlandClient {
+    pub monitor: i64,
+    pub workspace: WorkspaceRef,
+    pub fullscreen: u8,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -265,6 +276,7 @@ impl Urgency {
             _ => Self::Normal,
         }
     }
+
 }
 
 /// One `key`/`label` pair from a `Notify` call's `actions` array. A pair

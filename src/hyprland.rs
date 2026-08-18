@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use async_channel::Sender;
 use log::{debug, warn};
 
-use crate::state::{ActiveWindow, HyprlandMonitor, HyprlandSnapshot, Workspace};
+use crate::state::{ActiveWindow, HyprlandClient, HyprlandMonitor, HyprlandSnapshot, Workspace};
 
 #[derive(Debug)]
 pub enum HyprlandUpdate {
@@ -20,8 +20,9 @@ pub enum HyprlandUpdate {
 }
 
 pub fn snapshot() -> Result<HyprlandSnapshot> {
-    let monitors: Vec<HyprlandMonitor> = query_json("monitors")?;
+    let mut monitors: Vec<HyprlandMonitor> = query_json("monitors")?;
     let workspaces: Vec<Workspace> = query_json("workspaces")?;
+    let clients: Vec<HyprlandClient> = query_json("clients")?;
     let active_window_value: serde_json::Value = query_json("activewindow")?;
     let active_window = if active_window_value
         .as_object()
@@ -35,10 +36,23 @@ pub fn snapshot() -> Result<HyprlandSnapshot> {
         )
     };
 
+    for monitor in &mut monitors {
+        monitor.fullscreen = monitor_has_fullscreen_client(monitor, &clients);
+    }
+
     Ok(HyprlandSnapshot {
         monitors,
         workspaces,
         active_window,
+    })
+}
+
+fn monitor_has_fullscreen_client(monitor: &HyprlandMonitor, clients: &[HyprlandClient]) -> bool {
+    clients.iter().any(|client| {
+        let workspace_visible = client.workspace.id == monitor.active_workspace.id
+            || (monitor.special_workspace.id != 0
+                && client.workspace.id == monitor.special_workspace.id);
+        client.monitor == monitor.id && workspace_visible && client.fullscreen & 0b10 != 0
     })
 }
 
@@ -166,12 +180,14 @@ fn refreshing_event(line: &str) -> bool {
         "workspacev2>>",
         "focusedmon>>",
         "focusedmonv2>>",
+        "activespecial>>",
         "activewindow>>",
         "activewindowv2>>",
         "openwindow>>",
         "closewindow>>",
         "movewindow>>",
         "movewindowv2>>",
+        "fullscreen>>",
         "createworkspace>>",
         "destroyworkspace>>",
         "configreloaded>>",
@@ -187,7 +203,42 @@ mod tests {
     fn ignores_pointer_and_layout_events() {
         assert!(refreshing_event("workspacev2>>3,3"));
         assert!(refreshing_event("activewindow>>kitty,shell"));
+        assert!(refreshing_event("activespecial>>special:magic,DP-1"));
+        assert!(refreshing_event("fullscreen>>1"));
         assert!(!refreshing_event("mousemove>>300,200"));
+    }
+
+    #[test]
+    fn detects_only_the_fullscreen_bit_on_visible_workspaces() {
+        let monitor = HyprlandMonitor {
+            id: 1,
+            name: "DP-1".into(),
+            focused: true,
+            active_workspace: crate::state::WorkspaceRef {
+                id: 4,
+                name: "4".into(),
+            },
+            special_workspace: crate::state::WorkspaceRef {
+                id: -99,
+                name: "special:magic".into(),
+            },
+            fullscreen: false,
+        };
+        let client = |workspace, fullscreen| HyprlandClient {
+            monitor: 1,
+            workspace: crate::state::WorkspaceRef {
+                id: workspace,
+                name: workspace.to_string(),
+            },
+            fullscreen,
+        };
+
+        assert!(!monitor_has_fullscreen_client(&monitor, &[client(4, 0)]));
+        assert!(!monitor_has_fullscreen_client(&monitor, &[client(4, 1)]));
+        assert!(monitor_has_fullscreen_client(&monitor, &[client(4, 2)]));
+        assert!(monitor_has_fullscreen_client(&monitor, &[client(4, 3)]));
+        assert!(monitor_has_fullscreen_client(&monitor, &[client(-99, 2)]));
+        assert!(!monitor_has_fullscreen_client(&monitor, &[client(8, 2)]));
     }
 
     #[test]
