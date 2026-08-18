@@ -168,11 +168,8 @@ pub type UnitAction = Rc<dyn Fn()>;
 pub type PreviewAction = Rc<dyn Fn(u64, String)>;
 /// Argument is the target MPRIS player's full D-Bus service name.
 pub type MediaAction = Rc<dyn Fn(String)>;
-/// Argument is a notification id. Used both for the timer-driven expiry
-/// (which only needs to emit `NotificationClosed` over D-Bus) and for an
-/// explicit user dismissal (which additionally drops the notification from
-/// history and closes it on every island).
 pub type NotificationCloseAction = Rc<dyn Fn(u32)>;
+pub type NotificationExpireAction = Rc<dyn Fn(u32, u64)>;
 /// Arguments are a notification id and the invoked action's key.
 pub type NotificationInvokeAction = Rc<dyn Fn(u32, String)>;
 /// Arguments are a tray item's `service`/`object_path` and pointer
@@ -198,7 +195,7 @@ pub struct IslandActions {
     pub media_play_pause: MediaAction,
     pub media_next: MediaAction,
     pub media_previous: MediaAction,
-    pub notification_expired: NotificationCloseAction,
+    pub notification_expired: NotificationExpireAction,
     pub notification_dismiss: NotificationCloseAction,
     pub notification_invoke: NotificationInvokeAction,
     pub tray_activate: TrayPointAction,
@@ -310,6 +307,12 @@ struct ToastEntry {
     /// Cancelled on manual dismissal so an already-removed row can't be
     /// double-removed when its timer later fires.
     timeout_source: Option<glib::SourceId>,
+}
+
+#[derive(Clone)]
+struct PendingNotification {
+    notification: Notification,
+    epoch: u64,
 }
 
 pub struct IslandWindow {
@@ -465,9 +468,9 @@ pub struct IslandWindow {
     notifications: NotificationConfig,
     /// `pill`-position only: notifications waiting to be shown once the
     /// currently displayed one advances or expires.
-    notification_queue: RefCell<VecDeque<Notification>>,
+    notification_queue: RefCell<VecDeque<PendingNotification>>,
     /// `pill`-position only: the notification currently occupying the pill.
-    notification_current: RefCell<Option<Notification>>,
+    notification_current: RefCell<Option<PendingNotification>>,
     notification_active: Cell<bool>,
     notification_generation: Cell<u64>,
     /// `below-pill`/corner positions only; `None` when `notifications` is
@@ -1275,11 +1278,15 @@ impl IslandWindow {
     /// `notifications.position`. `pill` queues it into the same animated
     /// surface the OSD uses; every other position pushes a toast into the
     /// separate popup window built alongside this island.
-    pub fn show_notification(self: &Rc<Self>, notification: Notification) {
+    pub fn show_notification(self: &Rc<Self>, notification: Notification, epoch: u64) {
+        let pending = PendingNotification {
+            notification,
+            epoch,
+        };
         if self.notifications.position == NotificationPosition::Pill {
-            self.show_notification_pill(notification);
+            self.show_notification_pill(pending);
         } else {
-            self.show_notification_toast(notification);
+            self.show_notification_toast(pending);
         }
     }
 
@@ -1292,7 +1299,7 @@ impl IslandWindow {
             .notification_current
             .borrow()
             .as_ref()
-            .is_some_and(|current| current.id == id)
+            .is_some_and(|current| current.notification.id == id)
         {
             self.notification_generation
                 .set(self.notification_generation.get().wrapping_add(1));
@@ -1300,7 +1307,7 @@ impl IslandWindow {
         } else {
             self.notification_queue
                 .borrow_mut()
-                .retain(|queued| queued.id != id);
+                .retain(|queued| queued.notification.id != id);
         }
     }
 
@@ -1371,8 +1378,27 @@ impl IslandWindow {
         row
     }
 
-    fn show_notification_pill(self: &Rc<Self>, notification: Notification) {
-        self.notification_queue.borrow_mut().push_back(notification);
+    fn show_notification_pill(self: &Rc<Self>, pending: PendingNotification) {
+        if self
+            .notification_current
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current.notification.id == pending.notification.id)
+        {
+            self.present_notification_pill(pending);
+            return;
+        }
+
+        let mut queue = self.notification_queue.borrow_mut();
+        if let Some(queued) = queue
+            .iter_mut()
+            .find(|queued| queued.notification.id == pending.notification.id)
+        {
+            *queued = pending;
+            return;
+        }
+        queue.push_back(pending);
+        drop(queue);
         if !self.notification_active.get() {
             self.advance_notification();
         }
@@ -1388,20 +1414,26 @@ impl IslandWindow {
     /// otherwise block the queue forever. `below-pill`/corner toasts do
     /// honor persistence, since those have a close button.
     fn advance_notification(self: &Rc<Self>) {
-        let Some(notification) = self.notification_queue.borrow_mut().pop_front() else {
+        let Some(pending) = self.notification_queue.borrow_mut().pop_front() else {
             self.notification_active.set(false);
             self.notification_current.borrow_mut().take();
             self.reconcile_view();
             return;
         };
-        self.render_notification(&notification);
-        let timeout_ms = notification
+        self.present_notification_pill(pending);
+    }
+
+    fn present_notification_pill(self: &Rc<Self>, pending: PendingNotification) {
+        self.render_notification(&pending.notification);
+        let timeout_ms = pending
+            .notification
             .timeout
             .resolve(self.notifications.timeout_ms)
             .unwrap_or(self.notifications.timeout_ms);
-        let id = notification.id;
+        let id = pending.notification.id;
+        let epoch = pending.epoch;
         self.notification_active.set(true);
-        *self.notification_current.borrow_mut() = Some(notification);
+        *self.notification_current.borrow_mut() = Some(pending);
         self.reconcile_view();
 
         let generation = self.notification_generation.get().wrapping_add(1);
@@ -1411,8 +1443,7 @@ impl IslandWindow {
             if let Some(island) = weak.upgrade()
                 && island.notification_generation.get() == generation
             {
-                (island.actions.notification_expired)(id);
-                island.advance_notification();
+                (island.actions.notification_expired)(id, epoch);
             }
         });
     }
@@ -1436,7 +1467,12 @@ impl IslandWindow {
     /// simply dismisses it otherwise -- clicking the pill should always do
     /// *something*, and most senders don't declare any actions at all.
     fn activate_current_notification(self: &Rc<Self>) {
-        let Some(notification) = self.notification_current.borrow().clone() else {
+        let Some(notification) = self
+            .notification_current
+            .borrow()
+            .as_ref()
+            .map(|current| current.notification.clone())
+        else {
             return;
         };
         if let Some(action) = notification.default_action() {
@@ -1449,17 +1485,24 @@ impl IslandWindow {
     /// Right-clicking the pill always dismisses the current notification,
     /// regardless of whether it declared a default action.
     fn dismiss_current_notification(self: &Rc<Self>) {
-        let Some(notification) = self.notification_current.borrow().clone() else {
+        let Some(notification) = self
+            .notification_current
+            .borrow()
+            .as_ref()
+            .map(|current| current.notification.clone())
+        else {
             return;
         };
         (self.actions.notification_dismiss)(notification.id);
     }
 
-    fn show_notification_toast(self: &Rc<Self>, notification: Notification) {
+    fn show_notification_toast(self: &Rc<Self>, pending: PendingNotification) {
         let Some(toasts) = &self.notification_toasts else {
             return;
         };
+        let notification = &pending.notification;
         let id = notification.id;
+        let epoch = pending.epoch;
         // `replaces_id` may reference a toast that's already showing.
         self.remove_toast(id);
         let row = self.build_toast_row(&notification);
@@ -1473,8 +1516,7 @@ impl IslandWindow {
                 let weak = Rc::downgrade(self);
                 glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
                     if let Some(island) = weak.upgrade() {
-                        (island.actions.notification_expired)(id);
-                        island.remove_toast(id);
+                        (island.actions.notification_expired)(id, epoch);
                     }
                 })
             });

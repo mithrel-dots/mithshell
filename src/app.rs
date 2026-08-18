@@ -384,6 +384,7 @@ struct Controller {
     /// island's dashboard notification card. Capacity comes from
     /// `notifications.max_history`, re-read each time a notification lands.
     notifications: RefCell<Vec<Notification>>,
+    notification_epochs: RefCell<NotificationEpochRegistry>,
     notification_command_sender: Sender<NotificationCommand>,
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
@@ -394,6 +395,36 @@ struct Controller {
     preview_listener: Option<thread::JoinHandle<()>>,
     auth_listener: Option<thread::JoinHandle<()>>,
     _gtk_css_watcher: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct NotificationEpochRegistry {
+    next: u64,
+    active: HashMap<u32, u64>,
+}
+
+impl NotificationEpochRegistry {
+    fn register(&mut self, id: u32) -> (u64, bool) {
+        self.next = self.next.wrapping_add(1).max(1);
+        let replacing = self.active.insert(id, self.next).is_some();
+        (self.next, replacing)
+    }
+
+    fn expire(&mut self, id: u32, epoch: u64) -> bool {
+        if self.active.get(&id).copied() != Some(epoch) {
+            return false;
+        }
+        self.active.remove(&id);
+        true
+    }
+
+    fn remove(&mut self, id: u32) -> bool {
+        self.active.remove(&id).is_some()
+    }
+
+    fn clear(&mut self) {
+        self.active.clear();
+    }
 }
 
 impl Controller {
@@ -471,6 +502,7 @@ impl Controller {
             tarragon_sender,
             preview_sender,
             notifications: RefCell::new(Vec::new()),
+            notification_epochs: RefCell::new(NotificationEpochRegistry::default()),
             notification_command_sender,
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
@@ -819,17 +851,22 @@ impl Controller {
                         if !controller.config.borrow().notifications.enabled {
                             continue;
                         }
+                        let (epoch, _) = controller
+                            .notification_epochs
+                            .borrow_mut()
+                            .register(notification.id);
                         controller.record_notification(notification.clone());
                         match controller.target_islands(&MonitorTarget::Focused) {
                             Ok(islands) => {
                                 for island in islands {
-                                    island.show_notification(notification.clone());
+                                    island.show_notification(notification.clone(), epoch);
                                 }
                             }
                             Err(error) => warn!("cannot show notification: {error:#}"),
                         }
                     }
                     NotificationEvent::Closed { id, .. } => {
+                        controller.notification_epochs.borrow_mut().remove(id);
                         for island in controller.islands.borrow().values() {
                             island.close_notification(id);
                         }
@@ -838,6 +875,21 @@ impl Controller {
                 }
             }
         });
+    }
+
+    fn notification_expired(&self, id: u32, epoch: u64) {
+        if !self.notification_epochs.borrow_mut().expire(id, epoch) {
+            return;
+        }
+        let _ = self
+            .notification_command_sender
+            .try_send(NotificationCommand::Close {
+                id,
+                reason: CloseReason::Expired,
+            });
+        for island in self.islands.borrow().values() {
+            island.close_notification(id);
+        }
     }
 
     /// Inserts (or, for a `replaces_id` call, updates) a notification at
@@ -874,12 +926,14 @@ impl Controller {
     /// closes it on every island right away, rather than waiting on the
     /// round trip back through `attach_notifications`.
     fn dismiss_notification(self: &Rc<Self>, id: u32) {
-        let _ = self
-            .notification_command_sender
-            .try_send(NotificationCommand::Close {
-                id,
-                reason: CloseReason::Dismissed,
-            });
+        if self.notification_epochs.borrow_mut().remove(id) {
+            let _ = self
+                .notification_command_sender
+                .try_send(NotificationCommand::Close {
+                    id,
+                    reason: CloseReason::Dismissed,
+                });
+        }
         for island in self.islands.borrow().values() {
             island.close_notification(id);
         }
@@ -891,6 +945,9 @@ impl Controller {
     /// `dismiss_notification` does, matching the common desktop convention
     /// that activating a notification also closes it.
     fn invoke_notification_action(self: &Rc<Self>, id: u32, action_key: String) {
+        if !self.notification_epochs.borrow_mut().remove(id) {
+            return;
+        }
         let _ = self
             .notification_command_sender
             .try_send(NotificationCommand::InvokeAction { id, action_key });
@@ -1280,6 +1337,7 @@ impl Controller {
         }
         *self.config.borrow_mut() = config;
         *self.theme_config.borrow_mut() = theme_config.clone();
+        self.notification_epochs.borrow_mut().clear();
         ui::reload_user_styles(
             &self.user_css_provider,
             &crate::config::colors_css_path(&self.config_path),
@@ -1436,12 +1494,11 @@ impl Controller {
                     }
                 });
             });
-            let notification_command_sender = self.notification_command_sender.clone();
-            let notification_expired = Rc::new(move |id: u32| {
-                let _ = notification_command_sender.try_send(NotificationCommand::Close {
-                    id,
-                    reason: CloseReason::Expired,
-                });
+            let weak = Rc::downgrade(self);
+            let notification_expired = Rc::new(move |id: u32, epoch: u64| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.notification_expired(id, epoch);
+                }
             });
             let weak = Rc::downgrade(self);
             let notification_dismiss = Rc::new(move |id: u32| {
@@ -1594,5 +1651,22 @@ impl Drop for Controller {
         if let Some(listener) = self.auth_listener.take() {
             let _ = listener.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_epochs_reject_replaced_and_duplicate_expiry() {
+        let mut registry = NotificationEpochRegistry::default();
+        let (first, replacing) = registry.register(42);
+        assert!(!replacing);
+        let (replacement, replacing) = registry.register(42);
+        assert!(replacing);
+        assert!(!registry.expire(42, first));
+        assert!(registry.expire(42, replacement));
+        assert!(!registry.expire(42, replacement));
     }
 }
