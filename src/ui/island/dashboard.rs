@@ -305,46 +305,15 @@ fn control_row(icon: &str, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Sca
     (row, scale, value)
 }
 
-pub(super) fn battery_icon_name(percent: u8, status: &str) -> &'static str {
-    let level = match percent {
-        0..=4 => 0,
-        5..=14 => 10,
-        15..=24 => 20,
-        25..=34 => 30,
-        35..=44 => 40,
-        45..=54 => 50,
-        55..=64 => 60,
-        65..=74 => 70,
-        75..=84 => 80,
-        85..=94 => 90,
-        _ => 100,
+/// Nearest-decile battery icon, e.g. `xsi-battery-level-40-charging-symbolic`.
+pub(super) fn battery_icon_name(percent: u8, status: &str) -> String {
+    let level = ((f64::from(percent.min(100)) / 10.0).round() * 10.0) as u8;
+    let charging = if status.eq_ignore_ascii_case("charging") {
+        "-charging"
+    } else {
+        ""
     };
-    let charging = status.eq_ignore_ascii_case("charging");
-    match (level, charging) {
-        (0, false) => "xsi-battery-level-0-symbolic",
-        (10, false) => "xsi-battery-level-10-symbolic",
-        (20, false) => "xsi-battery-level-20-symbolic",
-        (30, false) => "xsi-battery-level-30-symbolic",
-        (40, false) => "xsi-battery-level-40-symbolic",
-        (50, false) => "xsi-battery-level-50-symbolic",
-        (60, false) => "xsi-battery-level-60-symbolic",
-        (70, false) => "xsi-battery-level-70-symbolic",
-        (80, false) => "xsi-battery-level-80-symbolic",
-        (90, false) => "xsi-battery-level-90-symbolic",
-        (100, false) => "xsi-battery-level-100-symbolic",
-        (0, true) => "xsi-battery-level-0-charging-symbolic",
-        (10, true) => "xsi-battery-level-10-charging-symbolic",
-        (20, true) => "xsi-battery-level-20-charging-symbolic",
-        (30, true) => "xsi-battery-level-30-charging-symbolic",
-        (40, true) => "xsi-battery-level-40-charging-symbolic",
-        (50, true) => "xsi-battery-level-50-charging-symbolic",
-        (60, true) => "xsi-battery-level-60-charging-symbolic",
-        (70, true) => "xsi-battery-level-70-charging-symbolic",
-        (80, true) => "xsi-battery-level-80-charging-symbolic",
-        (90, true) => "xsi-battery-level-90-charging-symbolic",
-        (100, true) => "xsi-battery-level-100-charging-symbolic",
-        _ => "xsi-battery-symbolic",
-    }
+    format!("xsi-battery-level-{level}{charging}-symbolic")
 }
 
 impl IslandWindow {
@@ -451,8 +420,8 @@ impl IslandWindow {
         }
 
         if let Some(battery) = &snapshot.battery {
-            self.battery_icon
-                .set_icon_name(Some(battery_icon_name(battery.percent, &battery.status)));
+            let name = battery_icon_name(battery.percent, &battery.status);
+            self.battery_icon.set_icon_name(Some(&name));
             self.battery_label
                 .set_label(&format!("{}%", battery.percent));
             self.compact_battery

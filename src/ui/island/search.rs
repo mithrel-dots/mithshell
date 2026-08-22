@@ -589,11 +589,8 @@ impl IslandWindow {
             .set_visible(!result.description.is_empty());
 
         let preview_key = format!("{}\0{}\0{}", result.plugin, result.id, result.preview_path);
-        let preview_changed = self
-            .search_preview_key
-            .replace(Some(preview_key))
-            .as_deref()
-            != self.search_preview_key.borrow().as_deref();
+        let old_key = self.search_preview_key.replace(Some(preview_key.clone()));
+        let preview_changed = old_key.as_deref() != Some(preview_key.as_str());
 
         let category = if result.category.is_empty() {
             "uncategorized"

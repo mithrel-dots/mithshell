@@ -23,57 +23,33 @@ impl IslandWindow {
             search_reload_button,
             weather_back_button,
         } = buttons;
-        let click = GestureClick::new();
-        let weak = Rc::downgrade(self);
-        click.connect_released(move |gesture, _, _, _| {
-            if gesture.current_button() == 1
-                && let Some(island) = weak.upgrade()
-            {
-                island.toggle();
-            }
-        });
-        self.compact.add_controller(click);
+        for pill in [&self.compact, &self.media] {
+            let click = GestureClick::new();
+            let weak = Rc::downgrade(self);
+            click.connect_released(move |gesture, _, _, _| {
+                if gesture.current_button() == 1
+                    && let Some(island) = weak.upgrade()
+                {
+                    island.toggle();
+                }
+            });
+            pill.add_controller(click);
 
-        let motion = EventControllerMotion::new();
-        let weak = Rc::downgrade(self);
-        motion.connect_enter(move |_, _, _| {
-            if let Some(island) = weak.upgrade() {
-                island.set_tray_hovered(true);
-            }
-        });
-        let weak = Rc::downgrade(self);
-        motion.connect_leave(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.set_tray_hovered(false);
-            }
-        });
-        self.compact.add_controller(motion);
-
-        let click = GestureClick::new();
-        let weak = Rc::downgrade(self);
-        click.connect_released(move |gesture, _, _, _| {
-            if gesture.current_button() == 1
-                && let Some(island) = weak.upgrade()
-            {
-                island.toggle();
-            }
-        });
-        self.media.add_controller(click);
-
-        let motion = EventControllerMotion::new();
-        let weak = Rc::downgrade(self);
-        motion.connect_enter(move |_, _, _| {
-            if let Some(island) = weak.upgrade() {
-                island.set_tray_hovered(true);
-            }
-        });
-        let weak = Rc::downgrade(self);
-        motion.connect_leave(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.set_tray_hovered(false);
-            }
-        });
-        self.media.add_controller(motion);
+            let motion = EventControllerMotion::new();
+            let weak = Rc::downgrade(self);
+            motion.connect_enter(move |_, _, _| {
+                if let Some(island) = weak.upgrade() {
+                    island.set_tray_hovered(true);
+                }
+            });
+            let weak = Rc::downgrade(self);
+            motion.connect_leave(move |_| {
+                if let Some(island) = weak.upgrade() {
+                    island.set_tray_hovered(false);
+                }
+            });
+            pill.add_controller(motion);
+        }
 
         let mut notification_views = vec![self.notification.clone()];
         if let Some(overlay) = &self.pill_overlay {

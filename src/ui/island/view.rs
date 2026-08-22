@@ -69,20 +69,10 @@ impl IslandWindow {
             self.dismiss_window.set_visible(false);
         }
 
-        self.compact.set_visible(true);
-        self.media.set_visible(true);
-        self.dashboard.set_visible(true);
-        self.search.set_visible(true);
-        self.weather.set_visible(true);
-        self.osd.set_visible(true);
-        self.notification.set_visible(true);
-        self.compact.set_can_target(view == View::Compact);
-        self.media.set_can_target(view == View::Media);
-        self.dashboard.set_can_target(view == View::Dashboard);
-        self.search.set_can_target(view == View::Search);
-        self.weather.set_can_target(view == View::Weather);
-        self.osd.set_can_target(false);
-        self.notification.set_can_target(view == View::Notification);
+        for (widget, widget_view) in self.view_widgets() {
+            widget.set_visible(true);
+            widget.set_can_target(widget_view == view && widget_view != View::Osd);
+        }
         self.refresh_keyboard_mode();
         let start = self.geometry.get();
         let generation = self.animation_generation.get().wrapping_add(1);
@@ -95,15 +85,7 @@ impl IslandWindow {
 
         let duration_us = i64::from(self.animation_ms.get()) * 1000;
         let start_time = Cell::new(None::<i64>);
-        let start_opacities = [
-            self.compact.opacity(),
-            self.media.opacity(),
-            self.dashboard.opacity(),
-            self.search.opacity(),
-            self.weather.opacity(),
-            self.osd.opacity(),
-            self.notification.opacity(),
-        ];
+        let start_opacities = self.view_widgets().map(|(widget, _)| widget.opacity());
         let weak = Rc::downgrade(self);
         self.surface.add_tick_callback(move |_, frame_clock| {
             let Some(island) = weak.upgrade() else {
@@ -132,57 +114,35 @@ impl IslandWindow {
         });
     }
 
+    /// Every animatable view surface paired with its view, in the fixed
+    /// order the `start` opacity array is indexed by.
+    fn view_widgets(&self) -> [(&gtk::Box, View); 7] {
+        [
+            (&self.compact, View::Compact),
+            (&self.media, View::Media),
+            (&self.dashboard, View::Dashboard),
+            (&self.search, View::Search),
+            (&self.weather, View::Weather),
+            (&self.osd, View::Osd),
+            (&self.notification, View::Notification),
+        ]
+    }
+
     pub(super) fn apply_content_opacity(&self, target: View, progress: f64, start: [f64; 7]) {
         let progress = 1.0 - (1.0 - progress).powi(3);
-        let compact_target = if target == View::Compact { 1.0 } else { 0.0 };
-        let media_target = if target == View::Media { 1.0 } else { 0.0 };
-        let dashboard_target = if target == View::Dashboard { 1.0 } else { 0.0 };
-        let search_target = if target == View::Search { 1.0 } else { 0.0 };
-        let weather_target = if target == View::Weather { 1.0 } else { 0.0 };
-        let osd_target = if target == View::Osd { 1.0 } else { 0.0 };
-        let notification_target = if target == View::Notification {
-            1.0
-        } else {
-            0.0
-        };
-        self.compact
-            .set_opacity(lerp(start[0], compact_target, progress));
-        self.media
-            .set_opacity(lerp(start[1], media_target, progress));
-        self.dashboard
-            .set_opacity(lerp(start[2], dashboard_target, progress));
-        self.search
-            .set_opacity(lerp(start[3], search_target, progress));
-        self.weather
-            .set_opacity(lerp(start[4], weather_target, progress));
-        self.osd.set_opacity(lerp(start[5], osd_target, progress));
-        self.notification
-            .set_opacity(lerp(start[6], notification_target, progress));
+        for ((widget, widget_view), start_opacity) in self.view_widgets().into_iter().zip(start) {
+            let end = if widget_view == target { 1.0 } else { 0.0 };
+            widget.set_opacity(lerp(start_opacity, end, progress));
+        }
     }
 
     pub(super) fn finish_view(&self, view: View) {
         self.apply_geometry(self.geometry_for_view(view));
-        self.compact.set_visible(view == View::Compact);
-        self.media.set_visible(view == View::Media);
-        self.dashboard.set_visible(view == View::Dashboard);
-        self.search.set_visible(view == View::Search);
-        self.weather.set_visible(view == View::Weather);
-        self.osd.set_visible(view == View::Osd);
-        self.notification.set_visible(view == View::Notification);
-        self.compact
-            .set_opacity(if view == View::Compact { 1.0 } else { 0.0 });
-        self.media
-            .set_opacity(if view == View::Media { 1.0 } else { 0.0 });
-        self.dashboard
-            .set_opacity(if view == View::Dashboard { 1.0 } else { 0.0 });
-        self.search
-            .set_opacity(if view == View::Search { 1.0 } else { 0.0 });
-        self.weather
-            .set_opacity(if view == View::Weather { 1.0 } else { 0.0 });
-        self.osd
-            .set_opacity(if view == View::Osd { 1.0 } else { 0.0 });
-        self.notification
-            .set_opacity(if view == View::Notification { 1.0 } else { 0.0 });
+        for (widget, widget_view) in self.view_widgets() {
+            let active = widget_view == view;
+            widget.set_visible(active);
+            widget.set_opacity(if active { 1.0 } else { 0.0 });
+        }
     }
 
     pub(super) fn apply_geometry(&self, geometry: Geometry) {
