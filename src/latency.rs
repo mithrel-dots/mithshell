@@ -88,16 +88,88 @@ fn elapsed_micros(from: Instant, to: Instant) -> u64 {
     to.saturating_duration_since(from).as_micros() as u64
 }
 
+impl State {
+    fn keystroke(&mut self, now: Instant) {
+        // Deliberately does not clear `settled` or `build`: doing so would let
+        // an unrelated frame painted before the next dispatch be timed against
+        // the previous query's build timestamp.
+        self.keystroke = Some(now);
+    }
+
+    fn dispatch(&mut self, now: Instant) {
+        if let Some(keystroke) = self.keystroke {
+            let micros = elapsed_micros(keystroke, now);
+            push(&mut self.spans.debounce, micros);
+        }
+        self.dispatch = Some(now);
+        self.write = None;
+        self.arrival = None;
+        self.build = None;
+        self.settled = false;
+    }
+
+    fn write(&mut self, now: Instant) {
+        if self.write.is_some() {
+            return;
+        }
+        if let Some(dispatch) = self.dispatch {
+            let micros = elapsed_micros(dispatch, now);
+            push(&mut self.spans.write, micros);
+        }
+        self.write = Some(now);
+    }
+
+    fn results(&mut self, now: Instant) {
+        if self.settled || self.arrival.is_some() {
+            return;
+        }
+        if let Some(write) = self.write {
+            let micros = elapsed_micros(write, now);
+            push(&mut self.spans.backend, micros);
+        }
+        self.arrival = Some(now);
+    }
+
+    fn build(&mut self, now: Instant) {
+        if self.settled || self.build.is_some() {
+            return;
+        }
+        let Some(arrival) = self.arrival else {
+            return;
+        };
+        let micros = elapsed_micros(arrival, now);
+        push(&mut self.spans.build, micros);
+        self.build = Some(now);
+    }
+
+    fn paint(&mut self, now: Instant) {
+        if self.settled {
+            return;
+        }
+        let Some(build) = self.build else {
+            return;
+        };
+        let micros = elapsed_micros(build, now);
+        push(&mut self.spans.paint, micros);
+        if let Some(keystroke) = self.keystroke {
+            let total = elapsed_micros(keystroke, now);
+            push(&mut self.spans.total, total);
+        }
+        // Consume the build timestamp so later frames for the same query, and
+        // frames painted for unrelated reasons, are not timed again.
+        self.build = None;
+        self.settled = true;
+    }
+}
+
 /// t0: a key that mutates the search text reached the window controller.
 pub fn mark_keystroke() {
     if !enabled() {
         return;
     }
+    let now = Instant::now();
     if let Ok(mut state) = state().lock() {
-        // Deliberately does not clear `settled` or `build`: doing so would let
-        // an unrelated frame painted before the next dispatch be timed against
-        // the previous query's build timestamp.
-        state.keystroke = Some(Instant::now());
+        state.keystroke(now);
     }
 }
 
@@ -108,15 +180,7 @@ pub fn mark_dispatch() {
     }
     let now = Instant::now();
     if let Ok(mut state) = state().lock() {
-        if let Some(keystroke) = state.keystroke {
-            let micros = elapsed_micros(keystroke, now);
-            push(&mut state.spans.debounce, micros);
-        }
-        state.dispatch = Some(now);
-        state.write = None;
-        state.arrival = None;
-        state.build = None;
-        state.settled = false;
+        state.dispatch(now);
     }
 }
 
@@ -129,14 +193,7 @@ pub fn mark_write() {
     }
     let now = Instant::now();
     if let Ok(mut state) = state().lock() {
-        if state.write.is_some() {
-            return;
-        }
-        if let Some(dispatch) = state.dispatch {
-            let micros = elapsed_micros(dispatch, now);
-            push(&mut state.spans.write, micros);
-        }
-        state.write = Some(now);
+        state.write(now);
     }
 }
 
@@ -147,14 +204,7 @@ pub fn mark_results() {
     }
     let now = Instant::now();
     if let Ok(mut state) = state().lock() {
-        if state.settled || state.arrival.is_some() {
-            return;
-        }
-        if let Some(write) = state.write {
-            let micros = elapsed_micros(write, now);
-            push(&mut state.spans.backend, micros);
-        }
-        state.arrival = Some(now);
+        state.results(now);
     }
 }
 
@@ -165,15 +215,7 @@ pub fn mark_build() {
     }
     let now = Instant::now();
     if let Ok(mut state) = state().lock() {
-        if state.settled || state.build.is_some() {
-            return;
-        }
-        let Some(arrival) = state.arrival else {
-            return;
-        };
-        let micros = elapsed_micros(arrival, now);
-        push(&mut state.spans.build, micros);
-        state.build = Some(now);
+        state.build(now);
     }
 }
 
@@ -184,22 +226,7 @@ pub fn mark_paint() {
     }
     let now = Instant::now();
     if let Ok(mut state) = state().lock() {
-        if state.settled {
-            return;
-        }
-        let Some(build) = state.build else {
-            return;
-        };
-        let micros = elapsed_micros(build, now);
-        push(&mut state.spans.paint, micros);
-        if let Some(keystroke) = state.keystroke {
-            let total = elapsed_micros(keystroke, now);
-            push(&mut state.spans.total, total);
-        }
-        // Consume the build timestamp so later frames for the same query, and
-        // frames painted for unrelated reasons, are not timed again.
-        state.build = None;
-        state.settled = true;
+        state.paint(now);
     }
 }
 
@@ -343,26 +370,31 @@ mod tests {
     /// paint/total spans collect far more samples than there were queries.
     #[test]
     fn keystroke_does_not_rearm_a_settled_query() {
-        let mut state = State {
-            build: Some(Instant::now()),
-            settled: true,
-            ..State::default()
-        };
-        // Simulate `mark_keystroke` on an already-settled query.
-        state.keystroke = Some(Instant::now());
-        assert!(state.settled, "settled must survive a new keystroke");
-        assert!(
-            state.build.is_some(),
-            "build is only consumed by mark_paint or reset by mark_dispatch"
-        );
+        let mut state = State::default();
+        let base = Instant::now();
+        let ms = |n: u64| base + std::time::Duration::from_millis(n);
+        state.keystroke(ms(0));
+        state.dispatch(ms(1));
+        state.write(ms(2));
+        state.results(ms(3));
+        state.build(ms(4));
+        state.paint(ms(5));
+        assert!(state.settled);
+        assert_eq!(state.spans.paint.len(), 1);
+        assert_eq!(state.spans.total.len(), 1);
 
-        // Simulate `mark_paint` consuming the build timestamp.
-        state.build = None;
-        state.settled = true;
-        assert!(
-            state.build.is_none(),
-            "a painted query must not be timed twice"
-        );
+        // A new keystroke must not clear the settled flag nor resurrect the
+        // consumed build timestamp, or stray frames get timed against the
+        // previous query.
+        state.keystroke(ms(10));
+        assert!(state.settled);
+        assert!(state.build.is_none());
+
+        // And a paint with no armed build records nothing more.
+        let totals_before = state.spans.total.len();
+        state.paint(ms(11));
+        assert_eq!(state.spans.paint.len(), 1);
+        assert_eq!(state.spans.total.len(), totals_before);
     }
 
     #[test]
