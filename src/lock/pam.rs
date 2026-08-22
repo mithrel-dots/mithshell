@@ -324,9 +324,13 @@ mod tests {
 
     #[test]
     fn missing_service_is_a_failure_not_a_denial() {
-        // A service file that cannot exist must never look like a wrong
-        // password, otherwise the lock screen would tell the user to retry
-        // forever.
+        // Where an unknown service fails is implementation-defined across
+        // libpam versions and stacks: `pam_start` can refuse it outright
+        // (`Failed`), or the stack rejects the missing module mid-
+        // authenticate, which surfaces as `Denied` carrying the stack's
+        // own message rather than our generic wrong-password text. Either
+        // way the attempt must never authenticate; only the wording the
+        // user sees differs.
         let outcome = authenticate(
             "mithshell-nonexistent-service-\u{1}",
             "root",
