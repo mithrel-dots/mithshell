@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::OnceLock,
     thread,
     time::Duration,
 };
@@ -107,16 +108,10 @@ pub fn set_volume(percent: u8) -> Result<()> {
 }
 
 pub fn query_brightness() -> Result<Option<BrightnessState>> {
-    // Keep the dashboard row hidden unless the optional brightnessctl
-    // integration is actually installed. Some systems expose backlight
-    // sysfs nodes without a usable user-facing control command.
-    let available = Command::new("brightnessctl")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !available {
+    // Probe once per process rather than per poll; installing
+    // brightnessctl while the daemon is running therefore needs a reload
+    // or restart before the row appears.
+    if !brightnessctl_available() {
         return Ok(None);
     }
     let Some(device) = backlight_devices()?.into_iter().next() else {
@@ -166,6 +161,20 @@ pub fn query_battery() -> Result<Option<BatteryState>> {
         return Ok(Some(BatteryState { percent, status }));
     }
     Ok(None)
+}
+
+/// Whether `brightnessctl` can be run at all, probed once per process:
+/// the dashboard uses it as the visibility gate for its brightness row.
+fn brightnessctl_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("brightnessctl")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 fn parse_wpctl(value: &str) -> Result<AudioState> {
