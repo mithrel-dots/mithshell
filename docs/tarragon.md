@@ -78,7 +78,7 @@ order, so the two agree on a default without any shared configuration.
 
 ## Launcher geometry
 
-The search view has a base size of `720x560`, scaled with the rest of the
+The search view has a base size of `820x620`, scaled with the rest of the
 island. During opening, width, height, opacity, and vertical position animate
 together from the current pill or dashboard geometry. The destination starts
 20% down the monitor, clamped so the complete launcher remains on-screen.
@@ -89,7 +89,10 @@ applications underneath it.
 
 ## Search and result state
 
-Queries are debounced for 100 ms. Empty text is handled locally because
+Queries are throttled on the leading edge over a 16 ms window: the first
+keystroke after an idle period is dispatched immediately, and only a burst
+faster than the window (held keys repeating, or a very fast typist) is
+coalesced into its final keystroke. Empty text is handled locally because
 TarraGon does not acknowledge empty queries. Each TarraGon update is a complete
 aggregate snapshot; Mithshell filters broadcasts to query IDs acknowledged on
 its own connection and ignores snapshots whose input no longer matches the

@@ -8,8 +8,9 @@
 set -euo pipefail
 
 MITHSHELL="${MITHSHELL:-mithshell}"
-# Delay between characters. Must exceed the debounce so every character
-# dispatches its own query, which is the incremental-search case we care about.
+# Delay between characters. Must exceed the leading-edge search throttle so
+# every character dispatches its own query, which is the incremental-search
+# case we care about.
 DELAY_MS="${DELAY_MS:-350}"
 # Time to wait after each query for results to arrive and paint.
 SETTLE_MS="${SETTLE_MS:-700}"

@@ -32,10 +32,6 @@ while read -r key value _; do
     esac
 done < "/proc/$pid/smaps_rollup"
 
-if [[ -r "/proc/$pid/statm" ]]; then
-    :
-fi
-
 binary=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
 if [[ -n "$binary" && -f "$binary" ]]; then
     printf '%-18s %8.1f MB\n' "Binary" "$(python3 -c "import os; print(os.path.getsize('$binary')/1048576)")"

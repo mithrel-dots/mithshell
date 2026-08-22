@@ -232,10 +232,9 @@ enum Request<'a> {
 
 /// The socket shared between the writer thread and the connection thread.
 ///
-/// Commands used to be drained with `try_recv` between socket reads, which
-/// meant a queued query waited for the current read timeout to expire before it
-/// was written. Holding the write half here lets the writer thread block on the
-/// command channel and push a query the instant it is queued.
+/// Holding the write half here lets the writer thread block on the command
+/// channel and push a query the instant it is queued, instead of waiting for
+/// the connection thread's next read to finish.
 #[derive(Default)]
 struct Connection {
     stream: Mutex<Option<UnixStream>>,
@@ -559,9 +558,10 @@ mod tests {
         assert_eq!(snapshot.plugins["desktop_files"].count, 1);
     }
 
-    /// `pending_selection` moved from a local in the read loop to shared state,
-    /// because the write now happens on a separate thread. A response must be
-    /// reported exactly once, and only when a selection is actually pending.
+    /// Selections are written by the separate writer thread, so the pending
+    /// flag lives on the shared `Connection` rather than in the read loop. A
+    /// response must be reported exactly once, and only when a selection is
+    /// actually pending.
     #[test]
     fn select_response_is_reported_once_per_pending_selection() {
         let message = serde_json::json!({

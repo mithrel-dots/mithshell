@@ -794,9 +794,10 @@ impl Controller {
                 let Some(controller) = weak.upgrade() else {
                     break;
                 };
-                // Clone the handle out before calling into it: the signal
-                // handlers `resolve`/`progress` can trigger take the same
-                // RefCell, and holding a borrow across the call would panic.
+                // Clone the handle out before calling into it: `resolve` can
+                // grant an unlock synchronously, and the resulting `on_ended`
+                // callback takes this same RefCell mutably -- holding a
+                // borrow across the call would panic.
                 let Some(session) = controller.lock.borrow().clone() else {
                     continue;
                 };

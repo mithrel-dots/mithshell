@@ -1,12 +1,11 @@
 //! Frozen, blurred wallpaper for the lock screen.
 //!
-//! GTK4's layer-shell backend has no equivalent of `ext-session-lock-v1`, so
-//! the lock surface is an ordinary overlay layer. Leaving it translucent
-//! would expose whatever was on screen, so instead the screen is captured
-//! the instant before the lock appears and that still frame -- blurred and
-//! dimmed -- becomes the background. The effect matches hyprlock's
-//! `background { blur_passes }` while keeping the readable UI confined to a
-//! card in the middle of the output.
+//! Each lock surface shows its output as it was the instant before the lock
+//! appeared: a still frame -- blurred and dimmed -- becomes the backdrop,
+//! matching hyprlock's `background { blur_passes }` while keeping the
+//! readable UI confined to a card in the middle of the output. The window
+//! underneath stays opaque black (see `style.css`), so a failed capture
+//! degrades to a blank screen rather than exposing anything.
 //!
 //! Ordering matters: the capture must complete *before* the lock window is
 //! mapped, or grim photographs the lock screen itself. Capture is therefore

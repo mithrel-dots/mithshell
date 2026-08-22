@@ -116,7 +116,8 @@ fn from_julian_day(jdn: i64) -> (i32, u32, u32) {
 }
 
 /// Adds `delta` days to an ISO `YYYY-MM-DD` date via a Julian day round
-/// trip, so month/year rollovers are handled without a date/time dependency.
+/// trip, so month/year rollovers are handled correctly without pulling in a
+/// dedicated date/time crate.
 fn add_days(date: &str, delta: i64) -> Option<String> {
     let mut parts = date.splitn(3, '-');
     let year = parts.next()?.parse::<i32>().ok()?;
@@ -127,7 +128,7 @@ fn add_days(date: &str, delta: i64) -> Option<String> {
 }
 
 /// Full weekday name for an ISO `YYYY-MM-DD` date, computed with Sakamoto's
-/// algorithm rather than pulling in a date/time dependency.
+/// algorithm rather than pulling in a dedicated date/time crate.
 fn weekday_label(date: &str) -> String {
     const NAMES: [&str; 7] = [
         "Sunday",

@@ -51,8 +51,6 @@ pub enum AuthEvent {
 /// including `pam_faillock` rate limiting and whatever fingerprint or
 /// smartcard modules are configured system-wide.
 ///
-/// Resolved once and cached: swapping the file out from under a running
-/// daemon should not silently change which stack a lock uses.
 /// Resolved once per process and cached. The authentication stack a lock
 /// screen uses is a security boundary; letting it change underneath a
 /// running daemon (via `mithshell reload`, or by dropping a file into

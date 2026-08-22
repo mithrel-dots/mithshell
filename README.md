@@ -28,9 +28,10 @@ available, media metadata still works and the visualizer remains at rest.
 wallpaper it blurs. Without it the lock still works and falls back to a solid
 black backdrop.
 
-`brightnessctl` is optional and only used by the example Hyprland keybinds.
-The dashboard reads `/sys/class/backlight` directly and hides the control when
-no backlight exists.
+`brightnessctl` is optional. The example Hyprland keybinds use it, and the
+dashboard also probes for it: without the binary the brightness control stays
+hidden entirely, while with it the level is read from and written to
+`/sys/class/backlight` directly.
 
 [TarraGon](https://github.com/iMithrellas/tarragon) is optional. When its user
 service is running, Mithshell exposes its configured search plugins through an

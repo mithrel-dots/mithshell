@@ -364,14 +364,6 @@ pub fn apply_override(config: &mut ThemeConfig, override_theme: ThemeOverride) {
     config.mode = override_theme.mode;
 }
 
-pub fn override_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join(OVERRIDE_FILE))
-}
-
-pub fn palette_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join(PALETTE_FILE))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
