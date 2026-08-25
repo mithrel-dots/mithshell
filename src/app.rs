@@ -31,8 +31,8 @@ use crate::{
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
     theme, tray,
     ui::{
-        self, IslandActions, IslandWindow, LockActions, LockPowerAction, LockSession,
-        LockSubmitAction,
+        self, IslandActions, IslandWindow, LockActions, LockAnimation, LockPowerAction,
+        LockSession, LockSubmitAction,
     },
     weather,
 };
@@ -1307,6 +1307,10 @@ impl Controller {
             config.shell.scale,
             &system,
             weather.as_ref(),
+            LockAnimation {
+                enabled: self.animations,
+                duration_ms: config.shell.animation_ms,
+            },
             LockActions {
                 submit,
                 power,

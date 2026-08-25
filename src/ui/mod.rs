@@ -9,7 +9,9 @@ use log::warn;
 use crate::state::Palette;
 
 pub use island::{IslandActions, IslandWindow};
-pub use lock::{LockActions, LockEndedAction, LockPowerAction, LockSession, LockSubmitAction};
+pub use lock::{
+    LockActions, LockAnimation, LockEndedAction, LockPowerAction, LockSession, LockSubmitAction,
+};
 
 /// Rounds a design-time pixel dimension to the active UI scale.
 pub(crate) fn scaled(value: i32, scale: f64) -> i32 {

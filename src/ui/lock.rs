@@ -55,12 +55,25 @@ pub struct LockActions {
     pub ended: LockEndedAction,
 }
 
+#[derive(Clone, Copy)]
+pub struct LockAnimation {
+    pub enabled: bool,
+    pub duration_ms: u32,
+}
+
+impl LockAnimation {
+    fn duration(self) -> Option<u32> {
+        (self.enabled && self.duration_ms > 0).then_some(self.duration_ms)
+    }
+}
+
 /// One output's lock surface. Built fresh for every `monitor` signal and
 /// destroyed by the library itself when the output disappears or the lock
 /// ends -- this struct only holds the widget handles needed to update it.
 struct LockWindow {
     window: glib::WeakRef<ApplicationWindow>,
     backdrop: glib::WeakRef<gtk::Picture>,
+    content: glib::WeakRef<gtk::Box>,
     entry: glib::WeakRef<gtk::PasswordEntry>,
     status: glib::WeakRef<gtk::Label>,
     clock: glib::WeakRef<gtk::Label>,
@@ -70,6 +83,8 @@ struct LockWindow {
     battery: glib::WeakRef<gtk::Label>,
     weather: glib::WeakRef<gtk::Label>,
     power_buttons: Vec<(PowerAction, glib::WeakRef<gtk::Button>)>,
+    content_animation: Rc<Cell<u64>>,
+    backdrop_animation: Rc<Cell<u64>>,
     connector: String,
 }
 
@@ -82,6 +97,7 @@ impl LockWindow {
         connector: String,
         system: &SystemSnapshot,
         weather_state: Option<&WeatherState>,
+        animation: LockAnimation,
     ) -> (Self, ApplicationWindow) {
         let window = ApplicationWindow::builder()
             .application(application)
@@ -114,6 +130,9 @@ impl LockWindow {
         card.set_halign(Align::Center);
         card.set_valign(Align::Center);
         card.set_size_request(scaled(CARD_WIDTH, scale), -1);
+        if animation.duration().is_some() {
+            card.set_opacity(0.0);
+        }
 
         let eyebrow = gtk::Label::new(Some("LOCKED"));
         eyebrow.add_css_class("eyebrow");
@@ -217,6 +236,7 @@ impl LockWindow {
         let lock_window = Self {
             window: window.downgrade(),
             backdrop: backdrop.downgrade(),
+            content: card.downgrade(),
             entry: entry.downgrade(),
             status: status.downgrade(),
             clock: clock.downgrade(),
@@ -226,6 +246,8 @@ impl LockWindow {
             battery: battery.downgrade(),
             weather: weather.downgrade(),
             power_buttons,
+            content_animation: Rc::new(Cell::new(0)),
+            backdrop_animation: Rc::new(Cell::new(0)),
             connector,
         };
         lock_window.update_system(system);
@@ -233,10 +255,55 @@ impl LockWindow {
         (lock_window, window)
     }
 
-    fn set_backdrop(&self, texture: &gdk::Texture) {
+    fn set_backdrop(&self, texture: &gdk::Texture, animation: LockAnimation) {
         if let Some(backdrop) = self.backdrop.upgrade() {
             backdrop.set_paintable(Some(texture));
-            backdrop.set_opacity(1.0);
+            if let Some(duration_ms) = animation.duration() {
+                animate_opacity(
+                    backdrop.upcast_ref(),
+                    1.0,
+                    duration_ms,
+                    &self.backdrop_animation,
+                );
+            } else {
+                backdrop.set_opacity(1.0);
+            }
+        }
+    }
+
+    fn fade_in(&self, animation: LockAnimation) {
+        let Some(content) = self.content.upgrade() else {
+            return;
+        };
+        if let Some(duration_ms) = animation.duration() {
+            animate_opacity(
+                content.upcast_ref(),
+                1.0,
+                duration_ms,
+                &self.content_animation,
+            );
+        } else {
+            content.set_opacity(1.0);
+        }
+    }
+
+    fn fade_out(&self, duration_ms: u32) {
+        if let Some(content) = self.content.upgrade() {
+            content.set_sensitive(false);
+            animate_opacity(
+                content.upcast_ref(),
+                0.0,
+                duration_ms,
+                &self.content_animation,
+            );
+        }
+        if let Some(backdrop) = self.backdrop.upgrade() {
+            animate_opacity(
+                backdrop.upcast_ref(),
+                0.0,
+                duration_ms,
+                &self.backdrop_animation,
+            );
         }
     }
 
@@ -308,6 +375,7 @@ pub struct LockSession {
     application: Application,
     config: LockConfig,
     scale: f64,
+    animation: LockAnimation,
     initial_system: RefCell<SystemSnapshot>,
     initial_weather: RefCell<Option<WeatherState>>,
     submit: LockSubmitAction,
@@ -327,7 +395,8 @@ pub struct LockSession {
     /// `lock()`; the caller checks this because `on_ended` may have already
     /// fired before the session was stored anywhere.
     failed: Cell<bool>,
-    /// Prevents the signal from finishing an explicit unlock too early.
+    /// Guards the exit transition and prevents the signal from finishing an
+    /// explicit unlock too early.
     unlocking: Cell<bool>,
     /// Captured before `lock()` so monitor callbacks can map immediately.
     captures: RefCell<HashMap<String, backdrop::Image>>,
@@ -353,6 +422,7 @@ impl LockSession {
         configured_scale: f64,
         system: &SystemSnapshot,
         weather: Option<&WeatherState>,
+        animation: LockAnimation,
         actions: LockActions,
     ) -> Rc<Self> {
         let session = Rc::new(Self {
@@ -361,6 +431,7 @@ impl LockSession {
             application: application.clone(),
             config: config.clone(),
             scale: configured_scale,
+            animation,
             initial_system: RefCell::new(system.clone()),
             initial_weather: RefCell::new(weather.cloned()),
             submit: actions.submit,
@@ -461,6 +532,7 @@ impl LockSession {
             connector.clone(),
             &system,
             weather.as_ref(),
+            self.animation,
         );
         drop(weather);
         drop(system);
@@ -472,6 +544,9 @@ impl LockSession {
         instance.assign_window_to_monitor(&gtk_window, monitor);
         if let Some(entry) = window.entry.upgrade() {
             entry.grab_focus();
+        }
+        if !self.unlocking.get() {
+            window.fade_in(self.animation);
         }
         self.windows.borrow_mut().insert(connector.clone(), window);
 
@@ -528,9 +603,12 @@ impl LockSession {
                     &glib::Bytes::from_owned(ready.image.pixels),
                     stride,
                 );
+                if session.unlocking.get() {
+                    continue;
+                }
                 for window in session.windows.borrow().values() {
                     if window.connector == ready.connector {
-                        window.set_backdrop(texture.upcast_ref());
+                        window.set_backdrop(texture.upcast_ref(), session.animation);
                     }
                 }
             }
@@ -660,11 +738,10 @@ impl LockSession {
     }
 
     /// Applies a final verdict from the PAM worker. On [`Outcome::Granted`]
-    /// this calls [`Instance::unlock`][gtk4_session_lock::Instance::unlock],
-    /// which is what actually ends the compositor-enforced lock; the
-    /// `unlocked` signal handler installed in [`new`][Self::new] does the
-    /// rest of the teardown.
-    pub fn resolve(&self, generation: u64, outcome: &Outcome) {
+    /// this starts the exit transition and then calls
+    /// [`Instance::unlock`][gtk4_session_lock::Instance::unlock], which is
+    /// what actually ends the compositor-enforced lock.
+    pub fn resolve(self: &Rc<Self>, generation: u64, outcome: &Outcome) {
         if generation != self.generation.get() {
             debug!("ignoring a stale authentication result");
             return;
@@ -677,7 +754,7 @@ impl LockSession {
         }
         match outcome {
             Outcome::Granted => {
-                self.unlock_after_library_cleanup();
+                self.begin_unlock();
             }
             Outcome::Denied(message) => {
                 let attempts = self.attempts.get().saturating_add(1);
@@ -706,8 +783,8 @@ impl LockSession {
     /// Unlocks without authenticating. `mithshell unlock` is a same-user,
     /// same-machine escape hatch: the IPC socket is restricted to this user
     /// by filesystem permissions and a peer-credential check.
-    pub fn force_unlock(&self) {
-        self.unlock_after_library_cleanup();
+    pub fn force_unlock(self: &Rc<Self>) {
+        self.begin_unlock();
     }
 
     pub fn update_system(&self, snapshot: &SystemSnapshot) {
@@ -777,8 +854,29 @@ impl LockSession {
         }
     }
 
+    fn begin_unlock(self: &Rc<Self>) {
+        if self.unlocking.replace(true) {
+            return;
+        }
+        let Some(duration_ms) = self.animation.duration() else {
+            self.unlock_after_library_cleanup();
+            return;
+        };
+        for window in self.windows.borrow().values() {
+            window.fade_out(duration_ms);
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(u64::from(duration_ms)),
+            move || {
+                if let Some(session) = weak.upgrade() {
+                    session.unlock_after_library_cleanup();
+                }
+            },
+        );
+    }
+
     fn unlock_after_library_cleanup(&self) {
-        self.unlocking.set(true);
         // GTK 4.22.4 crashes in `gdk_wayland_toplevel_remove_from_session`
         // when "window-removed" fires for a window whose surface is already
         // gone, as happens for the lock surfaces during the C library's
@@ -916,6 +1014,42 @@ fn clock_text() -> (String, String) {
     (time, date)
 }
 
+fn animate_opacity(
+    widget: &gtk::Widget,
+    target: f64,
+    duration_ms: u32,
+    animation_generation: &Rc<Cell<u64>>,
+) {
+    let generation = animation_generation.get().wrapping_add(1);
+    animation_generation.set(generation);
+    let animation_generation = animation_generation.clone();
+    let start_opacity = widget.opacity();
+    let start_time = Cell::new(None::<i64>);
+    let duration_us = i64::from(duration_ms) * 1_000;
+    widget.add_tick_callback(move |widget, frame_clock| {
+        if animation_generation.get() != generation {
+            return glib::ControlFlow::Break;
+        }
+        let now = frame_clock.frame_time();
+        let started = start_time.get().unwrap_or_else(|| {
+            start_time.set(Some(now));
+            now
+        });
+        let progress = ((now - started) as f64 / duration_us as f64).clamp(0.0, 1.0);
+        widget.set_opacity(start_opacity + (target - start_opacity) * smoothstep(progress));
+        if progress >= 1.0 {
+            widget.set_opacity(target);
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+}
+
+fn smoothstep(progress: f64) -> f64 {
+    progress * progress * (3.0 - 2.0 * progress)
+}
+
 fn power_button(icon: &str, label: &str) -> gtk::Button {
     let content = gtk::Box::new(Orientation::Horizontal, 6);
     content.set_halign(Align::Center);
@@ -974,12 +1108,39 @@ impl Drop for LockSession {
 
 #[cfg(test)]
 mod tests {
-    use super::format_uptime;
+    use super::{LockAnimation, format_uptime, smoothstep};
 
     #[test]
     fn formats_uptime_at_useful_precision() {
         assert_eq!(format_uptime(42), "0m");
         assert_eq!(format_uptime(3_720), "1h 2m");
         assert_eq!(format_uptime(183_600), "2d 3h");
+    }
+
+    #[test]
+    fn lock_animation_honors_disable_and_configured_duration() {
+        assert_eq!(
+            LockAnimation {
+                enabled: false,
+                duration_ms: 280,
+            }
+            .duration(),
+            None
+        );
+        assert_eq!(
+            LockAnimation {
+                enabled: true,
+                duration_ms: 280,
+            }
+            .duration(),
+            Some(280)
+        );
+    }
+
+    #[test]
+    fn fade_easing_preserves_endpoints() {
+        assert_eq!(smoothstep(0.0), 0.0);
+        assert_eq!(smoothstep(0.5), 0.5);
+        assert_eq!(smoothstep(1.0), 1.0);
     }
 }

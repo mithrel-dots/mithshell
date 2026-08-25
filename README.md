@@ -284,7 +284,9 @@ downscaled, box-blurred, and dimmed -- with a single card centred on it. The
 card reuses the island's surface, typography and `@ms_*` palette roles, so a
 locked session looks like the same shell rather than a separate program. It
 also shows the hostname, operating system and uptime, plus battery and current
-weather when those pollers have data.
+weather when those pollers have data. The card and safe captured backdrop fade
+in and out using `shell.animation_ms`; `daemon --no-animations` disables those
+transitions as it does for the island.
 
 ```toml
 [lock]
