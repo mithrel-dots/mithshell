@@ -76,6 +76,7 @@ pub struct SystemSnapshot {
     pub audio: Option<AudioState>,
     pub brightness: Option<BrightnessState>,
     pub battery: Option<BatteryState>,
+    pub info: Option<SystemInfoState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -146,6 +147,13 @@ pub struct BrightnessState {
 pub struct BatteryState {
     pub percent: u8,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemInfoState {
+    pub hostname: String,
+    pub os_name: String,
+    pub uptime_seconds: u64,
 }
 
 /// A coarse weather condition, used to pick which placeholder pixel-art

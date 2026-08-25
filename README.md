@@ -282,7 +282,9 @@ Each output gets a fresh window assigned to it as a lock surface, showing the
 screen as it was the moment before locking -- captured with `grim`,
 downscaled, box-blurred, and dimmed -- with a single card centred on it. The
 card reuses the island's surface, typography and `@ms_*` palette roles, so a
-locked session looks like the same shell rather than a separate program.
+locked session looks like the same shell rather than a separate program. It
+also shows the hostname, operating system and uptime, plus battery and current
+weather when those pollers have data.
 
 ```toml
 [lock]
@@ -342,6 +344,11 @@ active. `mithshell reload` is refused while locked, since reloading rebuilds
 every window, and so are `toggle`, `open` and `search` -- the launcher can
 start applications and must not be reachable from a locked session, visible
 or not.
+
+Power off, suspend and reboot controls invoke `systemctl` on a worker thread.
+They remain subject to the host's logind and Polkit policy; a rejected request
+is reported on the card instead of opening an authentication dialog behind the
+compositor-enforced lock.
 
 `mithshell unlock` force-unlocks without authenticating, as a same-user,
 same-machine escape hatch: run it from a different TTY or an SSH session

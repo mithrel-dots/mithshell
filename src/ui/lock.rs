@@ -31,9 +31,11 @@ use super::{automatic_scale, resolved_scale, scale_class, scaled};
 use crate::{
     config::LockConfig,
     lock::{Outcome, backdrop},
+    state::{SystemInfoState, SystemSnapshot, WeatherState},
+    system::PowerAction,
 };
 
-const CARD_WIDTH: i32 = 360;
+const CARD_WIDTH: i32 = 430;
 /// Design-time gap between the card's rows.
 const CARD_SPACING: i32 = 12;
 
@@ -44,6 +46,14 @@ pub type LockSubmitAction = Rc<dyn Fn(u64, String)>;
 /// compositor refused the lock, or the session has been unlocked. The
 /// receiver should drop its `Rc<LockSession>`.
 pub type LockEndedAction = Rc<dyn Fn()>;
+/// Runs a logind power request away from the GTK thread and reports its result.
+pub type LockPowerAction = Rc<dyn Fn(PowerAction, async_channel::Sender<Result<(), String>>)>;
+
+pub struct LockActions {
+    pub submit: LockSubmitAction,
+    pub power: LockPowerAction,
+    pub ended: LockEndedAction,
+}
 
 /// One output's lock surface. Built fresh for every `monitor` signal and
 /// destroyed by the library itself when the output disappears or the lock
@@ -56,13 +66,23 @@ struct LockWindow {
     clock: glib::WeakRef<gtk::Label>,
     date: glib::WeakRef<gtk::Label>,
     caps: glib::WeakRef<gtk::Label>,
+    system_info: glib::WeakRef<gtk::Label>,
+    battery: glib::WeakRef<gtk::Label>,
+    weather: glib::WeakRef<gtk::Label>,
+    power_buttons: Vec<(PowerAction, glib::WeakRef<gtk::Button>)>,
     connector: String,
 }
 
 impl LockWindow {
     /// `assign_window_to_monitor` gives this surface its role; `present()`
     /// is an error per the library's docs.
-    fn new(application: &Application, scale: f64, connector: String) -> (Self, ApplicationWindow) {
+    fn new(
+        application: &Application,
+        scale: f64,
+        connector: String,
+        system: &SystemSnapshot,
+        weather_state: Option<&WeatherState>,
+    ) -> (Self, ApplicationWindow) {
         let window = ApplicationWindow::builder()
             .application(application)
             .title("mithshell lock")
@@ -115,6 +135,26 @@ impl LockWindow {
         user.set_halign(Align::Center);
         user.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
+        let system_info = gtk::Label::new(None);
+        system_info.add_css_class("lock-system-info");
+        system_info.set_halign(Align::Center);
+        system_info.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        system_info.set_max_width_chars(48);
+
+        let context = gtk::Box::new(Orientation::Horizontal, scaled(8, scale));
+        context.add_css_class("lock-context");
+        context.set_halign(Align::Center);
+        let battery = gtk::Label::new(None);
+        battery.add_css_class("lock-info-chip");
+        battery.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        battery.set_max_width_chars(20);
+        let weather = gtk::Label::new(None);
+        weather.add_css_class("lock-info-chip");
+        weather.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        weather.set_max_width_chars(28);
+        context.append(&battery);
+        context.append(&weather);
+
         let entry = gtk::PasswordEntry::new();
         entry.add_css_class("lock-entry");
         entry.set_show_peek_icon(true);
@@ -135,33 +175,62 @@ impl LockWindow {
         // Reserve the row so a message appearing does not resize the card.
         status.set_size_request(-1, scaled(18, scale));
 
+        let power_row = gtk::Box::new(Orientation::Horizontal, scaled(8, scale));
+        power_row.add_css_class("lock-power-row");
+        power_row.set_homogeneous(true);
+        let power_specs = [
+            (
+                PowerAction::PowerOff,
+                "system-shutdown-symbolic",
+                "Power off",
+            ),
+            (PowerAction::Suspend, "system-suspend-symbolic", "Suspend"),
+            (PowerAction::Reboot, "system-reboot-symbolic", "Reboot"),
+        ];
+        let mut power_buttons = Vec::with_capacity(power_specs.len());
+        for (action, icon, label) in power_specs {
+            let button = power_button(icon, label);
+            if matches!(action, PowerAction::PowerOff | PowerAction::Reboot) {
+                button.add_css_class("danger");
+            }
+            power_row.append(&button);
+            power_buttons.push((action, button.downgrade()));
+        }
+
         for child in [
             eyebrow.upcast_ref::<gtk::Widget>(),
             clock.upcast_ref(),
             date.upcast_ref(),
             user.upcast_ref(),
+            system_info.upcast_ref(),
+            context.upcast_ref(),
             entry.upcast_ref(),
             caps.upcast_ref(),
             status.upcast_ref(),
+            power_row.upcast_ref(),
         ] {
             card.append(child);
         }
         overlay.add_overlay(&card);
         window.set_child(Some(&overlay));
 
-        (
-            Self {
-                window: window.downgrade(),
-                backdrop: backdrop.downgrade(),
-                entry: entry.downgrade(),
-                status: status.downgrade(),
-                clock: clock.downgrade(),
-                date: date.downgrade(),
-                caps: caps.downgrade(),
-                connector,
-            },
-            window,
-        )
+        let lock_window = Self {
+            window: window.downgrade(),
+            backdrop: backdrop.downgrade(),
+            entry: entry.downgrade(),
+            status: status.downgrade(),
+            clock: clock.downgrade(),
+            date: date.downgrade(),
+            caps: caps.downgrade(),
+            system_info: system_info.downgrade(),
+            battery: battery.downgrade(),
+            weather: weather.downgrade(),
+            power_buttons,
+            connector,
+        };
+        lock_window.update_system(system);
+        lock_window.update_weather(weather_state);
+        (lock_window, window)
     }
 
     fn set_backdrop(&self, texture: &gdk::Texture) {
@@ -182,6 +251,50 @@ impl LockWindow {
             status.remove_css_class("error");
         }
     }
+
+    fn update_system(&self, snapshot: &SystemSnapshot) {
+        if let Some(label) = self.system_info.upgrade() {
+            label.set_label(
+                &snapshot
+                    .info
+                    .as_ref()
+                    .map(system_info_text)
+                    .unwrap_or_default(),
+            );
+            label.set_visible(snapshot.info.is_some());
+        }
+        if let Some(label) = self.battery.upgrade() {
+            if let Some(battery) = &snapshot.battery {
+                label.set_label(&format!("BAT {}% · {}", battery.percent, battery.status));
+                label.set_visible(true);
+            } else {
+                label.set_visible(false);
+            }
+        }
+    }
+
+    fn update_weather(&self, state: Option<&WeatherState>) {
+        let Some(label) = self.weather.upgrade() else {
+            return;
+        };
+        if let Some(state) = state {
+            label.set_label(&format!(
+                "{}°C · {} · {}",
+                state.current_c, state.description, state.location
+            ));
+            label.set_visible(true);
+        } else {
+            label.set_visible(false);
+        }
+    }
+
+    fn set_power_sensitive(&self, sensitive: bool) {
+        for (_, button) in &self.power_buttons {
+            if let Some(button) = button.upgrade() {
+                button.set_sensitive(sensitive);
+            }
+        }
+    }
 }
 
 /// A live lock. Dropping it does not unlock the session -- only a
@@ -195,13 +308,17 @@ pub struct LockSession {
     application: Application,
     config: LockConfig,
     scale: f64,
+    initial_system: RefCell<SystemSnapshot>,
+    initial_weather: RefCell<Option<WeatherState>>,
     submit: LockSubmitAction,
+    power: LockPowerAction,
     on_ended: LockEndedAction,
     /// Incremented per attempt so a verdict that arrives after the user has
     /// already typed something else is ignored.
     generation: Cell<u64>,
     /// Set while PAM is deliberating; blocks further submissions.
     busy: Cell<bool>,
+    power_pending: Cell<bool>,
     attempts: Cell<u32>,
     /// Guards the entry mirroring so propagating text to the other outputs
     /// does not re-enter through their `changed` handlers.
@@ -234,8 +351,9 @@ impl LockSession {
         application: &Application,
         config: &LockConfig,
         configured_scale: f64,
-        submit: LockSubmitAction,
-        on_ended: LockEndedAction,
+        system: &SystemSnapshot,
+        weather: Option<&WeatherState>,
+        actions: LockActions,
     ) -> Rc<Self> {
         let session = Rc::new(Self {
             instance: SessionLockInstance::new(),
@@ -243,10 +361,14 @@ impl LockSession {
             application: application.clone(),
             config: config.clone(),
             scale: configured_scale,
-            submit,
-            on_ended: on_ended.clone(),
+            initial_system: RefCell::new(system.clone()),
+            initial_weather: RefCell::new(weather.cloned()),
+            submit: actions.submit,
+            power: actions.power,
+            on_ended: actions.ended,
             generation: Cell::new(0),
             busy: Cell::new(false),
+            power_pending: Cell::new(false),
             attempts: Cell::new(0),
             syncing: Cell::new(false),
             failed: Cell::new(false),
@@ -331,7 +453,17 @@ impl LockSession {
         }
 
         let scale = resolved_scale(self.scale, automatic_scale(monitor));
-        let (window, gtk_window) = LockWindow::new(&self.application, scale, connector.clone());
+        let system = self.initial_system.borrow();
+        let weather = self.initial_weather.borrow();
+        let (window, gtk_window) = LockWindow::new(
+            &self.application,
+            scale,
+            connector.clone(),
+            &system,
+            weather.as_ref(),
+        );
+        drop(weather);
+        drop(system);
         let window = Rc::new(window);
         self.connect_window(&window);
 
@@ -427,6 +559,19 @@ impl LockSession {
                 session.mirror(&connector, &entry.text());
             }
         });
+
+        for (action, button) in &window.power_buttons {
+            let Some(button) = button.upgrade() else {
+                continue;
+            };
+            let action = *action;
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(session) = weak.upgrade() {
+                    session.request_power(action);
+                }
+            });
+        }
 
         // Escape clears the buffer instead of dismissing anything.
         let keys = gtk::EventControllerKey::new();
@@ -563,6 +708,73 @@ impl LockSession {
     /// by filesystem permissions and a peer-credential check.
     pub fn force_unlock(&self) {
         self.unlock_after_library_cleanup();
+    }
+
+    pub fn update_system(&self, snapshot: &SystemSnapshot) {
+        *self.initial_system.borrow_mut() = snapshot.clone();
+        for window in self.windows.borrow().values() {
+            window.update_system(snapshot);
+        }
+    }
+
+    pub fn update_weather(&self, state: &WeatherState) {
+        *self.initial_weather.borrow_mut() = Some(state.clone());
+        for window in self.windows.borrow().values() {
+            window.update_weather(Some(state));
+        }
+    }
+
+    fn request_power(self: &Rc<Self>, action: PowerAction) {
+        if self.power_pending.replace(true) {
+            return;
+        }
+        self.set_power_sensitive(false);
+        self.broadcast_status(power_pending_message(action), false);
+
+        let (sender, receiver) = async_channel::bounded(1);
+        (self.power)(action, sender);
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let result = receiver
+                .recv()
+                .await
+                .unwrap_or_else(|_| Err("the power worker stopped unexpectedly".to_owned()));
+            if let Some(session) = weak.upgrade() {
+                session.resolve_power(action, result);
+            }
+        });
+    }
+
+    fn resolve_power(self: &Rc<Self>, action: PowerAction, result: Result<(), String>) {
+        match result {
+            Ok(()) if action == PowerAction::Suspend => {
+                self.broadcast_status("Suspend requested", false);
+                let weak = Rc::downgrade(self);
+                glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+                    if let Some(session) = weak.upgrade() {
+                        session.power_pending.set(false);
+                        session.set_power_sensitive(true);
+                        session.broadcast_status("", false);
+                    }
+                });
+            }
+            Ok(()) => self.broadcast_status(power_pending_message(action), false),
+            Err(message) => {
+                warn!("{} request failed: {message}", power_action_name(action));
+                self.power_pending.set(false);
+                self.set_power_sensitive(true);
+                self.broadcast_status(
+                    &format!("Could not {}: {message}", power_action_name(action)),
+                    true,
+                );
+            }
+        }
+    }
+
+    fn set_power_sensitive(&self, sensitive: bool) {
+        for window in self.windows.borrow().values() {
+            window.set_power_sensitive(sensitive);
+        }
     }
 
     fn unlock_after_library_cleanup(&self) {
@@ -704,8 +916,70 @@ fn clock_text() -> (String, String) {
     (time, date)
 }
 
+fn power_button(icon: &str, label: &str) -> gtk::Button {
+    let content = gtk::Box::new(Orientation::Horizontal, 6);
+    content.set_halign(Align::Center);
+    content.append(&gtk::Image::from_icon_name(icon));
+    content.append(&gtk::Label::new(Some(label)));
+    let button = gtk::Button::new();
+    button.add_css_class("lock-power-button");
+    button.set_tooltip_text(Some(label));
+    button.set_child(Some(&content));
+    button
+}
+
+fn system_info_text(info: &SystemInfoState) -> String {
+    format!(
+        "{} · {} · up {}",
+        info.hostname,
+        info.os_name,
+        format_uptime(info.uptime_seconds)
+    )
+}
+
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+fn power_action_name(action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::PowerOff => "power off",
+        PowerAction::Suspend => "suspend",
+        PowerAction::Reboot => "reboot",
+    }
+}
+
+fn power_pending_message(action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::PowerOff => "Powering off…",
+        PowerAction::Suspend => "Suspending…",
+        PowerAction::Reboot => "Rebooting…",
+    }
+}
+
 impl Drop for LockSession {
     fn drop(&mut self) {
         self.teardown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_uptime;
+
+    #[test]
+    fn formats_uptime_at_useful_precision() {
+        assert_eq!(format_uptime(42), "0m");
+        assert_eq!(format_uptime(3_720), "1h 2m");
+        assert_eq!(format_uptime(183_600), "2d 3h");
     }
 }

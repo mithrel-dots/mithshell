@@ -30,7 +30,10 @@ use crate::{
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
     theme, tray,
-    ui::{self, IslandActions, IslandWindow, LockSession, LockSubmitAction},
+    ui::{
+        self, IslandActions, IslandWindow, LockActions, LockPowerAction, LockSession,
+        LockSubmitAction,
+    },
     weather,
 };
 
@@ -609,6 +612,9 @@ impl Controller {
                 for island in controller.islands.borrow().values() {
                     island.update_system(&snapshot);
                 }
+                if let Some(session) = controller.lock.borrow().as_ref() {
+                    session.update_system(&snapshot);
+                }
                 *controller.system.borrow_mut() = snapshot;
             }
         });
@@ -678,6 +684,9 @@ impl Controller {
                 };
                 for island in controller.islands.borrow().values() {
                     island.update_weather(Some(&state));
+                }
+                if let Some(session) = controller.lock.borrow().as_ref() {
+                    session.update_weather(&state);
                 }
                 *controller.weather.borrow_mut() = Some(state);
             }
@@ -1268,6 +1277,13 @@ impl Controller {
             }
         });
 
+        let power: LockPowerAction = Rc::new(move |action, respond_to| {
+            thread::spawn(move || {
+                let result = system::request_power(action).map_err(|error| format!("{error:#}"));
+                let _ = respond_to.send_blocking(result);
+            });
+        });
+
         let weak = Rc::downgrade(self);
         let on_ended = Rc::new(move || {
             if let Some(controller) = weak.upgrade() {
@@ -1283,12 +1299,19 @@ impl Controller {
         });
 
         let config = self.config.borrow();
+        let system = self.system.borrow().clone();
+        let weather = self.weather.borrow().clone();
         let session = LockSession::new(
             &self.application,
             &config.lock,
             config.shell.scale,
-            submit,
-            on_ended,
+            &system,
+            weather.as_ref(),
+            LockActions {
+                submit,
+                power,
+                ended: on_ended,
+            },
         );
         drop(config);
 

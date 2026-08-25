@@ -889,6 +889,28 @@ window.mithshell-lock > contents {
   font-weight: 650;
 }
 
+.lock-system-info {
+  color: alpha(@ms_on_surface_variant, 0.78);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.lock-context {
+  min-height: 26px;
+}
+
+.lock-info-chip {
+  padding: 4px 9px;
+  color: @ms_on_surface_variant;
+  background: alpha(@ms_surface_low, 0.84);
+  border: 1px solid alpha(@ms_outline_variant, 0.26);
+  border-radius: 10px;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .lock-entry {
   min-height: 42px;
   padding: 0 12px;
@@ -933,6 +955,44 @@ window.mithshell-lock > contents {
 
 .lock-status.error {
   color: @ms_error;
+}
+
+.lock-power-row {
+  margin-top: 2px;
+}
+
+button.lock-power-button {
+  min-height: 34px;
+  padding: 0 9px;
+  color: @ms_on_surface_variant;
+  background: alpha(@ms_surface_low, 0.8);
+  border: 1px solid alpha(@ms_outline_variant, 0.3);
+  border-radius: 12px;
+  box-shadow: none;
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+button.lock-power-button image {
+  -gtk-icon-size: 14px;
+}
+
+button.lock-power-button:hover,
+button.lock-power-button:focus-visible {
+  color: @ms_on_surface;
+  background: alpha(@ms_surface_high, 0.94);
+  border-color: alpha(@ms_primary, 0.5);
+}
+
+button.lock-power-button.danger:hover,
+button.lock-power-button.danger:focus-visible {
+  color: @ms_error;
+  border-color: alpha(@ms_error, 0.6);
+}
+
+button.lock-power-button:disabled {
+  opacity: 0.5;
 }
 
 /* GTK output scaling is often left at 1 on 4K Hyprland setups. These density
@@ -1036,9 +1096,14 @@ window.mithshell-lock > contents {
 
 .scale-medium .lock-card { padding: 33px 30px 28px 30px; }
 .scale-medium .lock-user { font-size: 16px; }
+.scale-medium .lock-system-info { font-size: 12px; }
+.scale-medium .lock-context { min-height: 32px; }
+.scale-medium .lock-info-chip { padding: 5px 11px; border-radius: 12px; font-size: 12px; }
 .scale-medium .lock-entry { min-height: 53px; border-radius: 21px; padding: 0 15px; font-size: 18px; }
 .scale-medium .lock-caps { font-size: 12px; }
 .scale-medium .lock-status { font-size: 13px; }
+.scale-medium button.lock-power-button { min-height: 43px; border-radius: 15px; font-size: 13px; }
+.scale-medium button.lock-power-button image { -gtk-icon-size: 17px; }
 
 .scale-large .island-surface {
   border-radius: 41px;
@@ -1138,6 +1203,11 @@ window.mithshell-lock > contents {
 .scale-large calendar.weather-calendar { padding: 5px 10px; border-radius: 16px; }
 .scale-large .lock-card { padding: 40px 36px 34px 36px; }
 .scale-large .lock-user { font-size: 19px; }
+.scale-large .lock-system-info { font-size: 14px; }
+.scale-large .lock-context { min-height: 38px; }
+.scale-large .lock-info-chip { padding: 6px 13px; border-radius: 14px; font-size: 14px; }
 .scale-large .lock-entry { min-height: 63px; border-radius: 25px; padding: 0 18px; font-size: 22px; }
 .scale-large .lock-caps { font-size: 14px; }
 .scale-large .lock-status { font-size: 16px; }
+.scale-large button.lock-power-button { min-height: 51px; border-radius: 18px; font-size: 16px; }
+.scale-large button.lock-power-button image { -gtk-icon-size: 20px; }

@@ -12,13 +12,31 @@ use anyhow::{Context, Result, bail};
 use async_channel::Sender;
 use log::{debug, warn};
 
-use crate::state::{AudioState, BatteryState, BrightnessState, SystemSnapshot};
+use crate::state::{AudioState, BatteryState, BrightnessState, SystemInfoState, SystemSnapshot};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAction {
+    PowerOff,
+    Suspend,
+    Reboot,
+}
+
+impl PowerAction {
+    fn systemctl_argument(self) -> &'static str {
+        match self {
+            Self::PowerOff => "poweroff",
+            Self::Suspend => "suspend",
+            Self::Reboot => "reboot",
+        }
+    }
+}
 
 pub fn snapshot() -> SystemSnapshot {
     SystemSnapshot {
         audio: query_audio().ok(),
         brightness: query_brightness().ok().flatten(),
         battery: query_battery().ok().flatten(),
+        info: query_system_info().ok(),
     }
 }
 
@@ -163,6 +181,38 @@ pub fn query_battery() -> Result<Option<BatteryState>> {
     Ok(None)
 }
 
+pub fn query_system_info() -> Result<SystemInfoState> {
+    let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
+        .context("failed to read the hostname")?
+        .trim()
+        .to_owned();
+    let os_release = fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let os_name = parse_os_name(&os_release).unwrap_or_else(|| "Linux".to_owned());
+    let uptime = fs::read_to_string("/proc/uptime").context("failed to read system uptime")?;
+    let uptime_seconds = parse_uptime(&uptime)?;
+    Ok(SystemInfoState {
+        hostname,
+        os_name,
+        uptime_seconds,
+    })
+}
+
+pub fn request_power(action: PowerAction) -> Result<()> {
+    let argument = action.systemctl_argument();
+    let output = Command::new("systemctl")
+        .arg(argument)
+        .output()
+        .with_context(|| format!("failed to run systemctl {argument}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if detail.is_empty() {
+            bail!("systemctl {argument} failed");
+        }
+        bail!("systemctl {argument} failed: {detail}");
+    }
+    Ok(())
+}
+
 /// Whether `brightnessctl` can be run at all, probed once per process:
 /// the dashboard uses it as the visibility gate for its brightness row.
 fn brightnessctl_available() -> bool {
@@ -186,6 +236,27 @@ fn parse_wpctl(value: &str) -> Result<AudioState> {
         percent: (scalar * 100.0).round().clamp(0.0, 100.0) as u8,
         muted: value.contains("[MUTED]"),
     })
+}
+
+fn parse_os_name(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        line.strip_prefix("PRETTY_NAME=")
+            .map(|value| value.trim_matches('"').replace("\\\"", "\""))
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn parse_uptime(contents: &str) -> Result<u64> {
+    let seconds = contents
+        .split_whitespace()
+        .next()
+        .context("uptime did not contain a value")?
+        .parse::<f64>()
+        .context("uptime was not numeric")?;
+    if !seconds.is_finite() || seconds.is_sign_negative() {
+        bail!("uptime was outside its valid range");
+    }
+    Ok(seconds.floor() as u64)
 }
 
 fn is_audio_subscription_event(line: &str) -> bool {
@@ -247,5 +318,21 @@ mod tests {
         let mut previous = None;
         assert!(update_audio_state(&mut previous, audio));
         assert!(!update_audio_state(&mut previous, audio));
+    }
+
+    #[test]
+    fn parses_system_information_sources() {
+        assert_eq!(
+            parse_os_name("NAME=Example\nPRETTY_NAME=\"Example Linux 42\"\n"),
+            Some("Example Linux 42".to_owned())
+        );
+        assert_eq!(parse_uptime("93784.42 100.00\n").unwrap(), 93_784);
+    }
+
+    #[test]
+    fn maps_power_actions_to_systemctl_arguments() {
+        assert_eq!(PowerAction::PowerOff.systemctl_argument(), "poweroff");
+        assert_eq!(PowerAction::Suspend.systemctl_argument(), "suspend");
+        assert_eq!(PowerAction::Reboot.systemctl_argument(), "reboot");
     }
 }
