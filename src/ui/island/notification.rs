@@ -351,6 +351,39 @@ impl IslandWindow {
             body.set_max_width_chars(24);
             text.append(&body);
         }
+
+        // Keep the gesture on the expanding content column rather than the
+        // whole row, so clicking the child dismiss button cannot also invoke
+        // the notification's default action.
+        let default_action = notification.default_action().cloned();
+        let tooltip = default_action.as_ref().map_or_else(
+            || "Right-click to dismiss".to_owned(),
+            |action| {
+                if action.label.is_empty() {
+                    "Left-click to activate  //  right-click to dismiss".to_owned()
+                } else {
+                    format!("{}  //  right-click to dismiss", action.label)
+                }
+            },
+        );
+        row.set_tooltip_text(Some(&tooltip));
+
+        let click = GestureClick::new();
+        click.set_button(0);
+        let invoke = self.actions.notification_invoke.clone();
+        let dismiss_from_history = self.actions.notification_dismiss.clone();
+        let id = notification.id;
+        click.connect_released(move |gesture, _, _, _| match gesture.current_button() {
+            gdk::BUTTON_PRIMARY => {
+                if let Some(action) = &default_action {
+                    invoke(id, action.key.clone());
+                }
+            }
+            gdk::BUTTON_SECONDARY => dismiss_from_history(id),
+            _ => {}
+        });
+        text.add_controller(click);
+
         row.append(&icon);
         row.append(&text);
 
@@ -358,7 +391,6 @@ impl IslandWindow {
         dismiss.add_css_class("notification-row-dismiss");
         dismiss.set_valign(Align::Start);
         let action = self.actions.notification_dismiss.clone();
-        let id = notification.id;
         dismiss.connect_clicked(move |_| action(id));
         row.append(&dismiss);
 

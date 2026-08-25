@@ -275,6 +275,11 @@ window.mithshell-notifications > contents {
   font-weight: 700;
 }
 
+.notification-history-scroll,
+.notification-history-scroll > viewport {
+  background: transparent;
+}
+
 .notification-empty {
   color: alpha(@ms_on_surface_variant, 0.7);
   font-size: 11px;
@@ -282,9 +287,13 @@ window.mithshell-notifications > contents {
 }
 
 .notification-row {
-  padding: 5px 8px;
-  border-radius: 9px;
+  padding: 6px 10px;
+  border-radius: 10px;
   background: alpha(@ms_surface_container, 0.55);
+}
+
+.notification-row:hover {
+  background: alpha(@ms_surface_container, 0.9);
 }
 
 .notification-row.urgency-critical {
@@ -292,30 +301,34 @@ window.mithshell-notifications > contents {
 }
 
 .notification-row-icon {
-  -gtk-icon-size: 16px;
+  -gtk-icon-size: 18px;
   color: @ms_primary;
 }
 
 .notification-row-summary {
   color: @ms_on_surface;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .notification-row-body {
   color: alpha(@ms_on_surface_variant, 0.85);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .notification-row-dismiss {
-  min-width: 20px;
-  min-height: 20px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 9px;
+  background: alpha(@ms_on_surface, 0.06);
   border: none;
   color: alpha(@ms_on_surface_variant, 0.7);
+}
+
+.notification-row-dismiss image {
+  -gtk-icon-size: 14px;
 }
 
 .notification-row-dismiss:hover {
@@ -516,7 +529,8 @@ scale.control-scale slider {
   box-shadow: none;
 }
 
-.close-button:hover {
+.close-button:hover,
+.close-button:checked {
   color: @ms_on_surface;
   background: alpha(@ms_on_surface, 0.12);
 }
@@ -1112,6 +1126,12 @@ button.lock-power-button:disabled {
 .scale-medium .osd-icon { -gtk-icon-size: 20px; }
 .scale-medium .osd-title { min-width: 82px; font-size: 13px; }
 .scale-medium .osd-value { min-width: 37px; font-size: 12px; }
+.scale-medium .notification-row { padding: 8px 12px; border-radius: 12px; }
+.scale-medium .notification-row-icon { -gtk-icon-size: 22px; }
+.scale-medium .notification-row-summary { font-size: 14px; }
+.scale-medium .notification-row-body { font-size: 14px; }
+.scale-medium .notification-row-dismiss { min-width: 32px; min-height: 32px; border-radius: 10px; }
+.scale-medium .notification-row-dismiss image { -gtk-icon-size: 16px; }
 .scale-medium .notification-content { padding: 0 9px 0 19px; }
 .scale-medium .notification-icon,
 .scale-medium .notification-toast-icon { -gtk-icon-size: 37px; }
@@ -1222,6 +1242,12 @@ button.lock-power-button:disabled {
 .scale-large .osd-icon { -gtk-icon-size: 25px; }
 .scale-large .osd-title { min-width: 99px; font-size: 16px; }
 .scale-large .osd-value { min-width: 45px; font-size: 14px; }
+.scale-large .notification-row { padding: 9px 14px; border-radius: 14px; }
+.scale-large .notification-row-icon { -gtk-icon-size: 26px; }
+.scale-large .notification-row-summary { font-size: 16px; }
+.scale-large .notification-row-body { font-size: 16px; }
+.scale-large .notification-row-dismiss { min-width: 38px; min-height: 38px; border-radius: 12px; }
+.scale-large .notification-row-dismiss image { -gtk-icon-size: 19px; }
 .scale-large .notification-content { padding: 0 12px 0 24px; }
 .scale-large .notification-icon,
 .scale-large .notification-toast-icon { -gtk-icon-size: 43px; }

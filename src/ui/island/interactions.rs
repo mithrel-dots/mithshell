@@ -316,6 +316,15 @@ impl IslandWindow {
         });
 
         let weak = Rc::downgrade(self);
+        self.notification_expand_button
+            .connect_toggled(move |button| {
+                if let Some(island) = weak.upgrade() {
+                    island.notifications_expanded.set(button.is_active());
+                    island.apply_notification_takeover();
+                }
+            });
+
+        let weak = Rc::downgrade(self);
         self.volume_scale.connect_value_changed(move |scale| {
             if let Some(island) = weak.upgrade()
                 && !island.updating_controls.get()

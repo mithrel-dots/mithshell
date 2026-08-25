@@ -224,7 +224,9 @@ pub struct IslandWindow {
     selected_media_service: RefCell<Option<String>>,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
+    status_card: gtk::Box,
     workspace_row: gtk::FlowBox,
+    controls_stack: gtk::Box,
     volume_scale: gtk::Scale,
     volume_value: gtk::Label,
     brightness_row: gtk::Box,
@@ -234,7 +236,9 @@ pub struct IslandWindow {
     /// vertical list of recent notifications, rebuilt by
     /// `update_notification_history` from the controller's bounded history.
     notification_count: gtk::Label,
+    notification_expand_button: gtk::ToggleButton,
     notification_list: gtk::Box,
+    notifications_expanded: Cell<bool>,
     search_entry: gtk::SearchEntry,
     search_results: gtk::ListBox,
     search_status: gtk::Label,

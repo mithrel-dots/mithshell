@@ -34,13 +34,16 @@ pub(super) struct DashboardWidgets {
     pub(super) player_switch_next: gtk::Button,
     pub(super) active_eyebrow: gtk::Label,
     pub(super) active_title: gtk::Label,
+    pub(super) status_card: gtk::Box,
     pub(super) workspace_row: gtk::FlowBox,
+    pub(super) controls_stack: gtk::Box,
     pub(super) volume_scale: gtk::Scale,
     pub(super) volume_value: gtk::Label,
     pub(super) brightness_row: gtk::Box,
     pub(super) brightness_scale: gtk::Scale,
     pub(super) brightness_value: gtk::Label,
     pub(super) notification_count: gtk::Label,
+    pub(super) notification_expand_button: gtk::ToggleButton,
     pub(super) notification_list: gtk::Box,
     pub(super) weather_button: gtk::Button,
     pub(super) search_button: gtk::Button,
@@ -243,15 +246,15 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     // Volume and brightness are single sliders: they ride directly on the
     // dashboard as thin rows instead of inside a panel that would give them
     // the same weight as the content above and below.
-    let controls = gtk::Box::new(Orientation::Vertical, 0);
-    controls.add_css_class("control-stack");
+    let controls_stack = gtk::Box::new(Orientation::Vertical, 0);
+    controls_stack.add_css_class("control-stack");
     let (volume_row, volume_scale, volume_value) =
         control_row("audio-volume-high-symbolic", "Volume", metrics);
     let (brightness_row, brightness_scale, brightness_value) =
         control_row("display-brightness-symbolic", "Brightness", metrics);
-    controls.append(&volume_row);
-    controls.append(&brightness_row);
-    root.append(&controls);
+    controls_stack.append(&volume_row);
+    controls_stack.append(&brightness_row);
+    root.append(&controls_stack);
 
     // The densest section, and the only one that grows: it absorbs whatever
     // the fixed-height dashboard has left after the rows above.
@@ -266,7 +269,14 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_title.set_hexpand(true);
     let notification_count = gtk::Label::new(Some("0"));
     notification_count.add_css_class("notification-count");
+    // Flips the dashboard into a notifications-only layout: the status
+    // strip, player, and sliders hide and the history takes their place.
+    let notification_expand_button = gtk::ToggleButton::new();
+    notification_expand_button.set_icon_name("view-fullscreen-symbolic");
+    notification_expand_button.add_css_class("close-button");
+    notification_expand_button.set_tooltip_text(Some("Notifications only"));
     notification_header.append(&notification_title);
+    notification_header.append(&notification_expand_button);
     notification_header.append(&notification_count);
     notification_card.append(&notification_header);
 
@@ -281,7 +291,14 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_placeholder.set_halign(Align::Start);
     notification_placeholder.set_wrap(true);
     notification_list.append(&notification_placeholder);
-    notification_card.append(&notification_list);
+    let notification_scroll = gtk::ScrolledWindow::new();
+    notification_scroll.add_css_class("notification-history-scroll");
+    notification_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    notification_scroll.set_has_frame(false);
+    notification_scroll.set_propagate_natural_height(false);
+    notification_scroll.set_vexpand(true);
+    notification_scroll.set_child(Some(&notification_list));
+    notification_card.append(&notification_scroll);
     root.append(&notification_card);
 
     DashboardWidgets {
@@ -307,13 +324,16 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
         player_switch_next,
         active_eyebrow,
         active_title,
+        status_card,
         workspace_row,
+        controls_stack,
         volume_scale,
         volume_value,
         brightness_row,
         brightness_scale,
         brightness_value,
         notification_count,
+        notification_expand_button,
         notification_list,
         weather_button,
         search_button,
@@ -352,6 +372,26 @@ pub(super) fn battery_icon_name(percent: u8, status: &str) -> String {
 }
 
 impl IslandWindow {
+    /// Gives notification history the dashboard's content area while
+    /// keeping the header and its window controls available.
+    pub(super) fn apply_notification_takeover(&self) {
+        let expanded = self.notifications_expanded.get();
+        self.status_card.set_visible(!expanded);
+        self.player_card.set_visible(!expanded);
+        self.controls_stack.set_visible(!expanded);
+        self.notification_expand_button.set_icon_name(if expanded {
+            "view-restore-symbolic"
+        } else {
+            "view-fullscreen-symbolic"
+        });
+        self.notification_expand_button
+            .set_tooltip_text(Some(if expanded {
+                "Show all panels"
+            } else {
+                "Notifications only"
+            }));
+    }
+
     pub fn update_hyprland(self: &Rc<Self>, snapshot: &HyprlandSnapshot) {
         *self.latest_hyprland.borrow_mut() = snapshot.clone();
         self.reconcile_notification_toasts();
