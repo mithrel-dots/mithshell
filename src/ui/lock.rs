@@ -541,6 +541,32 @@ impl LockSession {
 
         let captured = self.captures.borrow_mut().remove(&connector);
 
+        // gtk-session-lock destroys the assigned window when its monitor is
+        // invalidated. Detach it first: GTK 4.22.4 otherwise reaches
+        // gdk_wayland_toplevel_remove_from_session with a null toplevel
+        // (GNOME/gtk#8098). Keep it alive through the library's after-handler,
+        // but remove the stale connector immediately so a replacement monitor
+        // can rebuild its surface during the same main-loop turn.
+        let weak_session = Rc::downgrade(self);
+        let weak_window = gtk_window.downgrade();
+        let invalidated_connector = connector.clone();
+        monitor.connect_invalidate(move |_| {
+            let retained_window = weak_window.upgrade();
+            if let Some(window) = retained_window.as_ref() {
+                window.set_application(None::<&Application>);
+            }
+            if let Some(session) = weak_session.upgrade() {
+                session.windows.borrow_mut().remove(&invalidated_connector);
+            }
+            glib::idle_add_local_once(move || drop(retained_window));
+        });
+
+        // `assign_window_to_monitor` may round-trip Wayland, so publish the
+        // entry first; an output disappearing during that round-trip must not
+        // be reinserted after the invalidation handler removes it.
+        self.windows
+            .borrow_mut()
+            .insert(connector.clone(), window.clone());
         instance.assign_window_to_monitor(&gtk_window, monitor);
         if let Some(entry) = window.entry.upgrade() {
             entry.grab_focus();
@@ -548,7 +574,6 @@ impl LockSession {
         if !self.unlocking.get() {
             window.fade_in(self.animation);
         }
-        self.windows.borrow_mut().insert(connector.clone(), window);
 
         let Some(image) = captured else {
             return;
