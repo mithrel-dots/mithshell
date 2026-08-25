@@ -60,6 +60,12 @@ const COMPACT_TRAY_ICON_SCALE: f64 = 0.9;
 const MEDIA_HEIGHT: i32 = 32;
 const DASHBOARD_WIDTH: i32 = 448;
 const DASHBOARD_HEIGHT: i32 = 400;
+/// Depth of the dashboard's header band, measured from the top of the
+/// view. Doubles as the click-to-close hit zone, so it stops inside the gap
+/// below the header: anything past it belongs to the status strip. The
+/// clock's line height grows more slowly than the surface across the
+/// density tiers, so this is sized against the tightest of them.
+const DASHBOARD_HEADER_HEIGHT: i32 = 44;
 const OSD_WIDTH: i32 = 292;
 const OSD_HEIGHT: i32 = 36;
 /// `pill`-position notification geometry: wide enough for an icon, summary

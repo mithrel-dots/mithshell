@@ -201,7 +201,7 @@ window.mithshell-notifications > contents {
 }
 
 .dashboard-content {
-  padding: 14px 14px 0 14px;
+  padding: 12px 14px 12px 14px;
 }
 
 .eyebrow {
@@ -228,10 +228,12 @@ window.mithshell-notifications > contents {
   font-size: 11px;
 }
 
+/* Sized to the header buttons it sits next to, so the whole control
+   cluster shares one height and corner radius. */
 .battery-chip {
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 10px;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 8px;
   background: alpha(@ms_surface_container, 0.9);
   border: 1px solid alpha(@ms_outline_variant, 0.3);
 }
@@ -243,17 +245,16 @@ window.mithshell-notifications > contents {
   font-weight: 700;
 }
 
-.active-card,
-.controls-card,
+/* The dashboard's three content panels. Everything else in the view --
+   header, sliders -- sits directly on the surface, so panels read as
+   content rather than as a stack of independent cards. */
+.status-card,
+.player-card,
 .notification-card {
   background: alpha(@ms_surface_low, 0.92);
   border: 1px solid alpha(@ms_outline_variant, 0.3);
-  border-radius: 14px;
-  padding: 14px 16px;
-}
-
-.status-row {
-  margin: 0;
+  border-radius: 12px;
+  padding: 9px 11px;
 }
 
 .active-title {
@@ -281,8 +282,8 @@ window.mithshell-notifications > contents {
 }
 
 .notification-row {
-  padding: 6px 8px;
-  border-radius: 10px;
+  padding: 5px 8px;
+  border-radius: 9px;
   background: alpha(@ms_surface_container, 0.55);
 }
 
@@ -322,16 +323,9 @@ window.mithshell-notifications > contents {
   color: @ms_on_surface;
 }
 
-.player-card {
-  background: alpha(@ms_surface_low, 0.92);
-  border: 1px solid alpha(@ms_outline_variant, 0.3);
-  border-radius: 14px;
-  padding: 14px 16px;
-}
-
 .player-icon {
   color: @ms_primary;
-  -gtk-icon-size: 28px;
+  -gtk-icon-size: 22px;
 }
 
 .player-title {
@@ -398,6 +392,40 @@ progressbar.player-progress progress {
   font-feature-settings: "tnum";
 }
 
+/* Only shown while more than one MPRIS player is up, so it reads as a
+   secondary strip: smaller than the transport buttons above it. */
+.player-switch-button {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  color: alpha(@ms_on_surface_variant, 0.7);
+  background: alpha(@ms_on_surface, 0.06);
+  border: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  -gtk-icon-size: 11px;
+}
+
+.player-switch-button:hover {
+  color: @ms_on_surface;
+  background: alpha(@ms_on_surface, 0.12);
+}
+
+.player-switch-label {
+  color: alpha(@ms_on_surface_variant, 0.72);
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* The grid's own geometry comes from the row/column spacing set in code;
+   zeroing the child padding keeps a user theme from inflating it. */
+.workspace-grid > flowboxchild {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
 .workspace-button {
   min-width: 26px;
   min-height: 26px;
@@ -428,8 +456,14 @@ progressbar.player-progress progress {
   border-color: @ms_primary;
 }
 
+/* Sliders are secondary controls: a thin row on the dashboard surface,
+   inset just enough to line their icons up with the panel padding above. */
+.control-stack {
+  padding: 0 3px;
+}
+
 .control-row {
-  min-height: 37px;
+  min-height: 26px;
 }
 
 .control-icon {
@@ -1014,29 +1048,31 @@ button.lock-power-button:disabled {
 .scale-medium .tray-menu-submenu { font-size: 14px; }
 .scale-medium .tray-menu-item,
 .scale-medium .tray-menu-submenu > title { padding: 4px 11px; }
-.scale-medium .dashboard-content { padding: 29px 29px 0 29px; }
+.scale-medium .dashboard-content { padding: 17px 20px 17px 20px; }
 .scale-medium .eyebrow { font-size: 11px; letter-spacing: 1.4px; }
 .scale-medium .hero-time { font-size: 38px; }
 .scale-medium .hero-date,
 .scale-medium .muted-label { font-size: 13px; }
-.scale-medium .battery-chip { min-height: 38px; padding: 0 14px; border-radius: 19px; }
+.scale-medium .battery-chip { min-height: 32px; padding: 0 11px; border-radius: 10px; }
 .scale-medium .battery-chip label { font-size: 13px; }
-.scale-medium .active-card,
-.scale-medium .controls-card,
-.scale-medium .notification-card { border-radius: 16px; padding: 16px 18px; }
+.scale-medium .status-card,
+.scale-medium .player-card,
+.scale-medium .notification-card { border-radius: 15px; padding: 13px 16px; }
 .scale-medium .active-title { font-size: 17px; }
-.scale-medium .player-card { border-radius: 16px; padding: 16px 18px; }
-.scale-medium .player-icon { -gtk-icon-size: 34px; }
+.scale-medium .player-icon { -gtk-icon-size: 28px; }
 .scale-medium .player-title { font-size: 16px; }
 .scale-medium .player-artist { font-size: 13px; }
 .scale-medium .player-button { min-width: 32px; min-height: 32px; border-radius: 16px; -gtk-icon-size: 16px; }
 .scale-medium progressbar.player-progress trough,
 .scale-medium progressbar.player-progress progress { min-height: 5px; }
 .scale-medium .player-time { font-size: 11px; }
+.scale-medium .player-switch-button { min-width: 25px; min-height: 25px; border-radius: 9px; -gtk-icon-size: 13px; }
+.scale-medium .player-switch-label { font-size: 11px; }
 .scale-medium .workspace-button,
 .scale-medium .close-button { min-width: 32px; min-height: 32px; border-radius: 10px; }
 .scale-medium .workspace-button { font-size: 12px; }
-.scale-medium .control-row { min-height: 44px; }
+.scale-medium .control-stack { padding: 0 4px; }
+.scale-medium .control-row { min-height: 36px; }
 .scale-medium .control-icon { -gtk-icon-size: 19px; }
 .scale-medium .control-value { min-width: 46px; font-size: 12px; }
 .scale-medium scale.control-scale trough,
@@ -1122,29 +1158,31 @@ button.lock-power-button:disabled {
 .scale-large .tray-menu-submenu { font-size: 16px; }
 .scale-large .tray-menu-item,
 .scale-large .tray-menu-submenu > title { padding: 5px 13px; }
-.scale-large .dashboard-content { padding: 35px 35px 0 35px; }
+.scale-large .dashboard-content { padding: 21px 25px 21px 25px; }
 .scale-large .eyebrow { font-size: 13px; letter-spacing: 1.7px; }
 .scale-large .hero-time { font-size: 46px; }
 .scale-large .hero-date,
 .scale-large .muted-label { font-size: 16px; }
-.scale-large .battery-chip { min-height: 46px; padding: 0 17px; border-radius: 23px; }
+.scale-large .battery-chip { min-height: 38px; padding: 0 13px; border-radius: 12px; }
 .scale-large .battery-chip label { font-size: 16px; }
-.scale-large .active-card,
-.scale-large .controls-card,
-.scale-large .notification-card { border-radius: 20px; padding: 20px 22px; }
+.scale-large .status-card,
+.scale-large .player-card,
+.scale-large .notification-card { border-radius: 18px; padding: 16px 19px; }
 .scale-large .active-title { font-size: 20px; }
-.scale-large .player-card { border-radius: 20px; padding: 20px 22px; }
-.scale-large .player-icon { -gtk-icon-size: 40px; }
+.scale-large .player-icon { -gtk-icon-size: 32px; }
 .scale-large .player-title { font-size: 19px; }
 .scale-large .player-artist { font-size: 16px; }
 .scale-large .player-button { min-width: 38px; min-height: 38px; border-radius: 19px; -gtk-icon-size: 19px; }
 .scale-large progressbar.player-progress trough,
 .scale-large progressbar.player-progress progress { min-height: 6px; }
 .scale-large .player-time { font-size: 13px; }
+.scale-large .player-switch-button { min-width: 30px; min-height: 30px; border-radius: 10px; -gtk-icon-size: 16px; }
+.scale-large .player-switch-label { font-size: 13px; }
 .scale-large .workspace-button,
 .scale-large .close-button { min-width: 38px; min-height: 38px; border-radius: 12px; }
 .scale-large .workspace-button { font-size: 14px; }
-.scale-large .control-row { min-height: 54px; }
+.scale-large .control-stack { padding: 0 5px; }
+.scale-large .control-row { min-height: 46px; }
 .scale-large .control-icon { -gtk-icon-size: 23px; }
 .scale-large .control-value { min-width: 55px; font-size: 14px; }
 .scale-large scale.control-scale trough,

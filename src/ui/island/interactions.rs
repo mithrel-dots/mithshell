@@ -285,7 +285,7 @@ impl IslandWindow {
         header_click.connect_released(move |gesture, _, _, y| {
             if gesture.current_button() == 1
                 && let Some(island) = weak.upgrade()
-                && y <= f64::from(island.metrics.spacing(78))
+                && y <= f64::from(island.metrics.dashboard_header_height)
             {
                 island.close();
             }

@@ -1,5 +1,6 @@
-//! The expanded dashboard: hero clock, player tile, workspace grid, system
-//! controls, and the notification history card.
+//! The expanded dashboard: a compact header band, the output/workspace
+//! strip, the player panel, thin system control rows, and the notification
+//! history panel that takes whatever vertical space is left over.
 
 use super::*;
 
@@ -47,25 +48,35 @@ pub(super) struct DashboardWidgets {
 }
 
 pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
-    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(13));
+    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
     root.set_size_request(metrics.dashboard_width, metrics.dashboard_height);
     root.add_css_class("dashboard-content");
     root.set_valign(Align::Start);
 
-    let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(12));
-    let heading = gtk::Box::new(Orientation::Vertical, 0);
-    heading.set_hexpand(true);
-    let eyebrow = gtk::Label::new(Some("MITHSHELL  //  LOCAL"));
-    eyebrow.add_css_class("eyebrow");
-    eyebrow.set_halign(Align::Start);
+    // The clock leads the header band and the identity/date pair stacks
+    // beside it rather than under it, so the window controls share one row
+    // with the time instead of facing an empty gap across the panel.
+    let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
     let time = gtk::Label::new(Some("--:--"));
     time.add_css_class("hero-time");
     time.set_halign(Align::Start);
+    time.set_valign(Align::Center);
+    let heading = gtk::Box::new(Orientation::Vertical, 0);
+    heading.set_hexpand(true);
+    heading.set_valign(Align::Center);
+    // Filled rather than sized to the text: `.eyebrow`'s letter-spacing is
+    // not counted in the natural width GTK measures, so an ellipsizing
+    // label pinned to `halign: start` gets allocated a hair less than it
+    // needs and drops its last character.
+    let eyebrow = gtk::Label::new(Some("MITHSHELL  //  LOCAL"));
+    eyebrow.add_css_class("eyebrow");
+    eyebrow.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    eyebrow.set_xalign(0.0);
     let date = gtk::Label::new(None);
     date.add_css_class("hero-date");
-    date.set_halign(Align::Start);
+    date.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    date.set_xalign(0.0);
     heading.append(&eyebrow);
-    heading.append(&time);
     heading.append(&date);
 
     let battery_chip = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
@@ -88,6 +99,7 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     weather_button.add_css_class("close-button");
     weather_button.set_tooltip_text(Some("Weather forecast"));
     weather_button.set_valign(Align::Center);
+    header.append(&time);
     header.append(&heading);
     header.append(&battery_chip);
     header.append(&weather_button);
@@ -95,11 +107,55 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     header.append(&close_button);
     root.append(&header);
 
-    let player_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
+    // Output identity and the workspace grid share a single panel. The grid
+    // asks for exactly the width its buttons need and the window title
+    // takes the remainder, rather than the near-empty column claiming the
+    // wider half.
+    let status_card = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
+    status_card.add_css_class("status-card");
+
+    let active_column = gtk::Box::new(Orientation::Vertical, metrics.spacing(1));
+    active_column.set_hexpand(true);
+    active_column.set_valign(Align::Center);
+    let active_eyebrow = gtk::Label::new(Some("OUTPUT  //  WORKSPACE --"));
+    active_eyebrow.add_css_class("eyebrow");
+    active_eyebrow.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    active_eyebrow.set_xalign(0.0);
+    active_eyebrow.set_max_width_chars(16);
+    let active_title = gtk::Label::new(Some("Quiet desktop"));
+    active_title.add_css_class("active-title");
+    active_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // Fill + a small natural width, rather than `halign: start` at the
+    // label's own width: the dashboard is laid out at its natural size
+    // inside a fixed-width surface, so a long title left unbounded pushes
+    // the workspace grid out past the visible edge. Filling still lets it
+    // use every pixel the strip actually has at any scale.
+    active_title.set_xalign(0.0);
+    active_title.set_max_width_chars(16);
+    active_column.append(&active_eyebrow);
+    active_column.append(&active_title);
+
+    let workspace_row = gtk::FlowBox::new();
+    workspace_row.add_css_class("workspace-grid");
+    workspace_row.set_column_spacing(metrics.spacing(4) as u32);
+    workspace_row.set_row_spacing(metrics.spacing(4) as u32);
+    // Rewritten per snapshot by `update_hyprland` so the grid never
+    // reserves slots it has no workspace for.
+    workspace_row.set_max_children_per_line(5);
+    workspace_row.set_min_children_per_line(5);
+    workspace_row.set_selection_mode(gtk::SelectionMode::None);
+    workspace_row.set_halign(Align::End);
+    workspace_row.set_valign(Align::Center);
+
+    status_card.append(&active_column);
+    status_card.append(&workspace_row);
+    root.append(&status_card);
+
+    let player_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(6));
     player_card.add_css_class("player-card");
     player_card.add_css_class("unavailable");
 
-    let player_top = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
+    let player_top = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
     let player_icon = gtk::Image::new();
     player_icon.add_css_class("player-icon");
     player_icon.set_valign(Align::Center);
@@ -108,14 +164,19 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     let player_text = gtk::Box::new(Orientation::Vertical, 0);
     player_text.set_hexpand(true);
     player_text.set_valign(Align::Center);
+    // Same bounded-natural-width treatment as the status strip, so a long
+    // track title ellipsizes inside the panel instead of shoving the
+    // transport buttons off the edge of the surface.
     let player_title = gtk::Label::new(Some("Nothing playing"));
     player_title.add_css_class("player-title");
-    player_title.set_halign(Align::Start);
     player_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    player_title.set_xalign(0.0);
+    player_title.set_max_width_chars(18);
     let player_artist = gtk::Label::new(None);
     player_artist.add_css_class("player-artist");
-    player_artist.set_halign(Align::Start);
     player_artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    player_artist.set_xalign(0.0);
+    player_artist.set_max_width_chars(18);
     player_artist.set_visible(false);
     player_text.append(&player_title);
     player_text.append(&player_artist);
@@ -144,20 +205,23 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     player_top.append(&player_next_button);
     player_card.append(&player_top);
 
-    let player_progress = gtk::ProgressBar::new();
-    player_progress.set_hexpand(true);
-    player_progress.add_css_class("player-progress");
-    player_card.append(&player_progress);
-
-    let player_time_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    // Elapsed/remaining sit on the progress line instead of below it, which
+    // drops a whole row from the panel and reads as one scrubber.
+    let player_time_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
     let player_elapsed_label = gtk::Label::new(Some("--:--"));
     player_elapsed_label.add_css_class("player-time");
     player_elapsed_label.set_halign(Align::Start);
+    player_elapsed_label.set_valign(Align::Center);
+    let player_progress = gtk::ProgressBar::new();
+    player_progress.set_hexpand(true);
+    player_progress.set_valign(Align::Center);
+    player_progress.add_css_class("player-progress");
     let player_duration_label = gtk::Label::new(Some("--:--"));
     player_duration_label.add_css_class("player-time");
     player_duration_label.set_halign(Align::End);
-    player_duration_label.set_hexpand(true);
+    player_duration_label.set_valign(Align::Center);
     player_time_row.append(&player_elapsed_label);
+    player_time_row.append(&player_progress);
     player_time_row.append(&player_duration_label);
     player_card.append(&player_time_row);
     let player_switch_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
@@ -176,44 +240,11 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     player_card.append(&player_switch_row);
     root.append(&player_card);
 
-    let status_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
-    status_row.add_css_class("status-row");
-
-    let active_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
-    active_card.add_css_class("active-card");
-    active_card.set_hexpand(true);
-    let active_eyebrow = gtk::Label::new(Some("OUTPUT  //  WORKSPACE --"));
-    active_eyebrow.add_css_class("eyebrow");
-    active_eyebrow.set_halign(Align::Start);
-    let active_title = gtk::Label::new(Some("Quiet desktop"));
-    active_title.add_css_class("active-title");
-    active_title.set_halign(Align::Start);
-    active_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    active_title.set_max_width_chars(48);
-    active_card.append(&active_eyebrow);
-    active_card.append(&active_title);
-
-    let workspace_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
-    workspace_card.add_css_class("active-card");
-    let workspace_label = gtk::Label::new(Some("WORKSPACES"));
-    workspace_label.add_css_class("eyebrow");
-    workspace_label.set_halign(Align::Start);
-    let workspace_row = gtk::FlowBox::new();
-    workspace_row.set_column_spacing(metrics.spacing(4) as u32);
-    workspace_row.set_row_spacing(metrics.spacing(4) as u32);
-    workspace_row.set_max_children_per_line(5);
-    workspace_row.set_min_children_per_line(5);
-    workspace_row.set_selection_mode(gtk::SelectionMode::None);
-    workspace_row.set_halign(Align::Start);
-    workspace_card.append(&workspace_label);
-    workspace_card.append(&workspace_row);
-
-    status_row.append(&active_card);
-    status_row.append(&workspace_card);
-    root.append(&status_row);
-
+    // Volume and brightness are single sliders: they ride directly on the
+    // dashboard as thin rows instead of inside a panel that would give them
+    // the same weight as the content above and below.
     let controls = gtk::Box::new(Orientation::Vertical, 0);
-    controls.add_css_class("controls-card");
+    controls.add_css_class("control-stack");
     let (volume_row, volume_scale, volume_value) =
         control_row("audio-volume-high-symbolic", "Volume", metrics);
     let (brightness_row, brightness_scale, brightness_value) =
@@ -222,8 +253,11 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     controls.append(&brightness_row);
     root.append(&controls);
 
-    let notification_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
+    // The densest section, and the only one that grows: it absorbs whatever
+    // the fixed-height dashboard has left after the rows above.
+    let notification_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(6));
     notification_card.add_css_class("notification-card");
+    notification_card.set_vexpand(true);
 
     let notification_header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
     let notification_title = gtk::Label::new(Some("NOTIFICATIONS"));
@@ -238,6 +272,7 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
 
     let notification_list = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
     notification_list.add_css_class("notification-list");
+    notification_list.set_vexpand(true);
     // Replaced by `update_notification_history` as soon as the controller
     // pushes its first (possibly empty) history snapshot.
     let notification_placeholder = gtk::Label::new(Some("No notifications yet"));
@@ -374,6 +409,15 @@ impl IslandWindow {
                 container.append(&dot);
             }
         }
+
+        // Fit the grid to the workspaces that actually exist: up to five in
+        // a single row, then balanced over two rows. A fixed five-per-line
+        // grid reserves (and leaves blank) slots it never fills.
+        let shown = workspaces.len().min(10);
+        let per_line = if shown <= 5 { shown } else { shown.div_ceil(2) };
+        let per_line = per_line.clamp(1, 5) as u32;
+        self.workspace_row.set_min_children_per_line(per_line);
+        self.workspace_row.set_max_children_per_line(per_line);
 
         for workspace in workspaces.into_iter().take(10) {
             let button = gtk::Button::with_label(&workspace.name);

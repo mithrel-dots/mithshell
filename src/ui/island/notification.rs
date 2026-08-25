@@ -333,16 +333,22 @@ impl IslandWindow {
         text.set_hexpand(true);
         let summary = gtk::Label::new(Some(&notification.summary));
         summary.add_css_class("notification-row-summary");
-        summary.set_halign(Align::Start);
         summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        // Filled to the row rather than sized to the text: the dashboard is
+        // laid out at its natural width inside a fixed-width surface, so an
+        // unbounded row would push its own dismiss button outside the panel
+        // instead of wrapping and ellipsizing within it.
+        summary.set_xalign(0.0);
+        summary.set_max_width_chars(20);
         text.append(&summary);
         if !notification.body.is_empty() {
             let body = gtk::Label::new(Some(&notification.body));
             body.add_css_class("notification-row-body");
-            body.set_halign(Align::Start);
             body.set_wrap(true);
             body.set_lines(2);
             body.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            body.set_xalign(0.0);
+            body.set_max_width_chars(24);
             text.append(&body);
         }
         row.append(&icon);
