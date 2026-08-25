@@ -4,6 +4,7 @@
 //! that must not run on the GTK main thread.
 
 pub mod backdrop;
+pub mod logind;
 mod pam;
 
 use std::{

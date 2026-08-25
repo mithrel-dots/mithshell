@@ -48,11 +48,14 @@ pub type LockSubmitAction = Rc<dyn Fn(u64, String)>;
 pub type LockEndedAction = Rc<dyn Fn()>;
 /// Runs a logind power request away from the GTK thread and reports its result.
 pub type LockPowerAction = Rc<dyn Fn(PowerAction, async_channel::Sender<Result<(), String>>)>;
+/// Reports actual compositor lock acquisition/release for logind metadata.
+pub type LockStateAction = Rc<dyn Fn(bool)>;
 
 pub struct LockActions {
     pub submit: LockSubmitAction,
     pub power: LockPowerAction,
     pub ended: LockEndedAction,
+    pub state_changed: LockStateAction,
 }
 
 #[derive(Clone, Copy)]
@@ -381,6 +384,7 @@ pub struct LockSession {
     submit: LockSubmitAction,
     power: LockPowerAction,
     on_ended: LockEndedAction,
+    state_changed: LockStateAction,
     /// Incremented per attempt so a verdict that arrives after the user has
     /// already typed something else is ignored.
     generation: Cell<u64>,
@@ -437,6 +441,7 @@ impl LockSession {
             submit: actions.submit,
             power: actions.power,
             on_ended: actions.ended,
+            state_changed: actions.state_changed,
             generation: Cell::new(0),
             busy: Cell::new(false),
             power_pending: Cell::new(false),
@@ -470,6 +475,7 @@ impl LockSession {
         session.instance.connect_locked(move |_| {
             info!("session locked");
             if let Some(session) = weak.upgrade() {
+                (session.state_changed)(true);
                 session.focus_active_entry();
             }
         });
@@ -477,11 +483,12 @@ impl LockSession {
         let weak = Rc::downgrade(&session);
         session.instance.connect_unlocked(move |_| {
             info!("session unlocked");
-            if let Some(session) = weak.upgrade()
-                && !session.unlocking.get()
-            {
-                let ended = session.on_ended.clone();
-                glib::idle_add_local_once(move || ended());
+            if let Some(session) = weak.upgrade() {
+                (session.state_changed)(false);
+                if !session.unlocking.get() {
+                    let ended = session.on_ended.clone();
+                    glib::idle_add_local_once(move || ended());
+                }
             }
         });
 

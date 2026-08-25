@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use async_channel::{Receiver, Sender};
 use clap::CommandFactory;
 use gtk::{Application, CssProvider, gdk, gio, glib, prelude::*};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::{
     cli::{self, Cli, Command, SetupCommand, ThemeCommand, ThemeModeArg},
@@ -19,7 +19,10 @@ use crate::{
     hyprland::{self, HyprlandUpdate},
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
     latency,
-    lock::{self, AuthEvent, AuthRequest},
+    lock::{
+        self, AuthEvent, AuthRequest,
+        logind::{LogindCommand, LogindEvent},
+    },
     media,
     notifications::{self, CloseReason, NotificationCommand, NotificationEvent},
     preview::{self, PreviewEvent, PreviewRequest},
@@ -33,7 +36,7 @@ use crate::{
     theme, tray,
     ui::{
         self, IslandActions, IslandWindow, LockActions, LockAnimation, LockPowerAction,
-        LockSession, LockSubmitAction,
+        LockSession, LockStateAction, LockSubmitAction,
     },
     weather,
 };
@@ -397,6 +400,9 @@ struct Controller {
     animations: bool,
     theme_sender: Sender<Result<Palette, String>>,
     auth_sender: Sender<AuthRequest>,
+    logind_sender: Sender<LogindCommand>,
+    logind_session_path: RefCell<Option<String>>,
+    logind_last_error: RefCell<Option<String>>,
     tarragon_sender: Sender<TarragonCommand>,
     preview_sender: Sender<PreviewRequest>,
     /// Bounded, most-recent-first notification history backing every
@@ -415,6 +421,7 @@ struct Controller {
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
     auth_listener: Option<thread::JoinHandle<()>>,
+    logind_listener: Option<thread::JoinHandle<()>>,
     _gtk_css_watcher: Option<thread::JoinHandle<()>>,
 }
 
@@ -517,6 +524,8 @@ impl Controller {
         let (auth_event_sender, auth_event_receiver) = async_channel::unbounded();
         let (auth_sender, auth_listener) =
             lock::start_authenticator(pam_service, auth_event_sender);
+        let (logind_event_sender, logind_event_receiver) = async_channel::unbounded();
+        let (logind_sender, logind_listener) = lock::logind::start_listener(logind_event_sender);
 
         let controller = Rc::new(Self {
             application: application.clone(),
@@ -541,6 +550,9 @@ impl Controller {
             animations,
             theme_sender,
             auth_sender,
+            logind_sender,
+            logind_session_path: RefCell::new(None),
+            logind_last_error: RefCell::new(None),
             tarragon_sender,
             preview_sender,
             notifications: RefCell::new(Vec::new()),
@@ -556,6 +568,7 @@ impl Controller {
             tarragon_listener: Some(tarragon_listener),
             preview_listener: Some(preview_listener),
             auth_listener: Some(auth_listener),
+            logind_listener: Some(logind_listener),
             _gtk_css_watcher: gtk_css_watcher,
         });
 
@@ -581,6 +594,7 @@ impl Controller {
         controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
         controller.attach_auth(auth_event_receiver);
+        controller.attach_logind(logind_event_receiver);
         controller.attach_notifications(notification_event_receiver);
         controller.attach_gtk_theme_watch();
         controller.attach_gtk_css_watch(gtk_css_receiver);
@@ -863,6 +877,62 @@ impl Controller {
                         outcome,
                     } => {
                         session.resolve(generation, &outcome);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Bridges systemd-logind's session signals onto the lock screen.
+    ///
+    /// `Lock`/`Unlock` are what `loginctl lock-session`, idle daemons, and
+    /// systemd's own `IdleAction=lock` emit. Honouring them is what makes
+    /// this shell participate in the session properly rather than only
+    /// locking when `mithshell lock` is run by hand.
+    fn attach_logind(self: &Rc<Self>, receiver: Receiver<LogindEvent>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(event) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                match event {
+                    LogindEvent::LockRequested => {
+                        // Never borrowed across `lock()`: it stores the new
+                        // session into this same RefCell.
+                        let already_locked = controller.lock.borrow().is_some();
+                        if already_locked {
+                            continue;
+                        }
+                        if let Err(error) = controller.lock() {
+                            error!("logind asked for a lock but it failed: {error:#}");
+                        }
+                    }
+                    LogindEvent::UnlockRequested => {
+                        // logind only forwards `Unlock` after its own polkit
+                        // check, so this is the same trusted, PAM-bypassing
+                        // path as `IpcCommand::Unlock` -- and equally
+                        // deliberate.
+                        let session = controller.lock.borrow().clone();
+                        match session {
+                            Some(session) => session.force_unlock(),
+                            None => debug!("logind asked to unlock an unlocked session"),
+                        }
+                    }
+                    LogindEvent::Connected { session_path } => {
+                        info!("logind session bridge active on {session_path}");
+                        *controller.logind_session_path.borrow_mut() = Some(session_path);
+                        controller.logind_last_error.borrow_mut().take();
+                        // A reconnect may have missed transitions, and logind
+                        // keeps whatever hint it was last told; restate it.
+                        let locked = controller.lock.borrow().is_some();
+                        let _ = controller
+                            .logind_sender
+                            .try_send(LogindCommand::SetLockedHint(locked));
+                    }
+                    LogindEvent::Unavailable { message } => {
+                        controller.logind_session_path.borrow_mut().take();
+                        *controller.logind_last_error.borrow_mut() = Some(message);
                     }
                 }
             }
@@ -1377,6 +1447,10 @@ impl Controller {
                     },
                     "palette": &*self.palette.borrow(),
                     "lock": self.lock.borrow().as_ref().map(|session| session.debug_state()),
+                    "logind": {
+                        "session": &*self.logind_session_path.borrow(),
+                        "error": &*self.logind_last_error.borrow(),
+                    },
                 });
                 Ok(Response::with_data("daemon is running", data))
             }
@@ -1488,6 +1562,19 @@ impl Controller {
             }
         });
 
+        // Tracks the compositor's own view of the lock, not this function's
+        // intent: `LockedHint` is only truthful if it follows the `locked`
+        // and `unlocked` signals rather than the request that triggered them.
+        let logind_sender = self.logind_sender.clone();
+        let state_changed: LockStateAction = Rc::new(move |locked: bool| {
+            if logind_sender
+                .try_send(LogindCommand::SetLockedHint(locked))
+                .is_err()
+            {
+                debug!("the logind bridge is gone; LockedHint stays stale");
+            }
+        });
+
         let config = self.config.borrow();
         let system = self.system.borrow().clone();
         let weather = self.weather.borrow().clone();
@@ -1505,6 +1592,7 @@ impl Controller {
                 submit,
                 power,
                 ended: on_ended,
+                state_changed,
             },
         );
         drop(config);
@@ -1960,6 +2048,7 @@ impl Drop for Controller {
         self.tarragon_sender.close();
         self.preview_sender.close();
         self.auth_sender.close();
+        self.logind_sender.close();
         if let Some(listener) = self.tarragon_listener.take() {
             let _ = listener.join();
         }
@@ -1967,6 +2056,9 @@ impl Drop for Controller {
             let _ = listener.join();
         }
         if let Some(listener) = self.auth_listener.take() {
+            let _ = listener.join();
+        }
+        if let Some(listener) = self.logind_listener.take() {
             let _ = listener.join();
         }
     }

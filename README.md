@@ -302,6 +302,32 @@ lock instance; the protocol grants clients a grace window between
 requesting the lock and the compositor actually blanking the output
 specifically so lock screens can render (and screenshot) without a race.
 
+#### logind integration
+
+The daemon also locks on request from systemd-logind, so `loginctl
+lock-session`, `loginctl lock-sessions`, an idle daemon, and systemd's own
+`IdleAction=lock` all reach the same lock screen as `mithshell lock` --
+nothing extra to configure. The session object is resolved at startup
+(`GetSessionByPID`, falling back to `auto` and then `$XDG_SESSION_ID`, which
+between them cover the daemon being started outside the session's cgroup),
+and the `Lock` and `Unlock` signals on that exact session are followed
+thereafter.
+
+`LockedHint` is kept in sync in the other direction, so `loginctl
+show-session -p LockedHint` reports the truth to anything else on the system.
+It follows the compositor's own `locked`/`unlocked` signals rather than the
+request that triggered them, so a lock the compositor refuses is never
+reported as taken.
+
+Note that `Unlock` bypasses PAM, exactly as `mithshell unlock` does. logind
+only forwards it after its own Polkit check, which is the same trust boundary
+the IPC socket's peer-credential check provides; both are recovery paths for
+a stuck prompt, not a second authentication method. If the bus or logind is
+unavailable -- an elogind-less system, or a bus that goes away -- the bridge
+retries with a backoff up to five minutes and the rest of the shell is
+unaffected; `mithshell status` reports the resolved session path or the last
+error under `logind`.
+
 #### Authentication
 
 Passwords are checked against PAM on a dedicated worker thread, never the GTK

@@ -10,7 +10,8 @@ use crate::state::Palette;
 
 pub use island::{IslandActions, IslandWindow};
 pub use lock::{
-    LockActions, LockAnimation, LockEndedAction, LockPowerAction, LockSession, LockSubmitAction,
+    LockActions, LockAnimation, LockEndedAction, LockPowerAction, LockSession, LockStateAction,
+    LockSubmitAction,
 };
 
 /// Rounds a design-time pixel dimension to the active UI scale.
