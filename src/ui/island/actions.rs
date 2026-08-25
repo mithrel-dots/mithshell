@@ -17,6 +17,7 @@ pub type PreviewAction = Rc<dyn Fn(u64, String)>;
 pub type MediaAction = Rc<dyn Fn(String)>;
 pub type NotificationCloseAction = Rc<dyn Fn(u32)>;
 pub type NotificationExpireAction = Rc<dyn Fn(u32, u64)>;
+pub type NotificationInhibitAction = Rc<dyn Fn(bool)>;
 /// Arguments are a notification id and the invoked action's key.
 pub type NotificationInvokeAction = Rc<dyn Fn(u32, String)>;
 /// Arguments are a tray item's `service`/`object_path` and pointer
@@ -45,6 +46,8 @@ pub struct IslandActions {
     pub notification_expired: NotificationExpireAction,
     pub notification_dismiss: NotificationCloseAction,
     pub notification_invoke: NotificationInvokeAction,
+    pub notification_clear_all: UnitAction,
+    pub notification_inhibit: NotificationInhibitAction,
     pub tray_activate: TrayPointAction,
     pub tray_secondary_activate: TrayPointAction,
     pub tray_context_menu: TrayPointAction,

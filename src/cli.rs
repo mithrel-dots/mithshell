@@ -74,6 +74,13 @@ pub enum Command {
     /// Reload the TOML configuration.
     Reload,
 
+    /// Toggle notification inhibition, or enable it for a duration such as 1h or 100m.
+    Inhibit {
+        /// Duration using s, m, h, or d units; compounds such as 1h30m are accepted.
+        #[arg(value_name = "DURATION", value_parser = parse_inhibit_duration)]
+        duration_ms: Option<u64>,
+    },
+
     /// Query the running daemon.
     Status {
         /// Print the full machine-readable status response.
@@ -123,6 +130,45 @@ pub enum OsdKind {
     Volume,
     Brightness,
     Workspace,
+}
+
+fn parse_inhibit_duration(value: &str) -> Result<u64, String> {
+    if value.is_empty() {
+        return Err("duration cannot be empty".into());
+    }
+    let bytes = value.as_bytes();
+    let mut cursor = 0;
+    let mut total_ms = 0_u64;
+    while cursor < bytes.len() {
+        let number_start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        if number_start == cursor || cursor == bytes.len() {
+            return Err("use a positive number followed by s, m, h, or d".into());
+        }
+        let amount = value[number_start..cursor]
+            .parse::<u64>()
+            .map_err(|_| "duration number is too large")?;
+        let multiplier = match bytes[cursor] {
+            b's' => 1_000,
+            b'm' => 60_000,
+            b'h' => 3_600_000,
+            b'd' => 86_400_000,
+            _ => return Err("duration unit must be s, m, h, or d".into()),
+        };
+        cursor += 1;
+        let component = amount
+            .checked_mul(multiplier)
+            .ok_or("duration is too large")?;
+        total_ms = total_ms
+            .checked_add(component)
+            .ok_or("duration is too large")?;
+    }
+    if total_ms == 0 {
+        return Err("duration must be greater than zero".into());
+    }
+    Ok(total_ms)
 }
 
 #[derive(Debug, Subcommand)]
@@ -203,4 +249,44 @@ pub struct SetupTarragonArgs {
     /// Rebuild and reinstall even if a `tarragon` binary is already on PATH.
     #[arg(long)]
     pub force: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_notification_inhibit_durations() {
+        for (value, expected_ms) in [
+            ("1h", 3_600_000),
+            ("100m", 6_000_000),
+            ("1h30m", 5_400_000),
+            ("2m15s", 135_000),
+            ("1d", 86_400_000),
+        ] {
+            let cli = Cli::try_parse_from(["mithshell", "inhibit", value]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::Inhibit {
+                    duration_ms: Some(actual)
+                } if actual == expected_ms
+            ));
+        }
+    }
+
+    #[test]
+    fn inhibit_without_duration_is_a_toggle() {
+        let cli = Cli::try_parse_from(["mithshell", "inhibit"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Inhibit { duration_ms: None }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_notification_inhibit_durations() {
+        for value in ["0m", "1", "1x", "1.5h", "h", "18446744073709551615d"] {
+            assert!(Cli::try_parse_from(["mithshell", "inhibit", value]).is_err());
+        }
+    }
 }

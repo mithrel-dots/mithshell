@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
     thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -247,6 +248,7 @@ fn command_request(command: Command) -> Result<(Request, bool)> {
         Command::Lock => IpcCommand::Lock,
         Command::Unlock => IpcCommand::Unlock,
         Command::Reload => IpcCommand::Reload,
+        Command::Inhibit { duration_ms } => IpcCommand::Inhibit { duration_ms },
         Command::Status { json: print_json } => {
             json = print_json;
             IpcCommand::Status
@@ -305,6 +307,20 @@ fn theme_mode(mode: ThemeModeArg) -> ThemeMode {
         ThemeModeArg::Dark => ThemeMode::Dark,
         ThemeModeArg::Light => ThemeMode::Light,
     }
+}
+
+fn format_inhibit_duration(duration_ms: u64) -> String {
+    for (suffix, unit_ms) in [
+        ("d", 86_400_000),
+        ("h", 3_600_000),
+        ("m", 60_000),
+        ("s", 1_000),
+    ] {
+        if duration_ms.is_multiple_of(unit_ms) {
+            return format!("{}{suffix}", duration_ms / unit_ms);
+        }
+    }
+    format!("{duration_ms}ms")
 }
 
 fn run_daemon(
@@ -388,6 +404,8 @@ struct Controller {
     /// `notifications.max_history`, re-read each time a notification lands.
     notifications: RefCell<Vec<Notification>>,
     notification_epochs: RefCell<NotificationEpochRegistry>,
+    notification_inhibition: Cell<NotificationInhibition>,
+    notification_inhibition_generation: Cell<u64>,
     notification_command_sender: Sender<NotificationCommand>,
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
@@ -404,6 +422,27 @@ struct Controller {
 struct NotificationEpochRegistry {
     next: u64,
     active: HashMap<u32, u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotificationInhibition {
+    Off,
+    Indefinite,
+    Until(SystemTime),
+}
+
+impl NotificationInhibition {
+    fn active(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    fn toggled(self) -> Self {
+        if self.active() {
+            Self::Off
+        } else {
+            Self::Indefinite
+        }
+    }
 }
 
 impl NotificationEpochRegistry {
@@ -506,6 +545,8 @@ impl Controller {
             preview_sender,
             notifications: RefCell::new(Vec::new()),
             notification_epochs: RefCell::new(NotificationEpochRegistry::default()),
+            notification_inhibition: Cell::new(NotificationInhibition::Off),
+            notification_inhibition_generation: Cell::new(0),
             notification_command_sender,
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
@@ -861,6 +902,15 @@ impl Controller {
                         }
                         let (epoch, replacing) = controller.register_notification(notification.id);
                         controller.record_notification(notification.clone());
+                        if controller.notification_inhibition.get().active() {
+                            if replacing {
+                                for island in controller.islands.borrow().values() {
+                                    island.close_notification(notification.id);
+                                }
+                            }
+                            controller.schedule_inhibited_notification_expiry(&notification, epoch);
+                            continue;
+                        }
                         match controller.notification_target_islands(&notification) {
                             Ok(islands) => {
                                 if replacing {
@@ -900,6 +950,28 @@ impl Controller {
 
     fn register_notification(&self, id: u32) -> (u64, bool) {
         self.notification_epochs.borrow_mut().register(id)
+    }
+
+    /// Inhibited notifications have no island presentation to own their
+    /// timeout, so keep their D-Bus lifecycle moving from the controller.
+    fn schedule_inhibited_notification_expiry(
+        self: &Rc<Self>,
+        notification: &Notification,
+        epoch: u64,
+    ) {
+        let timeout_ms = notification
+            .timeout
+            .resolve(self.config.borrow().notifications.timeout_ms);
+        let Some(timeout_ms) = timeout_ms else {
+            return;
+        };
+        let id = notification.id;
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.notification_expired(id, epoch);
+            }
+        });
     }
 
     fn notification_expired(&self, id: u32, epoch: u64) {
@@ -945,6 +1017,97 @@ impl Controller {
         }
     }
 
+    fn clear_notification_history(self: &Rc<Self>) {
+        let ids: Vec<u32> = self
+            .notifications
+            .borrow()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        for id in &ids {
+            if self.notification_epochs.borrow_mut().remove(*id) {
+                let _ = self
+                    .notification_command_sender
+                    .try_send(NotificationCommand::Close {
+                        id: *id,
+                        reason: CloseReason::Dismissed,
+                    });
+            }
+        }
+        for island in self.islands.borrow().values() {
+            for id in &ids {
+                island.close_notification(*id);
+            }
+        }
+        self.notifications.borrow_mut().clear();
+        self.refresh_notification_dashboard();
+    }
+
+    fn set_notification_inhibition(
+        self: &Rc<Self>,
+        inhibition: NotificationInhibition,
+    ) -> NotificationInhibition {
+        let generation = self
+            .notification_inhibition_generation
+            .get()
+            .wrapping_add(1);
+        self.notification_inhibition_generation.set(generation);
+        self.notification_inhibition.set(inhibition);
+        self.sync_notification_inhibition();
+
+        if let NotificationInhibition::Until(deadline) = inhibition {
+            let Ok(delay) = deadline.duration_since(SystemTime::now()) else {
+                self.notification_inhibition
+                    .set(NotificationInhibition::Off);
+                self.sync_notification_inhibition();
+                return NotificationInhibition::Off;
+            };
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local_once(delay, move || {
+                if let Some(controller) = weak.upgrade()
+                    && controller.notification_inhibition_generation.get() == generation
+                    && controller.notification_inhibition.get()
+                        == NotificationInhibition::Until(deadline)
+                {
+                    controller.set_notification_inhibition(NotificationInhibition::Off);
+                }
+            });
+        }
+        inhibition
+    }
+
+    fn sync_notification_inhibition(&self) {
+        let active = self.notification_inhibition.get().active();
+        for island in self.islands.borrow().values() {
+            island.update_notification_inhibition(active);
+        }
+    }
+
+    fn notification_inhibition_status(&self) -> serde_json::Value {
+        let inhibition = self.notification_inhibition.get();
+        let (mode, until, remaining) = match inhibition {
+            NotificationInhibition::Off => ("off", None, None),
+            NotificationInhibition::Indefinite => ("indefinite", None, None),
+            NotificationInhibition::Until(deadline) => {
+                let until = deadline
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
+                let remaining = deadline
+                    .duration_since(SystemTime::now())
+                    .ok()
+                    .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
+                ("timed", until, remaining)
+            }
+        };
+        serde_json::json!({
+            "active": inhibition.active(),
+            "mode": mode,
+            "until_unix_ms": until,
+            "remaining_ms": remaining,
+        })
+    }
+
     /// User-initiated dismissal (a toast's or the dashboard history's close
     /// button): tells the D-Bus server to announce `NotificationClosed`,
     /// and -- unlike a timer expiring -- also drops it from history and
@@ -970,7 +1133,13 @@ impl Controller {
     /// `dismiss_notification` does, matching the common desktop convention
     /// that activating a notification also closes it.
     fn invoke_notification_action(self: &Rc<Self>, id: u32, action_key: String) {
-        if !self.notification_epochs.borrow_mut().remove(id) {
+        let was_active = self.notification_epochs.borrow_mut().remove(id);
+        let is_in_history = self
+            .notifications
+            .borrow()
+            .iter()
+            .any(|notification| notification.id == id);
+        if !was_active && !is_in_history {
             return;
         }
         let _ = self
@@ -1165,6 +1334,26 @@ impl Controller {
                 self.reload_config()?;
                 Ok(Response::ok("configuration reloaded"))
             }
+            IpcCommand::Inhibit { duration_ms } => {
+                let inhibition = if let Some(duration_ms) = duration_ms {
+                    let deadline = SystemTime::now()
+                        .checked_add(Duration::from_millis(duration_ms))
+                        .context("notification inhibition duration is too large")?;
+                    self.set_notification_inhibition(NotificationInhibition::Until(deadline));
+                    return Ok(Response::ok(format!(
+                        "notifications inhibited for {}",
+                        format_inhibit_duration(duration_ms)
+                    )));
+                } else {
+                    let inhibition = self.notification_inhibition.get().toggled();
+                    self.set_notification_inhibition(inhibition)
+                };
+                Ok(Response::ok(if inhibition.active() {
+                    "notifications inhibited"
+                } else {
+                    "notifications enabled"
+                }))
+            }
             IpcCommand::Status => {
                 let windows: serde_json::Map<String, serde_json::Value> = self
                     .islands
@@ -1180,6 +1369,7 @@ impl Controller {
                     "media": &*self.media.borrow(),
                     "weather": &*self.weather.borrow(),
                     "notifications": &*self.notifications.borrow(),
+                    "notification_inhibition": self.notification_inhibition_status(),
                     "tarragon": {
                         "connected": self.tarragon_connected.get(),
                         "results": self.tarragon_snapshot.borrow().as_ref().map_or(0, |snapshot| snapshot.list.len()),
@@ -1620,6 +1810,23 @@ impl Controller {
                     controller.invoke_notification_action(id, action_key);
                 }
             });
+            let weak = Rc::downgrade(self);
+            let notification_clear_all = Rc::new(move || {
+                if let Some(controller) = weak.upgrade() {
+                    controller.clear_notification_history();
+                }
+            });
+            let weak = Rc::downgrade(self);
+            let notification_inhibit = Rc::new(move |active: bool| {
+                if let Some(controller) = weak.upgrade() {
+                    let inhibition = if active {
+                        NotificationInhibition::Indefinite
+                    } else {
+                        NotificationInhibition::Off
+                    };
+                    controller.set_notification_inhibition(inhibition);
+                }
+            });
             let tray_activate = Rc::new(
                 move |service: String, object_path: String, x: i32, y: i32| {
                     thread::spawn(move || {
@@ -1684,6 +1891,8 @@ impl Controller {
                     notification_expired,
                     notification_dismiss,
                     notification_invoke,
+                    notification_clear_all,
+                    notification_inhibit,
                     tray_activate,
                     tray_secondary_activate,
                     tray_context_menu,
@@ -1707,6 +1916,7 @@ impl Controller {
                 island.update_tarragon_status(status);
             }
             island.update_notification_history(self.notifications.borrow().as_slice());
+            island.update_notification_inhibition(self.notification_inhibition.get().active());
             self.islands.borrow_mut().insert(connector, island);
         }
 
@@ -1776,5 +1986,27 @@ mod tests {
         assert!(!registry.expire(42, first));
         assert!(registry.expire(42, replacement));
         assert!(!registry.expire(42, replacement));
+    }
+
+    #[test]
+    fn notification_inhibition_toggle_enables_and_cancels_any_mode() {
+        let timed = NotificationInhibition::Until(UNIX_EPOCH + Duration::from_secs(60));
+        assert_eq!(
+            NotificationInhibition::Off.toggled(),
+            NotificationInhibition::Indefinite
+        );
+        assert_eq!(
+            NotificationInhibition::Indefinite.toggled(),
+            NotificationInhibition::Off
+        );
+        assert!(timed.active());
+        assert_eq!(timed.toggled(), NotificationInhibition::Off);
+    }
+
+    #[test]
+    fn formats_exact_inhibit_duration_units() {
+        assert_eq!(format_inhibit_duration(3_600_000), "1h");
+        assert_eq!(format_inhibit_duration(6_000_000), "100m");
+        assert_eq!(format_inhibit_duration(1_500), "1500ms");
     }
 }

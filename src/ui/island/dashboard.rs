@@ -43,6 +43,8 @@ pub(super) struct DashboardWidgets {
     pub(super) brightness_scale: gtk::Scale,
     pub(super) brightness_value: gtk::Label,
     pub(super) notification_count: gtk::Label,
+    pub(super) notification_clear_button: gtk::Button,
+    pub(super) notification_inhibit_button: gtk::ToggleButton,
     pub(super) notification_expand_button: gtk::ToggleButton,
     pub(super) notification_list: gtk::Box,
     pub(super) weather_button: gtk::Button,
@@ -269,6 +271,14 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_title.set_hexpand(true);
     let notification_count = gtk::Label::new(Some("0"));
     notification_count.add_css_class("notification-count");
+    let notification_clear_button = gtk::Button::from_icon_name("edit-clear-all-symbolic");
+    notification_clear_button.add_css_class("close-button");
+    notification_clear_button.set_tooltip_text(Some("Clear notification history"));
+    notification_clear_button.set_sensitive(false);
+    let notification_inhibit_button = gtk::ToggleButton::new();
+    notification_inhibit_button.set_icon_name("notifications-disabled-symbolic");
+    notification_inhibit_button.add_css_class("close-button");
+    notification_inhibit_button.set_tooltip_text(Some("Inhibit notifications"));
     // Flips the dashboard into a notifications-only layout: the status
     // strip, player, and sliders hide and the history takes their place.
     let notification_expand_button = gtk::ToggleButton::new();
@@ -276,6 +286,8 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_expand_button.add_css_class("close-button");
     notification_expand_button.set_tooltip_text(Some("Notifications only"));
     notification_header.append(&notification_title);
+    notification_header.append(&notification_clear_button);
+    notification_header.append(&notification_inhibit_button);
     notification_header.append(&notification_expand_button);
     notification_header.append(&notification_count);
     notification_card.append(&notification_header);
@@ -333,6 +345,8 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
         brightness_scale,
         brightness_value,
         notification_count,
+        notification_clear_button,
+        notification_inhibit_button,
         notification_expand_button,
         notification_list,
         weather_button,

@@ -297,6 +297,8 @@ impl IslandWindow {
     pub fn update_notification_history(&self, history: &[Notification]) {
         self.notification_count
             .set_label(&history.len().to_string());
+        self.notification_clear_button
+            .set_sensitive(!history.is_empty());
         clear_box(&self.notification_list);
         if history.is_empty() {
             let placeholder = gtk::Label::new(Some("No notifications yet"));
@@ -311,6 +313,18 @@ impl IslandWindow {
             self.notification_list
                 .append(&self.notification_history_row(notification));
         }
+    }
+
+    pub fn update_notification_inhibition(&self, active: bool) {
+        self.updating_notification_inhibit.set(true);
+        self.notification_inhibit_button.set_active(active);
+        self.notification_inhibit_button
+            .set_tooltip_text(Some(if active {
+                "Allow notifications"
+            } else {
+                "Inhibit notifications"
+            }));
+        self.updating_notification_inhibit.set(false);
     }
 
     fn notification_history_row(&self, notification: &Notification) -> gtk::Box {

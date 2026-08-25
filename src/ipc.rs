@@ -62,6 +62,9 @@ pub enum IpcCommand {
     Lock,
     Unlock,
     Reload,
+    Inhibit {
+        duration_ms: Option<u64>,
+    },
     Status,
     Latency {
         reset: bool,
@@ -322,6 +325,16 @@ mod tests {
     fn lock_and_unlock_round_trip_as_json() {
         for command in [IpcCommand::Lock, IpcCommand::Unlock] {
             let request = Request::new(command.clone());
+            let encoded = serde_json::to_string(&request).unwrap();
+            let decoded: Request = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, request);
+        }
+    }
+
+    #[test]
+    fn notification_inhibit_round_trips_as_json() {
+        for duration_ms in [None, Some(6_000_000)] {
+            let request = Request::new(IpcCommand::Inhibit { duration_ms });
             let encoded = serde_json::to_string(&request).unwrap();
             let decoded: Request = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded, request);

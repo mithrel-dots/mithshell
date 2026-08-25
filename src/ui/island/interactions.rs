@@ -315,6 +315,20 @@ impl IslandWindow {
             }
         });
 
+        let clear_notifications = self.actions.notification_clear_all.clone();
+        self.notification_clear_button
+            .connect_clicked(move |_| clear_notifications());
+
+        let weak = Rc::downgrade(self);
+        self.notification_inhibit_button
+            .connect_toggled(move |button| {
+                if let Some(island) = weak.upgrade()
+                    && !island.updating_notification_inhibit.get()
+                {
+                    (island.actions.notification_inhibit)(button.is_active());
+                }
+            });
+
         let weak = Rc::downgrade(self);
         self.notification_expand_button
             .connect_toggled(move |button| {
