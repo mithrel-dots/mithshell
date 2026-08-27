@@ -1,3 +1,4 @@
+pub(crate) mod icon;
 mod island;
 mod lock;
 
@@ -52,9 +53,15 @@ pub(crate) fn automatic_scale(monitor: &gdk::Monitor) -> f64 {
 
 const BASE_CSS: &str = include_str!("style.css");
 
+/// The palette, the glyph font rule, and the baked stylesheet, in the order
+/// `style.css` expects to be able to override them.
+fn stylesheet(palette: &Palette) -> String {
+    format!("{}\n{}\n{BASE_CSS}", palette.css(), icon::glyph_font_css())
+}
+
 pub fn install_styles(palette: &Palette) -> CssProvider {
     let provider = CssProvider::new();
-    provider.load_from_string(&format!("{}\n{BASE_CSS}", palette.css()));
+    provider.load_from_string(&stylesheet(palette));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -69,7 +76,7 @@ pub fn install_styles(palette: &Palette) -> CssProvider {
 }
 
 pub fn update_styles(provider: &CssProvider, palette: &Palette) {
-    provider.load_from_string(&format!("{}\n{BASE_CSS}", palette.css()));
+    provider.load_from_string(&stylesheet(palette));
 }
 
 /// Installs the optional user stylesheet (`colors.css` next to config.toml)
@@ -100,5 +107,70 @@ pub fn reload_user_styles(provider: &CssProvider, path: &Path) {
             warn!("failed to read {}: {error}", path.display());
             provider.load_from_string("");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Structural checks over a stylesheet.
+    ///
+    /// `CssProvider` needs an initialised GTK and therefore a display, which a
+    /// test harness has no business requiring, and it recovers from a bad
+    /// declaration by dropping just that one rule. These assertions instead
+    /// catch the failure mode that actually threatens a stylesheet assembled
+    /// from several sources: unbalanced or malformed declarations.
+    fn assert_well_formed(css: &str) {
+        let depth = css.chars().fold(0_i32, |depth, ch| match ch {
+            '{' => depth + 1,
+            '}' => depth - 1,
+            _ => depth,
+        });
+        assert_eq!(depth, 0, "unbalanced braces");
+
+        for (index, block) in css.split('{').skip(1).enumerate() {
+            let body = block.split('}').next().unwrap_or_default();
+            for declaration in body.split(';') {
+                let declaration = declaration.trim();
+                if declaration.is_empty() || declaration.starts_with("/*") {
+                    continue;
+                }
+                assert!(
+                    declaration.contains(':'),
+                    "block {index}: `{declaration}` is not a declaration",
+                );
+                let value = declaration.split_once(':').map(|(_, v)| v.trim());
+                assert!(
+                    value.is_some_and(|value| !value.is_empty()),
+                    "block {index}: `{declaration}` has an empty value",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_shipped_stylesheet_is_well_formed() {
+        let palette = crate::theme::generate(&crate::config::ThemeConfig::default())
+            .expect("the default theme should generate");
+        assert_well_formed(&stylesheet(&palette));
+    }
+
+    #[test]
+    fn the_glyph_font_rule_is_well_formed() {
+        assert_well_formed(&icon::glyph_font_css());
+    }
+
+    #[test]
+    fn every_glyph_sizing_rule_pairs_with_an_icon_size() {
+        // The two representations must stay in step: a rule that sizes glyphs
+        // without sizing themed icons (or vice versa) means the shell changes
+        // size when it falls back.
+        let icon_sized = BASE_CSS.matches("-gtk-icon-size:").count();
+        let font_sized = BASE_CSS.matches("font-size:").count();
+        assert!(
+            icon_sized > 0 && font_sized > 0,
+            "expected both sizing properties in the stylesheet",
+        );
     }
 }

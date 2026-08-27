@@ -20,6 +20,7 @@ pub struct AppConfig {
     pub lock: LockConfig,
     pub notifications: NotificationConfig,
     pub tray: TrayConfig,
+    pub icons: IconConfig,
 }
 
 impl AppConfig {
@@ -281,6 +282,30 @@ impl Default for TrayConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// How mithshell draws its own chrome icons.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct IconConfig {
+    pub style: IconStyle,
+}
+
+/// Selects the representation used for mithshell's own controls.
+///
+/// Icons supplied by other programs (tray items, notification `app_icon`,
+/// MPRIS players, TarraGon results) always come from the icon theme and are
+/// unaffected by this setting.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum IconStyle {
+    /// Draw chrome icons as Nerd Font glyphs. Any glyph the resolved font
+    /// cannot render falls back to its themed icon individually, so this is
+    /// safe even without a patched font installed.
+    #[default]
+    Glyph,
+    /// Always use themed icons from the active GTK icon theme.
+    Symbolic,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -668,6 +693,47 @@ mod tests {
         .unwrap();
 
         assert!(!config.tray.enabled);
+    }
+
+    #[test]
+    fn the_shipped_example_config_parses() {
+        // Every section carries `deny_unknown_fields`, so a stale key or a
+        // renamed option in the example makes it a hard parse error for anyone
+        // who copies it -- which `just install-config` does by default.
+        let example = include_str!("../config/mithshell.example.toml");
+        toml::from_str::<AppConfig>(example).expect("the example config should parse");
+    }
+
+    #[test]
+    fn icons_default_to_glyphs() {
+        assert_eq!(IconConfig::default().style, IconStyle::Glyph);
+        let config = AppConfig::default();
+        assert_eq!(config.icons.style, IconStyle::Glyph);
+    }
+
+    #[test]
+    fn parses_a_symbolic_icon_section() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [icons]
+            style = "symbolic"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.icons.style, IconStyle::Symbolic);
+    }
+
+    #[test]
+    fn rejects_an_unknown_icon_style() {
+        let error = toml::from_str::<AppConfig>(
+            r#"
+            [icons]
+            style = "emoji"
+            "#,
+        );
+
+        assert!(error.is_err());
     }
 
     #[test]

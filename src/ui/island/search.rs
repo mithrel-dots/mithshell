@@ -44,7 +44,7 @@ pub(super) struct SearchWidgets {
     pub(super) plugins: gtk::ListBox,
     pub(super) preview_stack: gtk::Stack,
     pub(super) preview_picture: gtk::Picture,
-    pub(super) preview_icon: gtk::Image,
+    pub(super) preview_icon: gtk::Box,
     pub(super) preview_title: gtk::Label,
     pub(super) preview_description: gtk::Label,
     pub(super) preview_file_meta: gtk::Label,
@@ -62,7 +62,7 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
     root.set_valign(Align::Start);
 
     let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
-    let back_button = gtk::Button::from_icon_name("go-previous-symbolic");
+    let back_button = icon::icon_button(Icon::Back, metrics.icons);
     back_button.add_css_class("close-button");
     back_button.set_tooltip_text(Some("Back to dashboard"));
     let entry = gtk::SearchEntry::new();
@@ -72,7 +72,7 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
     let plugin_toggle = gtk::ToggleButton::with_label("PLUGINS");
     plugin_toggle.add_css_class("search-header-button");
     plugin_toggle.set_tooltip_text(Some("Show loaded TarraGon plugins"));
-    let reload_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    let reload_button = icon::icon_button(Icon::Refresh, metrics.icons);
     reload_button.add_css_class("close-button");
     reload_button.set_tooltip_text(Some("Reload TarraGon configuration and plugins"));
     header.append(&back_button);
@@ -133,8 +133,15 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
     let preview_picture = gtk::Picture::new();
     preview_picture.set_content_fit(gtk::ContentFit::Contain);
     preview_picture.add_css_class("search-preview-picture");
-    let preview_icon = gtk::Image::from_icon_name("system-search-symbolic");
+    // A slot rather than a widget: the preview alternates between one of our
+    // own glyphs and an image named by TarraGon, and those cannot be the same
+    // widget type. The CSS class lives on the slot so the size and color rules
+    // inherit down to whichever child is currently in it.
+    let preview_icon = gtk::Box::new(Orientation::Vertical, 0);
     preview_icon.add_css_class("search-preview-icon");
+    preview_icon.set_halign(Align::Center);
+    preview_icon.set_valign(Align::Center);
+    set_preview_chrome_icon(&preview_icon, Icon::Search, metrics.icons);
     let preview_text = gtk::TextView::new();
     preview_text.add_css_class("search-preview-text");
     preview_text.set_editable(false);
@@ -211,6 +218,24 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
     }
 }
 
+/// Swaps the single child of a preview icon slot.
+fn replace_slot_child(slot: &gtk::Box, child: &impl IsA<gtk::Widget>) {
+    while let Some(existing) = slot.first_child() {
+        slot.remove(&existing);
+    }
+    slot.append(child);
+}
+
+/// Shows one of mithshell's own icons in the preview slot.
+fn set_preview_chrome_icon(slot: &gtk::Box, icon: Icon, style: IconStyle) {
+    replace_slot_child(slot, &icon::icon_widget(icon, style));
+}
+
+/// Shows an icon named by TarraGon in the preview slot.
+fn set_preview_foreign_icon(slot: &gtk::Box, name: &str) {
+    replace_slot_child(slot, &icon::foreign_image(Some(name), Icon::Loading));
+}
+
 fn search_result_row(
     result: &crate::tarragon::TarragonResult,
     metrics: Metrics,
@@ -219,13 +244,7 @@ fn search_result_row(
     row.add_css_class("search-result");
     let content = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
 
-    let icon = if result.icon.starts_with('/') {
-        gtk::Image::from_file(&result.icon)
-    } else if result.icon.is_empty() {
-        gtk::Image::from_icon_name("system-search-symbolic")
-    } else {
-        gtk::Image::from_icon_name(&result.icon)
-    };
+    let icon = icon::foreign_image(Some(result.icon.as_str()), Icon::Search);
     icon.add_css_class("search-result-icon");
     icon.set_valign(Align::Center);
     content.append(&icon);
@@ -270,13 +289,7 @@ fn plugin_status_row(
     let row = gtk::ListBoxRow::new();
     row.add_css_class("plugin-row");
     let content = gtk::Box::new(Orientation::Horizontal, metrics.spacing(11));
-    let icon = if plugin.icon.starts_with('/') {
-        gtk::Image::from_file(&plugin.icon)
-    } else if plugin.icon.is_empty() {
-        gtk::Image::from_icon_name("application-x-addon-symbolic")
-    } else {
-        gtk::Image::from_icon_name(&plugin.icon)
-    };
+    let icon = icon::foreign_image(Some(plugin.icon.as_str()), Icon::Addon);
     icon.add_css_class("plugin-icon");
     content.append(&icon);
 
@@ -551,8 +564,7 @@ impl IslandWindow {
         self.preview_generation
             .set(self.preview_generation.get().wrapping_add(1));
         self.search_preview_stack.set_visible_child_name("icon");
-        self.search_preview_icon
-            .set_icon_name(Some("system-search-symbolic"));
+        set_preview_chrome_icon(&self.search_preview_icon, Icon::Search, self.metrics.icons);
         self.search_preview_picture
             .set_filename(None::<&std::path::Path>);
         self.search_preview_text.buffer().set_text("");
@@ -610,15 +622,14 @@ impl IslandWindow {
                 .set_filename(None::<&std::path::Path>);
             self.search_preview_text.buffer().set_text("");
             self.search_preview_error.set_label("");
-            if result.icon.starts_with('/') {
-                self.search_preview_icon.set_from_file(Some(&result.icon));
+            if result.icon.is_empty() {
+                set_preview_chrome_icon(
+                    &self.search_preview_icon,
+                    Icon::Loading,
+                    self.metrics.icons,
+                );
             } else {
-                self.search_preview_icon
-                    .set_icon_name(Some(if result.icon.is_empty() {
-                        "content-loading-symbolic"
-                    } else {
-                        &result.icon
-                    }));
+                set_preview_foreign_icon(&self.search_preview_icon, &result.icon);
             }
             self.search_preview_stack.set_visible_child_name("icon");
             let generation = self.preview_generation.get().wrapping_add(1);

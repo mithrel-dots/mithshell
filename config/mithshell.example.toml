@@ -51,6 +51,16 @@ margin = 12
 # section. Icons only appear while hovering the pill.
 enabled = true
 
+[icons]
+# How mithshell's own controls are drawn.
+#   "glyph"    - Nerd Font glyphs, independent of the GTK icon theme. Any
+#                glyph the installed fonts cannot draw falls back to a themed
+#                icon on its own, so this is safe without a patched font.
+#   "symbolic" - always use themed icons from the GTK icon theme.
+# Icons supplied by other programs (tray, notifications, MPRIS, TarraGon)
+# always come from the icon theme either way.
+style = "glyph"
+
 [lock]
 # PAM service the lock screen authenticates against. When unset, mithshell
 # uses /etc/pam.d/mithshell if it exists and otherwise inherits

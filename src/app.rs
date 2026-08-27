@@ -489,6 +489,10 @@ impl Controller {
             theme::apply_override(&mut initial_theme, theme_override);
         }
         let fallback = theme::generate(&crate::config::ThemeConfig::default())?;
+        // Resolve which chrome glyphs the installed fonts can actually draw
+        // before any widget is built, so every icon picks its representation
+        // from the same answer.
+        ui::icon::probe_coverage();
         let css_provider = ui::install_styles(&fallback);
         let user_css_provider =
             ui::install_user_styles(&crate::config::colors_css_path(&config_path));
@@ -1588,6 +1592,7 @@ impl Controller {
                 enabled: self.animations,
                 duration_ms: config.shell.animation_ms,
             },
+            config.icons.style,
             LockActions {
                 submit,
                 power,

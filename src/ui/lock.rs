@@ -27,9 +27,10 @@ use gtk::{
 use gtk4_session_lock::Instance as SessionLockInstance;
 use log::{debug, info, warn};
 
+use super::icon::Icon;
 use super::{automatic_scale, resolved_scale, scale_class, scaled};
 use crate::{
-    config::LockConfig,
+    config::{IconStyle, LockConfig},
     lock::{Outcome, backdrop},
     state::{SystemInfoState, SystemSnapshot, WeatherState},
     system::PowerAction,
@@ -101,6 +102,7 @@ impl LockWindow {
         system: &SystemSnapshot,
         weather_state: Option<&WeatherState>,
         animation: LockAnimation,
+        icons: IconStyle,
     ) -> (Self, ApplicationWindow) {
         let window = ApplicationWindow::builder()
             .application(application)
@@ -201,17 +203,13 @@ impl LockWindow {
         power_row.add_css_class("lock-power-row");
         power_row.set_homogeneous(true);
         let power_specs = [
-            (
-                PowerAction::PowerOff,
-                "system-shutdown-symbolic",
-                "Power off",
-            ),
-            (PowerAction::Suspend, "system-suspend-symbolic", "Suspend"),
-            (PowerAction::Reboot, "system-reboot-symbolic", "Reboot"),
+            (PowerAction::PowerOff, Icon::Shutdown, "Power off"),
+            (PowerAction::Suspend, Icon::Suspend, "Suspend"),
+            (PowerAction::Reboot, Icon::Reboot, "Reboot"),
         ];
         let mut power_buttons = Vec::with_capacity(power_specs.len());
         for (action, icon, label) in power_specs {
-            let button = power_button(icon, label);
+            let button = power_button(icon, label, icons);
             if matches!(action, PowerAction::PowerOff | PowerAction::Reboot) {
                 button.add_css_class("danger");
             }
@@ -379,6 +377,8 @@ pub struct LockSession {
     config: LockConfig,
     scale: f64,
     animation: LockAnimation,
+    /// How the power-row icons are drawn; see [`crate::ui::icon`].
+    icons: IconStyle,
     initial_system: RefCell<SystemSnapshot>,
     initial_weather: RefCell<Option<WeatherState>>,
     submit: LockSubmitAction,
@@ -420,6 +420,10 @@ impl LockSession {
     /// signals -- the caller's cue to drop its `Rc<LockSession>`; check
     /// [`has_failed`][Self::has_failed] first, since `failed` can fire
     /// synchronously inside `lock()`.
+    // Every parameter is an independent piece of session state with no
+    // meaningful grouping; bundling them into a struct would only move the
+    // list somewhere else.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         application: &Application,
         config: &LockConfig,
@@ -427,6 +431,7 @@ impl LockSession {
         system: &SystemSnapshot,
         weather: Option<&WeatherState>,
         animation: LockAnimation,
+        icons: IconStyle,
         actions: LockActions,
     ) -> Rc<Self> {
         let session = Rc::new(Self {
@@ -436,6 +441,7 @@ impl LockSession {
             config: config.clone(),
             scale: configured_scale,
             animation,
+            icons,
             initial_system: RefCell::new(system.clone()),
             initial_weather: RefCell::new(weather.cloned()),
             submit: actions.submit,
@@ -540,6 +546,7 @@ impl LockSession {
             &system,
             weather.as_ref(),
             self.animation,
+            self.icons,
         );
         drop(weather);
         drop(system);
@@ -1082,10 +1089,10 @@ fn smoothstep(progress: f64) -> f64 {
     progress * progress * (3.0 - 2.0 * progress)
 }
 
-fn power_button(icon: &str, label: &str) -> gtk::Button {
+fn power_button(icon: Icon, label: &str, style: IconStyle) -> gtk::Button {
     let content = gtk::Box::new(Orientation::Horizontal, 6);
     content.set_halign(Align::Center);
-    content.append(&gtk::Image::from_icon_name(icon));
+    content.append(&crate::ui::icon::icon_widget(icon, style));
     content.append(&gtk::Label::new(Some(label)));
     let button = gtk::Button::new();
     button.add_css_class("lock-power-button");

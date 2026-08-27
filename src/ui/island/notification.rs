@@ -71,7 +71,7 @@ pub(super) fn notification_view(
     root.add_css_class("notification-content");
     root.set_valign(Align::Center);
 
-    let icon = gtk::Image::from_icon_name("preferences-system-notifications-symbolic");
+    let icon = icon::foreign_image(None, Icon::Bell);
     icon.add_css_class("notification-icon");
     icon.set_valign(Align::Center);
 
@@ -101,11 +101,7 @@ fn apply_notification_content(
     body: &gtk::Label,
     notification: &Notification,
 ) {
-    apply_notification_icon(
-        icon,
-        notification.app_icon.as_deref(),
-        "preferences-system-notifications-symbolic",
-    );
+    icon::set_foreign_image(icon, notification.app_icon.as_deref(), Icon::Bell);
     app.set_label(&notification.summary);
     app.set_tooltip_text(Some(&notification.app_name));
     body.set_label(&notification.body);
@@ -243,17 +239,6 @@ pub(super) fn build_notification_toasts(
     }
 }
 
-/// Resolves a notification's icon onto `image`: an absolute path is loaded
-/// as a file, anything else is treated as a themed icon name, and an empty
-/// hint falls back to `fallback`.
-fn apply_notification_icon(image: &gtk::Image, icon: Option<&str>, fallback: &str) {
-    match icon {
-        Some(path) if path.starts_with('/') => image.set_from_file(Some(path)),
-        Some(name) if !name.is_empty() => image.set_icon_name(Some(name)),
-        _ => image.set_icon_name(Some(fallback)),
-    }
-}
-
 impl IslandWindow {
     /// Displays an incoming notification according to
     /// `notifications.position`. `pill` queues it into the island or its
@@ -334,12 +319,7 @@ impl IslandWindow {
             row.add_css_class("urgency-critical");
         }
 
-        let icon = gtk::Image::new();
-        apply_notification_icon(
-            &icon,
-            notification.app_icon.as_deref(),
-            "preferences-system-notifications-symbolic",
-        );
+        let icon = icon::foreign_image(notification.app_icon.as_deref(), Icon::Bell);
         icon.add_css_class("notification-row-icon");
         icon.set_valign(Align::Start);
 
@@ -401,7 +381,7 @@ impl IslandWindow {
         row.append(&icon);
         row.append(&text);
 
-        let dismiss = gtk::Button::from_icon_name("window-close-symbolic");
+        let dismiss = icon::icon_button(Icon::Close, self.metrics.icons);
         dismiss.add_css_class("notification-row-dismiss");
         dismiss.set_valign(Align::Start);
         let action = self.actions.notification_dismiss.clone();
@@ -596,12 +576,7 @@ impl IslandWindow {
             row.add_css_class("urgency-critical");
         }
 
-        let icon = gtk::Image::new();
-        apply_notification_icon(
-            &icon,
-            notification.app_icon.as_deref(),
-            "preferences-system-notifications-symbolic",
-        );
+        let icon = icon::foreign_image(notification.app_icon.as_deref(), Icon::Bell);
         icon.add_css_class("notification-toast-icon");
         icon.set_valign(Align::Start);
 
@@ -622,7 +597,7 @@ impl IslandWindow {
             text.append(&body);
         }
 
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        let close = icon::icon_button(Icon::Close, self.metrics.icons);
         close.add_css_class("notification-toast-close");
         close.set_valign(Align::Start);
         let dismiss_action = self.actions.notification_dismiss.clone();

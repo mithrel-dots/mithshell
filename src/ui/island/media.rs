@@ -189,7 +189,11 @@ impl IslandWindow {
             self.media_title.set_label(&state.title);
             self.media_title
                 .set_tooltip_text(Some(&format!("{} ({})", state.title, state.player)));
-            self.media_icon.set_icon_name(state.app_icon.as_deref());
+            icon::set_foreign_image(
+                &self.media_icon,
+                state.app_icon.as_deref(),
+                Icon::Executable,
+            );
             self.media_icon.set_visible(state.app_icon.is_some());
             self.media_icon
                 .set_tooltip_text(Some(&state.player.replace('.', " ")));
@@ -235,8 +239,8 @@ impl IslandWindow {
                 self.player_artist
                     .set_label(state.artist.as_deref().unwrap_or_default());
                 self.player_artist.set_visible(state.artist.is_some());
-                if let Some(icon) = state.app_icon.as_deref() {
-                    self.player_icon.set_icon_name(Some(icon));
+                if let Some(name) = state.app_icon.as_deref() {
+                    icon::set_foreign_image(&self.player_icon, Some(name), Icon::Executable);
                     self.player_icon.set_visible(true);
                 } else {
                     self.player_icon.set_visible(false);
@@ -263,12 +267,14 @@ impl IslandWindow {
                     .set((state.status == PlaybackStatus::Playing).then(Instant::now));
                 self.player_active
                     .set(state.status == PlaybackStatus::Playing);
-                self.player_play_pause_button.set_icon_name(
+                icon::set_button_icon(
+                    &self.player_play_pause_button,
                     if state.status == PlaybackStatus::Playing {
-                        "media-playback-pause-symbolic"
+                        Icon::Pause
                     } else {
-                        "media-playback-start-symbolic"
+                        Icon::Play
                     },
+                    self.metrics.icons,
                 );
                 self.tick_player_progress();
             }

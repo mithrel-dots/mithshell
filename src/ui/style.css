@@ -63,6 +63,8 @@ window.mithshell-notifications > contents {
   background: transparent;
   border: none;
   color: alpha(@ms_on_surface_variant, 0.7);
+  -gtk-icon-size: 14px;
+  font-size: 18px;
 }
 
 .notification-toast-close:hover {
@@ -238,6 +240,18 @@ window.mithshell-notifications > contents {
   border: 1px solid alpha(@ms_outline_variant, 0.3);
 }
 
+.battery-icon {
+  color: @ms_on_surface_variant;
+  -gtk-icon-size: 14px;
+  font-size: 18px;
+}
+
+/* Font Awesome has no charging-battery glyph, so charge state is a color
+   rather than a different icon. Applies to the themed fallback too. */
+.battery-icon.charging {
+  color: @ms_primary;
+}
+
 .battery-chip label {
   color: @ms_secondary;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
@@ -331,6 +345,10 @@ window.mithshell-notifications > contents {
   -gtk-icon-size: 14px;
 }
 
+.notification-row-dismiss .icon-glyph {
+  font-size: 18px;
+}
+
 .notification-row-dismiss:hover {
   background: alpha(@ms_outline_variant, 0.35);
   color: @ms_on_surface;
@@ -364,6 +382,7 @@ window.mithshell-notifications > contents {
   border-radius: 8px;
   box-shadow: none;
   -gtk-icon-size: 13px;
+  font-size: 17px;
 }
 
 .player-button:hover {
@@ -417,6 +436,7 @@ progressbar.player-progress progress {
   border-radius: 7px;
   box-shadow: none;
   -gtk-icon-size: 11px;
+  font-size: 14px;
 }
 
 .player-switch-button:hover {
@@ -482,6 +502,7 @@ progressbar.player-progress progress {
 .control-icon {
   color: @ms_primary;
   -gtk-icon-size: 16px;
+  font-size: 21px;
 }
 
 .control-value {
@@ -527,6 +548,10 @@ scale.control-scale slider {
   border: 1px solid alpha(@ms_outline_variant, 0.24);
   border-radius: 8px;
   box-shadow: none;
+  /* Previously left at GTK's 16px default; stated so the glyph and themed
+     representations stay the same size as each other. */
+  -gtk-icon-size: 16px;
+  font-size: 21px;
 }
 
 .close-button:hover,
@@ -668,6 +693,7 @@ scale.control-scale slider {
 .search-preview-icon {
   color: @ms_primary;
   -gtk-icon-size: 72px;
+  font-size: 94px;
 }
 
 .search-preview-title {
@@ -788,6 +814,7 @@ scale.control-scale slider {
 .osd-icon {
   color: @ms_primary;
   -gtk-icon-size: 17px;
+  font-size: 22px;
 }
 
 .osd-title {
@@ -1026,6 +1053,11 @@ button.lock-power-button image {
   -gtk-icon-size: 14px;
 }
 
+/* Scoped to the glyph so the button's text label keeps its own size. */
+button.lock-power-button .icon-glyph {
+  font-size: 18px;
+}
+
 button.lock-power-button:hover,
 button.lock-power-button:focus-visible {
   color: @ms_on_surface;
@@ -1076,18 +1108,18 @@ button.lock-power-button:disabled {
 .scale-medium .player-icon { -gtk-icon-size: 28px; }
 .scale-medium .player-title { font-size: 16px; }
 .scale-medium .player-artist { font-size: 13px; }
-.scale-medium .player-button { min-width: 32px; min-height: 32px; border-radius: 16px; -gtk-icon-size: 16px; }
+.scale-medium .player-button { min-width: 32px; min-height: 32px; border-radius: 16px; -gtk-icon-size: 16px; font-size: 21px; }
 .scale-medium progressbar.player-progress trough,
 .scale-medium progressbar.player-progress progress { min-height: 5px; }
 .scale-medium .player-time { font-size: 11px; }
-.scale-medium .player-switch-button { min-width: 25px; min-height: 25px; border-radius: 9px; -gtk-icon-size: 13px; }
+.scale-medium .player-switch-button { min-width: 25px; min-height: 25px; border-radius: 9px; -gtk-icon-size: 13px; font-size: 17px; }
 .scale-medium .player-switch-label { font-size: 11px; }
 .scale-medium .workspace-button,
 .scale-medium .close-button { min-width: 32px; min-height: 32px; border-radius: 10px; }
 .scale-medium .workspace-button { font-size: 12px; }
 .scale-medium .control-stack { padding: 0 4px; }
 .scale-medium .control-row { min-height: 36px; }
-.scale-medium .control-icon { -gtk-icon-size: 19px; }
+.scale-medium .control-icon { -gtk-icon-size: 19px; font-size: 25px; }
 .scale-medium .control-value { min-width: 46px; font-size: 12px; }
 .scale-medium scale.control-scale trough,
 .scale-medium scale.control-scale highlight,
@@ -1108,7 +1140,7 @@ button.lock-power-button:disabled {
 .scale-medium .search-result-description,
 .scale-medium .search-result-plugin { font-size: 13px; }
 .scale-medium .search-preview { padding: 17px; border-radius: 22px; }
-.scale-medium .search-preview-icon { -gtk-icon-size: 86px; }
+.scale-medium .search-preview-icon { -gtk-icon-size: 86px; font-size: 112px; }
 .scale-medium .search-preview-title { font-size: 23px; }
 .scale-medium .search-preview-description { font-size: 16px; }
 .scale-medium .search-preview-meta { font-size: 12px; }
@@ -1123,7 +1155,7 @@ button.lock-power-button:disabled {
 .scale-medium .plugin-metadata,
 .scale-medium .plugin-state { font-size: 12px; }
 .scale-medium .osd-content { padding: 0 20px; }
-.scale-medium .osd-icon { -gtk-icon-size: 20px; }
+.scale-medium .osd-icon { -gtk-icon-size: 20px; font-size: 26px; }
 .scale-medium .osd-title { min-width: 82px; font-size: 13px; }
 .scale-medium .osd-value { min-width: 37px; font-size: 12px; }
 .scale-medium .notification-row { padding: 8px 12px; border-radius: 12px; }
@@ -1132,6 +1164,10 @@ button.lock-power-button:disabled {
 .scale-medium .notification-row-body { font-size: 14px; }
 .scale-medium .notification-row-dismiss { min-width: 32px; min-height: 32px; border-radius: 10px; }
 .scale-medium .notification-row-dismiss image { -gtk-icon-size: 16px; }
+.scale-medium .notification-row-dismiss .icon-glyph { font-size: 21px; }
+.scale-medium .close-button { -gtk-icon-size: 20px; font-size: 26px; }
+.scale-medium .notification-toast-close { -gtk-icon-size: 17px; font-size: 22px; }
+.scale-medium .battery-icon { -gtk-icon-size: 17px; font-size: 22px; }
 .scale-medium .notification-content { padding: 0 9px 0 19px; }
 .scale-medium .notification-icon,
 .scale-medium .notification-toast-icon { -gtk-icon-size: 37px; }
@@ -1160,6 +1196,7 @@ button.lock-power-button:disabled {
 .scale-medium .lock-status { font-size: 13px; }
 .scale-medium button.lock-power-button { min-height: 43px; border-radius: 15px; font-size: 13px; }
 .scale-medium button.lock-power-button image { -gtk-icon-size: 17px; }
+.scale-medium button.lock-power-button .icon-glyph { font-size: 22px; }
 
 .scale-large .island-surface {
   border-radius: 41px;
@@ -1192,18 +1229,18 @@ button.lock-power-button:disabled {
 .scale-large .player-icon { -gtk-icon-size: 32px; }
 .scale-large .player-title { font-size: 19px; }
 .scale-large .player-artist { font-size: 16px; }
-.scale-large .player-button { min-width: 38px; min-height: 38px; border-radius: 19px; -gtk-icon-size: 19px; }
+.scale-large .player-button { min-width: 38px; min-height: 38px; border-radius: 19px; -gtk-icon-size: 19px; font-size: 25px; }
 .scale-large progressbar.player-progress trough,
 .scale-large progressbar.player-progress progress { min-height: 6px; }
 .scale-large .player-time { font-size: 13px; }
-.scale-large .player-switch-button { min-width: 30px; min-height: 30px; border-radius: 10px; -gtk-icon-size: 16px; }
+.scale-large .player-switch-button { min-width: 30px; min-height: 30px; border-radius: 10px; -gtk-icon-size: 16px; font-size: 21px; }
 .scale-large .player-switch-label { font-size: 13px; }
 .scale-large .workspace-button,
 .scale-large .close-button { min-width: 38px; min-height: 38px; border-radius: 12px; }
 .scale-large .workspace-button { font-size: 14px; }
 .scale-large .control-stack { padding: 0 5px; }
 .scale-large .control-row { min-height: 46px; }
-.scale-large .control-icon { -gtk-icon-size: 23px; }
+.scale-large .control-icon { -gtk-icon-size: 23px; font-size: 30px; }
 .scale-large .control-value { min-width: 55px; font-size: 14px; }
 .scale-large scale.control-scale trough,
 .scale-large scale.control-scale highlight,
@@ -1224,7 +1261,7 @@ button.lock-power-button:disabled {
 .scale-large .search-result-description,
 .scale-large .search-result-plugin { font-size: 16px; }
 .scale-large .search-preview { padding: 20px; border-radius: 26px; }
-.scale-large .search-preview-icon { -gtk-icon-size: 104px; }
+.scale-large .search-preview-icon { -gtk-icon-size: 104px; font-size: 135px; }
 .scale-large .search-preview-title { font-size: 28px; }
 .scale-large .search-preview-description { font-size: 19px; }
 .scale-large .search-preview-meta { font-size: 14px; }
@@ -1239,7 +1276,7 @@ button.lock-power-button:disabled {
 .scale-large .plugin-metadata,
 .scale-large .plugin-state { font-size: 14px; }
 .scale-large .osd-content { padding: 0 25px; }
-.scale-large .osd-icon { -gtk-icon-size: 25px; }
+.scale-large .osd-icon { -gtk-icon-size: 25px; font-size: 32px; }
 .scale-large .osd-title { min-width: 99px; font-size: 16px; }
 .scale-large .osd-value { min-width: 45px; font-size: 14px; }
 .scale-large .notification-row { padding: 9px 14px; border-radius: 14px; }
@@ -1248,6 +1285,10 @@ button.lock-power-button:disabled {
 .scale-large .notification-row-body { font-size: 16px; }
 .scale-large .notification-row-dismiss { min-width: 38px; min-height: 38px; border-radius: 12px; }
 .scale-large .notification-row-dismiss image { -gtk-icon-size: 19px; }
+.scale-large .notification-row-dismiss .icon-glyph { font-size: 25px; }
+.scale-large .close-button { -gtk-icon-size: 24px; font-size: 31px; }
+.scale-large .notification-toast-close { -gtk-icon-size: 20px; font-size: 26px; }
+.scale-large .battery-icon { -gtk-icon-size: 20px; font-size: 26px; }
 .scale-large .notification-content { padding: 0 12px 0 24px; }
 .scale-large .notification-icon,
 .scale-large .notification-toast-icon { -gtk-icon-size: 43px; }
@@ -1275,3 +1316,4 @@ button.lock-power-button:disabled {
 .scale-large .lock-status { font-size: 16px; }
 .scale-large button.lock-power-button { min-height: 51px; border-radius: 18px; font-size: 16px; }
 .scale-large button.lock-power-button image { -gtk-icon-size: 20px; }
+.scale-large button.lock-power-button .icon-glyph { font-size: 26px; }

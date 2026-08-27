@@ -16,7 +16,7 @@ pub(super) struct DashboardWidgets {
     pub(super) hero_time: gtk::Label,
     pub(super) hero_date: gtk::Label,
     pub(super) battery_chip: gtk::Box,
-    pub(super) battery_icon: gtk::Image,
+    pub(super) battery_icon: gtk::Widget,
     pub(super) battery_label: gtk::Label,
     pub(super) player_card: gtk::Box,
     pub(super) player_icon: gtk::Image,
@@ -88,19 +88,26 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     battery_chip.add_css_class("battery-chip");
     battery_chip.set_valign(Align::Center);
     battery_chip.set_visible(false);
-    let battery_icon = gtk::Image::from_icon_name("xsi-battery-symbolic");
+    let battery_icon = icon::icon_widget(
+        Icon::Battery {
+            percent: 100,
+            charging: false,
+        },
+        metrics.icons,
+    );
+    battery_icon.add_css_class("battery-icon");
     battery_chip.append(&battery_icon);
     let battery_label = gtk::Label::new(None);
     battery_chip.append(&battery_label);
 
-    let close_button = gtk::Button::from_icon_name("window-close-symbolic");
+    let close_button = icon::icon_button(Icon::Close, metrics.icons);
     close_button.add_css_class("close-button");
     close_button.set_valign(Align::Center);
-    let search_button = gtk::Button::from_icon_name("system-search-symbolic");
+    let search_button = icon::icon_button(Icon::Search, metrics.icons);
     search_button.add_css_class("close-button");
     search_button.set_tooltip_text(Some("Search with TarraGon"));
     search_button.set_valign(Align::Center);
-    let weather_button = gtk::Button::from_icon_name("weather-clear-symbolic");
+    let weather_button = icon::icon_button(Icon::WeatherClear, metrics.icons);
     weather_button.add_css_class("close-button");
     weather_button.set_tooltip_text(Some("Weather forecast"));
     weather_button.set_valign(Align::Center);
@@ -186,18 +193,18 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     player_text.append(&player_title);
     player_text.append(&player_artist);
 
-    let player_prev_button = gtk::Button::from_icon_name("media-skip-backward-symbolic");
+    let player_prev_button = icon::icon_button(Icon::Previous, metrics.icons);
     player_prev_button.add_css_class("player-button");
     player_prev_button.set_tooltip_text(Some("Previous track"));
     player_prev_button.set_valign(Align::Center);
     player_prev_button.set_sensitive(false);
-    let player_play_pause_button = gtk::Button::from_icon_name("media-playback-pause-symbolic");
+    let player_play_pause_button = icon::icon_button(Icon::Pause, metrics.icons);
     player_play_pause_button.add_css_class("player-button");
     player_play_pause_button.add_css_class("player-play");
     player_play_pause_button.set_tooltip_text(Some("Play/Pause"));
     player_play_pause_button.set_valign(Align::Center);
     player_play_pause_button.set_sensitive(false);
-    let player_next_button = gtk::Button::from_icon_name("media-skip-forward-symbolic");
+    let player_next_button = icon::icon_button(Icon::Next, metrics.icons);
     player_next_button.add_css_class("player-button");
     player_next_button.set_tooltip_text(Some("Next track"));
     player_next_button.set_valign(Align::Center);
@@ -231,13 +238,13 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     player_card.append(&player_time_row);
     let player_switch_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
     player_switch_row.add_css_class("player-switch-row");
-    let player_switch_prev = gtk::Button::from_icon_name("go-previous-symbolic");
+    let player_switch_prev = icon::icon_button(Icon::Back, metrics.icons);
     player_switch_prev.add_css_class("player-switch-button");
     let player_switch_label = gtk::Label::new(Some("1 player"));
     player_switch_label.add_css_class("player-switch-label");
     player_switch_label.set_hexpand(true);
     player_switch_label.set_xalign(0.5);
-    let player_switch_next = gtk::Button::from_icon_name("go-next-symbolic");
+    let player_switch_next = icon::icon_button(Icon::Forward, metrics.icons);
     player_switch_next.add_css_class("player-switch-button");
     player_switch_row.append(&player_switch_prev);
     player_switch_row.append(&player_switch_label);
@@ -250,10 +257,9 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     // the same weight as the content above and below.
     let controls_stack = gtk::Box::new(Orientation::Vertical, 0);
     controls_stack.add_css_class("control-stack");
-    let (volume_row, volume_scale, volume_value) =
-        control_row("audio-volume-high-symbolic", "Volume", metrics);
+    let (volume_row, volume_scale, volume_value) = control_row(Icon::VolumeHigh, "Volume", metrics);
     let (brightness_row, brightness_scale, brightness_value) =
-        control_row("display-brightness-symbolic", "Brightness", metrics);
+        control_row(Icon::Brightness, "Brightness", metrics);
     controls_stack.append(&volume_row);
     controls_stack.append(&brightness_row);
     root.append(&controls_stack);
@@ -271,18 +277,18 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_title.set_hexpand(true);
     let notification_count = gtk::Label::new(Some("0"));
     notification_count.add_css_class("notification-count");
-    let notification_clear_button = gtk::Button::from_icon_name("edit-clear-all-symbolic");
+    let notification_clear_button = icon::icon_button(Icon::ClearAll, metrics.icons);
     notification_clear_button.add_css_class("close-button");
     notification_clear_button.set_tooltip_text(Some("Clear notification history"));
     notification_clear_button.set_sensitive(false);
     let notification_inhibit_button = gtk::ToggleButton::new();
-    notification_inhibit_button.set_icon_name("notifications-disabled-symbolic");
+    icon::set_button_icon(&notification_inhibit_button, Icon::BellOff, metrics.icons);
     notification_inhibit_button.add_css_class("close-button");
     notification_inhibit_button.set_tooltip_text(Some("Inhibit notifications"));
     // Flips the dashboard into a notifications-only layout: the status
     // strip, player, and sliders hide and the history takes their place.
     let notification_expand_button = gtk::ToggleButton::new();
-    notification_expand_button.set_icon_name("view-fullscreen-symbolic");
+    icon::set_button_icon(&notification_expand_button, Icon::Expand, metrics.icons);
     notification_expand_button.add_css_class("close-button");
     notification_expand_button.set_tooltip_text(Some("Notifications only"));
     notification_header.append(&notification_title);
@@ -355,10 +361,10 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     }
 }
 
-fn control_row(icon: &str, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Scale, gtk::Label) {
+fn control_row(icon: Icon, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Scale, gtk::Label) {
     let row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
     row.add_css_class("control-row");
-    let image = gtk::Image::from_icon_name(icon);
+    let image = icon::icon_widget(icon, metrics.icons);
     image.add_css_class("control-icon");
     image.set_tooltip_text(Some(label));
     let scale = gtk::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
@@ -374,15 +380,12 @@ fn control_row(icon: &str, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Sca
     (row, scale, value)
 }
 
-/// Nearest-decile battery icon, e.g. `xsi-battery-level-40-charging-symbolic`.
-pub(super) fn battery_icon_name(percent: u8, status: &str) -> String {
-    let level = ((f64::from(percent.min(100)) / 10.0).round() * 10.0) as u8;
-    let charging = if status.eq_ignore_ascii_case("charging") {
-        "-charging"
-    } else {
-        ""
-    };
-    format!("xsi-battery-level-{level}{charging}-symbolic")
+/// The battery icon for a charge level and upower status string.
+pub(super) fn battery_icon(percent: u8, status: &str) -> Icon {
+    Icon::Battery {
+        percent: percent.min(100),
+        charging: status.eq_ignore_ascii_case("charging"),
+    }
 }
 
 impl IslandWindow {
@@ -393,11 +396,15 @@ impl IslandWindow {
         self.status_card.set_visible(!expanded);
         self.player_card.set_visible(!expanded);
         self.controls_stack.set_visible(!expanded);
-        self.notification_expand_button.set_icon_name(if expanded {
-            "view-restore-symbolic"
-        } else {
-            "view-fullscreen-symbolic"
-        });
+        icon::set_button_icon(
+            &self.notification_expand_button,
+            if expanded {
+                Icon::Restore
+            } else {
+                Icon::Expand
+            },
+            self.metrics.icons,
+        );
         self.notification_expand_button
             .set_tooltip_text(Some(if expanded {
                 "Show all panels"
@@ -518,8 +525,8 @@ impl IslandWindow {
         }
 
         if let Some(battery) = &snapshot.battery {
-            let name = battery_icon_name(battery.percent, &battery.status);
-            self.battery_icon.set_icon_name(Some(&name));
+            let icon = battery_icon(battery.percent, &battery.status);
+            icon::set_icon(&self.battery_icon, icon, self.metrics.icons);
             self.battery_label
                 .set_label(&format!("{}%", battery.percent));
             self.compact_battery

@@ -146,6 +146,38 @@ enabled = true
 Set `enabled = false` to turn this off entirely; mithshell then neither
 hosts nor watches for tray items, and the pill never grows a tray section.
 
+### Icons
+
+Mithshell's own controls -- media transport, volume, brightness, battery,
+window buttons, the lock screen's power row -- are drawn as Nerd Font glyphs
+rather than themed icons, so the shell looks the same regardless of which GTK
+icon theme happens to be installed.
+
+```toml
+[icons]
+style = "glyph"
+```
+
+Set `style = "symbolic"` to use themed icons everywhere instead.
+
+Only the codepoints in the Font Awesome block are used. Nerd Fonts v3 moved
+the Material Design Icons block but left that one alone, so any patched font
+works whether it predates the v3 migration or not, and fontconfig finds it
+without mithshell having to know its name. Installing
+[Symbols Nerd Font](https://github.com/ryanoasis/nerd-fonts) gives the most
+consistent result: with it every glyph is drawn from one family instead of
+from whichever font fontconfig ranks first for each individual codepoint.
+
+No font is strictly required. At startup mithshell checks each glyph against
+the installed fonts and falls back to a themed icon for any it cannot draw --
+per icon, not all-or-nothing -- so a missing font degrades a single control
+rather than the whole shell. Run with `RUST_LOG=info` to see what was resolved.
+
+Icons that belong to *other* programs -- tray items, notification `app_icon`
+hints, MPRIS player icons, and TarraGon search results -- are always drawn
+from the icon theme, since only the sending application knows what they
+should be. Those still need a reasonably complete icon theme installed.
+
 ### Notifications
 
 Mithshell implements `org.freedesktop.Notifications` itself -- no external
@@ -417,6 +449,10 @@ falling back to `JetBrainsMono Nerd Font` and the system monospace font if
 it isn't installed. Install `ttf-monocraft-git` (AUR) or the upstream release
 for the intended pixel-art look; TarraGon's search UI keeps its own
 `Inter`/`JetBrains Mono` pairing and is unaffected.
+
+Chrome icons are drawn from a separate font stack that mithshell emits into
+the stylesheet itself, so it always matches the font the glyph-availability
+check probes. See [Icons](#icons).
 
 #### Material You
 

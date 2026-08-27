@@ -33,10 +33,11 @@ use metrics::Metrics;
 
 use notification::{CurrentNotification, NotificationToasts, PendingNotification, PillOverlay};
 
-use crate::config::NotificationConfig;
+use crate::config::{IconStyle, NotificationConfig};
 use crate::media::VisualizerLevels;
 use crate::state::{HyprlandSnapshot, MediaState, WeatherState};
 use crate::tarragon::{TarragonSnapshot, TarragonStatus};
+use crate::ui::icon::{self, Icon};
 
 const WINDOW_WIDTH: i32 = 860;
 const COMPACT_WIDTH: i32 = 224;
@@ -197,7 +198,7 @@ pub struct IslandWindow {
     hero_time: gtk::Label,
     hero_date: gtk::Label,
     battery_chip: gtk::Box,
-    battery_icon: gtk::Image,
+    battery_icon: gtk::Widget,
     battery_label: gtk::Label,
     player_card: gtk::Box,
     player_icon: gtk::Image,
@@ -250,7 +251,10 @@ pub struct IslandWindow {
     search_plugins: gtk::ListBox,
     search_preview_stack: gtk::Stack,
     search_preview_picture: gtk::Picture,
-    search_preview_icon: gtk::Image,
+    /// Holds exactly one child: a chrome glyph when the preview is empty or
+    /// loading, or a TarraGon-supplied image once a result arrives. The two
+    /// cannot be the same widget, so the slot swaps children instead.
+    search_preview_icon: gtk::Box,
     search_preview_title: gtk::Label,
     search_preview_description: gtk::Label,
     search_preview_file_meta: gtk::Label,
@@ -259,7 +263,7 @@ pub struct IslandWindow {
     search_preview_text_scroll: gtk::ScrolledWindow,
     search_preview_error: gtk::Label,
     search_preview_actions: gtk::Box,
-    osd_icon: gtk::Image,
+    osd_icon: gtk::Widget,
     osd_title: gtk::Label,
     osd_progress: gtk::ProgressBar,
     osd_value: gtk::Label,
@@ -360,7 +364,8 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::dashboard::battery_icon_name;
+    use super::Icon;
+    use super::dashboard::battery_icon;
     use super::media::{format_media_time, media_state_for_player};
     use super::weather::weather_provider_label;
     use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
@@ -401,12 +406,37 @@ mod tests {
     #[test]
     fn picks_battery_icons_for_level_and_charge_state() {
         assert_eq!(
-            battery_icon_name(12, "Discharging"),
-            "xsi-battery-level-10-symbolic"
+            battery_icon(12, "Discharging"),
+            Icon::Battery {
+                percent: 12,
+                charging: false,
+            }
         );
         assert_eq!(
-            battery_icon_name(87, "Charging"),
-            "xsi-battery-level-90-charging-symbolic"
+            battery_icon(87, "Charging"),
+            Icon::Battery {
+                percent: 87,
+                charging: true,
+            }
+        );
+        // upower reports capitalised status strings; matching is case-insensitive.
+        assert_eq!(
+            battery_icon(50, "charging"),
+            Icon::Battery {
+                percent: 50,
+                charging: true,
+            }
+        );
+    }
+
+    #[test]
+    fn battery_icons_clamp_impossible_percentages() {
+        assert_eq!(
+            battery_icon(200, "Full"),
+            Icon::Battery {
+                percent: 100,
+                charging: false,
+            }
         );
     }
 

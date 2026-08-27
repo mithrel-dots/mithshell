@@ -31,7 +31,7 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
     root.set_valign(Align::Start);
 
     let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(12));
-    let back_button = gtk::Button::from_icon_name("go-previous-symbolic");
+    let back_button = icon::icon_button(Icon::Back, metrics.icons);
     back_button.add_css_class("close-button");
     back_button.set_tooltip_text(Some("Back to dashboard"));
     back_button.set_valign(Align::Center);

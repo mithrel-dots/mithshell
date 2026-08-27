@@ -14,7 +14,7 @@ pub(super) fn osd_view(
     metrics: Metrics,
 ) -> (
     gtk::Box,
-    gtk::Image,
+    gtk::Widget,
     gtk::Label,
     gtk::ProgressBar,
     gtk::Label,
@@ -23,7 +23,7 @@ pub(super) fn osd_view(
     root.set_size_request(metrics.osd_width, metrics.osd_height);
     root.add_css_class("osd-content");
     root.set_valign(Align::Start);
-    let icon = gtk::Image::from_icon_name("audio-volume-high-symbolic");
+    let icon = icon::icon_widget(Icon::VolumeHigh, metrics.icons);
     icon.add_css_class("osd-icon");
     icon.set_valign(Align::Center);
     let title = gtk::Label::new(Some("Volume"));
@@ -48,14 +48,14 @@ pub(super) fn osd_view(
 impl IslandWindow {
     pub fn show_osd(self: &Rc<Self>, state: OsdState) {
         let (icon, title) = match state.kind {
-            OsdKind::Volume if state.muted => ("audio-volume-muted-symbolic", "Muted"),
-            OsdKind::Volume if state.value == 0 => ("audio-volume-low-symbolic", "Volume"),
-            OsdKind::Volume if state.value < 50 => ("audio-volume-medium-symbolic", "Volume"),
-            OsdKind::Volume => ("audio-volume-high-symbolic", "Volume"),
-            OsdKind::Brightness => ("display-brightness-symbolic", "Brightness"),
-            OsdKind::Workspace => ("focus-windows-symbolic", "Workspace"),
+            OsdKind::Volume if state.muted => (Icon::VolumeMuted, "Muted"),
+            OsdKind::Volume if state.value == 0 => (Icon::VolumeLow, "Volume"),
+            OsdKind::Volume if state.value < 50 => (Icon::VolumeMedium, "Volume"),
+            OsdKind::Volume => (Icon::VolumeHigh, "Volume"),
+            OsdKind::Brightness => (Icon::Brightness, "Brightness"),
+            OsdKind::Workspace => (Icon::Workspace, "Workspace"),
         };
-        self.osd_icon.set_icon_name(Some(icon));
+        icon::set_icon(&self.osd_icon, icon, self.metrics.icons);
         self.osd_title.set_label(title);
         self.osd_progress
             .set_fraction(f64::from(state.value) / 100.0);

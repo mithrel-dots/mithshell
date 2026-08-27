@@ -29,7 +29,12 @@ impl IslandWindow {
         animations_enabled: bool,
     ) -> Rc<Self> {
         let shell = &config.shell;
-        let metrics = Metrics::new(monitor, shell.scale, config.media.max_width_factor);
+        let metrics = Metrics::new(
+            monitor,
+            shell.scale,
+            config.media.max_width_factor,
+            config.icons.style,
+        );
 
         let dismiss_window = ApplicationWindow::builder()
             .application(application)

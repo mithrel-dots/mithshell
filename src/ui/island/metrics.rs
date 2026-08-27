@@ -5,11 +5,16 @@ use super::*;
 
 use gtk::{gdk, prelude::MonitorExt};
 
+use crate::config::IconStyle;
 use crate::ui::{automatic_scale, resolved_scale, scale_class, scaled};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Metrics {
     pub(super) scale: f64,
+    /// How chrome icons are drawn. Carried here because every view builder
+    /// already receives `Metrics`, and like the other fields it is fixed for
+    /// the lifetime of an island: a config change rebuilds the island.
+    pub(super) icons: IconStyle,
     pub(super) window_width: i32,
     pub(super) window_height: i32,
     pub(super) compact_width: i32,
@@ -41,6 +46,7 @@ impl Metrics {
         monitor: &gdk::Monitor,
         configured_scale: f64,
         media_width_factor: f64,
+        icons: IconStyle,
     ) -> Self {
         let scale = resolved_scale(configured_scale, automatic_scale(monitor));
         let media_width_factor =
@@ -51,6 +57,7 @@ impl Metrics {
         let search_y = search_y.min((monitor_height - search_height - scaled(20, scale)).max(0));
         Self {
             scale,
+            icons,
             window_width: scaled(WINDOW_WIDTH, scale),
             window_height: search_y + search_height,
             compact_width: scaled(COMPACT_WIDTH, scale),

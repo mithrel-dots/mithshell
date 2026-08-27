@@ -13,18 +13,17 @@ use super::IslandWindow;
 use crate::state::{TrayIcon, TrayItem, TrayMenuItem, TrayStatus};
 
 fn apply_tray_icon(image: &gtk::Image, icon: &TrayIcon) {
-    const FALLBACK: &str = "application-x-executable-symbolic";
     match icon {
-        TrayIcon::Name(name) => image.set_icon_name(Some(name)),
+        TrayIcon::Name(name) => icon::set_foreign_image(image, Some(name), Icon::Executable),
         TrayIcon::Pixmap {
             width,
             height,
             argb,
         } => match tray_texture_from_pixmap(*width, *height, argb) {
             Some(texture) => image.set_paintable(Some(&texture)),
-            None => image.set_icon_name(Some(FALLBACK)),
+            None => icon::set_foreign_image(image, None, Icon::Executable),
         },
-        TrayIcon::None => image.set_icon_name(Some(FALLBACK)),
+        TrayIcon::None => icon::set_foreign_image(image, None, Icon::Executable),
     }
 }
 
