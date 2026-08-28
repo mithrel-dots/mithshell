@@ -571,11 +571,15 @@ See `contrib/hyprland.conf` for bind examples.
 ### Shell completions
 
 ```sh
-mithshell completions zsh > ~/.zfunc/_mithshell     # or bash, fish, elvish, powershell
+mkdir -p ~/.zsh/completions
+mithshell completions zsh > ~/.zsh/completions/_mithshell
+# Or use `just install-completions` from the source tree.
 ```
 
 Generated directly from the `clap` command definitions, so it never drifts
-from the actual CLI.
+from the actual CLI. The `just run` development install refreshes the active
+Zsh script whenever the binary is rebuilt. Bash, Fish, Elvish, and PowerShell
+scripts are also available by replacing the shell argument above.
 
 ## Development
 

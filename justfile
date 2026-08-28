@@ -9,6 +9,8 @@ release_binary := project_dir / "target/release/mithshell"
 debug_binary := project_dir / "target/debug/mithshell"
 bin_dir := env("HOME") / ".local/bin"
 bin_symlink := bin_dir / "mithshell"
+zsh_completion_dir := env("HOME") / ".zsh/completions"
+zsh_completion_file := zsh_completion_dir / "_mithshell"
 service_dir := env("HOME") / ".config/systemd/user"
 service_file := project_dir / "contrib/mithshell.service"
 config_dir := env("HOME") / ".config/mithshell"
@@ -34,6 +36,12 @@ install-binary: build
     mkdir -p {{ bin_dir }}
     ln -sfn {{ release_binary }} {{ bin_symlink }}
     @echo "Binary symlinked to {{ bin_symlink }}"
+
+[doc("Generate the current Zsh completion script")]
+install-completions: build
+    mkdir -p {{ zsh_completion_dir }}
+    {{ release_binary }} completions zsh > {{ zsh_completion_file }}
+    @echo "Zsh completions installed at {{ zsh_completion_file }}"
 
 [doc("Install the example config only when no config exists")]
 install-config:
@@ -70,8 +78,8 @@ service-status:
 service-logs:
     journalctl --user -u mithshell.service -f
 
-[doc("Build, install, configure, and restart the user service")]
-run: install-binary install-config install-service reload-service
+[doc("Build, install, refresh completions, and restart the user service")]
+run: install-binary install-completions install-config install-service reload-service
 
 # --- Testing, Formatting & Linting ------------------------------------------
 
@@ -177,10 +185,12 @@ clean:
 update:
     cargo update
 
-[doc("Remove installed binary/service symlinks without deleting config")]
+[doc("Remove installed binary, completions, and service without deleting config")]
 uninstall:
     systemctl --user disable --now mithshell.service 2>/dev/null || true
     rm -f {{ service_dir }}/mithshell.service
     rm -f {{ bin_symlink }}
+    rm -f {{ zsh_completion_file }}
+    rmdir {{ zsh_completion_dir }} 2>/dev/null || true
     systemctl --user daemon-reload
-    @echo "Removed Mithshell binary and service symlinks; config was preserved."
+    @echo "Removed Mithshell binary, completions, and service; config was preserved."

@@ -177,7 +177,7 @@ impl IslandWindow {
         let overlay_keys = gtk::EventControllerKey::new();
         overlay_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        overlay_keys.connect_key_pressed(move |_, key, _, _| {
+        overlay_keys.connect_key_pressed(move |_, key, _, modifiers| {
             let Some(island) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
@@ -194,6 +194,18 @@ impl IslandWindow {
             match key {
                 gdk::Key::Escape => {
                     island.close();
+                    glib::Propagation::Stop
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter
+                    if results_active && modifiers.contains(gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    let index = island
+                        .search_results
+                        .selected_row()
+                        .map_or(0, |row| row.index());
+                    if let Some(row) = island.search_results.row_at_index(index) {
+                        island.open_search_actions(index, &row);
+                    }
                     glib::Propagation::Stop
                 }
                 gdk::Key::Down if results_active => {

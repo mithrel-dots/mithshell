@@ -268,7 +268,6 @@ impl IslandWindow {
             search_preview_text: search_widgets.preview_text,
             search_preview_text_scroll: search_widgets.preview_text_scroll,
             search_preview_error: search_widgets.preview_error,
-            search_preview_actions: search_widgets.preview_actions,
             osd_icon,
             osd_title,
             osd_progress,

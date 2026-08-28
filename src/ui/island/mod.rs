@@ -262,7 +262,6 @@ pub struct IslandWindow {
     search_preview_text: gtk::TextView,
     search_preview_text_scroll: gtk::ScrolledWindow,
     search_preview_error: gtk::Label,
-    search_preview_actions: gtk::Box,
     osd_icon: gtk::Widget,
     osd_title: gtk::Label,
     osd_progress: gtk::ProgressBar,

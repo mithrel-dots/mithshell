@@ -171,6 +171,10 @@ pub struct TarragonAction {
     pub default: bool,
     #[serde(default)]
     pub description: String,
+    #[serde(default, rename = "type")]
+    pub action_type: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -521,11 +525,15 @@ mod tests {
                     name: "secondary".into(),
                     default: false,
                     description: String::new(),
+                    action_type: None,
+                    query: None,
                 },
                 TarragonAction {
                     name: "open".into(),
                     default: true,
                     description: String::new(),
+                    action_type: None,
+                    query: None,
                 },
             ],
         };

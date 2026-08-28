@@ -13,7 +13,8 @@ use gtk::{Align, Orientation, glib};
 use super::{IslandWindow, Metrics};
 use crate::preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData};
 use crate::tarragon::{
-    TarragonPlugin, TarragonPluginState, TarragonSelection, TarragonSnapshot, TarragonStatus,
+    TarragonAction, TarragonPlugin, TarragonPluginState, TarragonSelection, TarragonSnapshot,
+    TarragonStatus,
 };
 
 const SEARCH_RESULTS_MIN_WIDTH: i32 = 340;
@@ -52,7 +53,6 @@ pub(super) struct SearchWidgets {
     pub(super) preview_text: gtk::TextView,
     pub(super) preview_text_scroll: gtk::ScrolledWindow,
     pub(super) preview_error: gtk::Label,
-    pub(super) preview_actions: gtk::Box,
 }
 
 pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
@@ -168,10 +168,6 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
     preview_stack.set_visible_child_name("icon");
     preview.append(&preview_stack);
 
-    let preview_actions = gtk::Box::new(Orientation::Vertical, metrics.spacing(5));
-    preview_actions.set_valign(Align::End);
-    preview.append(&preview_actions);
-
     let result_page = gtk::Box::new(Orientation::Horizontal, metrics.spacing(12));
     results_scroller.set_hexpand(true);
     result_page.append(&results_scroller);
@@ -214,7 +210,6 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
         preview_text,
         preview_text_scroll,
         preview_error,
-        preview_actions,
     }
 }
 
@@ -430,8 +425,19 @@ impl IslandWindow {
         }
 
         for result in &snapshot.list {
-            self.search_results
-                .append(&search_result_row(result, self.metrics));
+            let row = search_result_row(result, self.metrics);
+            let click = gtk::GestureClick::new();
+            click.set_button(gtk::gdk::BUTTON_SECONDARY);
+            let weak = Rc::downgrade(self);
+            let row_for_handler = row.clone();
+            click.connect_pressed(move |_, _, _, _| {
+                if let Some(island) = weak.upgrade() {
+                    island.search_results.select_row(Some(&row_for_handler));
+                    island.open_search_actions(row_for_handler.index(), &row_for_handler);
+                }
+            });
+            row.add_controller(click);
+            self.search_results.append(&row);
         }
         let selected_index = selected_index.min(snapshot.list.len().saturating_sub(1) as i32);
         if let Some(row) = self.search_results.row_at_index(selected_index) {
@@ -574,7 +580,6 @@ impl IslandWindow {
         self.search_preview_description.set_label("");
         self.search_preview_meta
             .set_label("TarraGon aggregate results");
-        clear_box(&self.search_preview_actions);
     }
 
     pub(super) fn update_search_preview(self: &Rc<Self>, index: i32) {
@@ -652,36 +657,68 @@ impl IslandWindow {
                 });
             }
         }
+    }
 
-        clear_box(&self.search_preview_actions);
-        for action in &result.actions {
-            if action.name.is_empty() {
-                continue;
-            }
+    /// Shows the selected result's non-default actions in a transient menu.
+    /// Keeping the popover outside the preview layout leaves the preview's
+    /// vertical space available for the actual file content.
+    pub(super) fn open_search_actions(self: &Rc<Self>, index: i32, anchor: &impl IsA<gtk::Widget>) {
+        let Some(result) = self
+            .search_snapshot
+            .borrow()
+            .as_ref()
+            .and_then(|snapshot| snapshot.list.get(index.max(0) as usize))
+            .cloned()
+        else {
+            return;
+        };
+        let default_name = result.default_action().map(|action| action.name.as_str());
+        let alternatives: Vec<_> = result
+            .actions
+            .iter()
+            .filter(|action| !action.name.is_empty() && Some(action.name.as_str()) != default_name)
+            .cloned()
+            .collect();
+        if alternatives.is_empty() {
+            return;
+        }
+
+        let popover = gtk::Popover::new();
+        popover.set_parent(anchor);
+        popover.add_css_class("search-action-menu");
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.set_has_arrow(false);
+        popover.set_autohide(true);
+
+        let menu = gtk::Box::new(Orientation::Vertical, 2);
+        menu.add_css_class("search-action-menu-list");
+        for action in alternatives {
             let label = if action.description.is_empty() {
                 action.name.clone()
             } else {
                 action.description.clone()
             };
-            let button = gtk::Button::with_label(&label);
-            button.add_css_class("search-action");
-            if action.default {
-                button.add_css_class("default");
-            }
+            let button = gtk::Button::new();
+            button.add_css_class("search-action-menu-item");
+            button.set_has_frame(false);
+            let text = gtk::Label::new(Some(&label));
+            text.set_halign(Align::Start);
+            text.set_xalign(0.0);
+            button.set_child(Some(&text));
             let weak = Rc::downgrade(self);
-            let action_name = action.name.clone();
             button.connect_clicked(move |_| {
                 if let Some(island) = weak.upgrade() {
-                    island.execute_search_action(index, &action_name);
+                    island.execute_search_action(index, &action);
                 }
             });
-            self.search_preview_actions.append(&button);
+            menu.append(&button);
         }
-        if result.actions.is_empty() {
-            let unavailable = gtk::Label::new(Some("NO ACTIONS EXPOSED"));
-            unavailable.add_css_class("search-preview-meta");
-            self.search_preview_actions.append(&unavailable);
-        }
+        popover.set_child(Some(&menu));
+
+        popover.connect_closed(|popover| {
+            popover.unparent();
+        });
+        popover.popup();
     }
 
     pub fn apply_file_preview(&self, generation: u64, result: Result<PreviewData, String>) {
@@ -844,11 +881,17 @@ impl IslandWindow {
             self.search_status.set_label("RESULT HAS NO ACTION");
             return;
         };
-        let action_name = action.name.clone();
-        self.execute_search_action(index, &action_name);
+        self.execute_search_action(index, action);
     }
 
-    pub(super) fn execute_search_action(self: &Rc<Self>, index: i32, action: &str) {
+    pub(super) fn execute_search_action(self: &Rc<Self>, index: i32, action: &TarragonAction) {
+        if action.action_type.as_deref() == Some("query_replace")
+            && let Some(query) = action.query.as_deref()
+        {
+            self.search_entry.set_text(query);
+            self.search_entry.grab_focus();
+            return;
+        }
         if self.search_selection_pending.replace(true) {
             return;
         }
@@ -864,7 +907,7 @@ impl IslandWindow {
             query_id: snapshot.query_id,
             plugin: result.plugin.clone(),
             result_id: result.id.clone(),
-            action: action.to_owned(),
+            action: action.name.clone(),
         });
         self.search_status.set_label("RUNNING ACTION");
         let generation = self.search_action_generation.get().wrapping_add(1);

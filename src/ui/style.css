@@ -747,19 +747,38 @@ scale.control-scale slider {
   font-size: 11px;
 }
 
-.search-action {
-  min-height: 36px;
-  padding: 0 12px;
-  color: @ms_on_surface;
-  background: alpha(@ms_on_surface, 0.07);
-  border: 1px solid alpha(@ms_outline_variant, 0.24);
-  border-radius: 10px;
+.search-action-menu {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.search-action-menu > contents {
+  padding: 0;
+  background: @window_bg_color;
+  border: 1px solid @borders;
+  border-radius: 12px;
+  box-shadow: 0 10px 24px alpha(black, 0.45);
+}
+
+.search-action-menu-list {
+  min-width: 180px;
+  padding: 5px;
+}
+
+.search-action-menu-item {
+  min-height: 0;
+  padding: 7px 10px;
+  color: @window_fg_color;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
   box-shadow: none;
   font-size: 12px;
 }
 
-.search-action:hover,
-.search-action.default {
+.search-action-menu-item:hover,
+.search-action-menu-item:focus-visible {
   color: @ms_on_primary;
   background: @ms_primary;
 }
@@ -1147,7 +1166,8 @@ button.lock-power-button:disabled {
 .scale-medium .search-preview-file-meta,
 .scale-medium .search-preview-text,
 .scale-medium .search-preview-error { font-size: 12px; }
-.scale-medium .search-action { min-height: 43px; font-size: 14px; }
+.scale-medium .search-action-menu-list { min-width: 225px; padding: 6px; }
+.scale-medium .search-action-menu-item { padding: 8px 12px; font-size: 14px; }
 .scale-medium .plugin-row { min-height: 74px; padding: 12px 16px; border-radius: 17px; }
 .scale-medium .plugin-icon { -gtk-icon-size: 30px; }
 .scale-medium .plugin-name { font-size: 17px; }
@@ -1268,7 +1288,8 @@ button.lock-power-button:disabled {
 .scale-large .search-preview-file-meta,
 .scale-large .search-preview-text,
 .scale-large .search-preview-error { font-size: 14px; }
-.scale-large .search-action { min-height: 52px; font-size: 17px; }
+.scale-large .search-action-menu-list { min-width: 270px; padding: 7px; }
+.scale-large .search-action-menu-item { padding: 9px 14px; font-size: 17px; }
 .scale-large .plugin-row { min-height: 90px; padding: 14px 19px; border-radius: 20px; }
 .scale-large .plugin-icon { -gtk-icon-size: 36px; }
 .scale-large .plugin-name { font-size: 20px; }
