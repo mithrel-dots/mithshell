@@ -35,8 +35,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use gtk::pango;
 use gtk::prelude::*;
+use gtk::{Align, Overflow, pango};
 use log::info;
 
 use crate::config::IconStyle;
@@ -410,15 +410,72 @@ pub(crate) fn icon_widget(icon: Icon, style: IconStyle) -> gtk::Widget {
     if use_glyph(icon, style) {
         let label = gtk::Label::new(Some(&icon.glyph().to_string()));
         label.add_css_class(GLYPH_CLASS);
+        label.set_halign(Align::Center);
+        label.set_valign(Align::Center);
+        label.set_xalign(0.5);
+        label.set_yalign(0.5);
         apply_battery_state(label.upcast_ref(), icon);
         label.update_property(&[gtk::accessible::Property::Label(icon.label())]);
+        center_glyph_on_map(&label);
         label.upcast()
     } else {
         let image = gtk::Image::from_icon_name(&icon.symbolic());
+        image.set_halign(Align::Center);
+        image.set_valign(Align::Center);
         apply_battery_state(image.upcast_ref(), icon);
         image.update_property(&[gtk::accessible::Property::Label(icon.label())]);
         image.upcast()
     }
+}
+
+/// Centres a glyph label on the ink it actually draws, rather than on its
+/// text box.
+///
+/// A glyph is rarely centred within its own advance width: every codepoint
+/// carries its own left and right side bearings, and the line box reserves
+/// room for ascenders and descenders that an icon glyph does not use. Aligning
+/// the label centres that box, so the mark itself lands off-centre by an
+/// amount that differs per icon and grows with the font size. This is what the
+/// stylesheet used to paper over with a hand-measured `margin-left` on the
+/// search reload button, one value per density tier.
+///
+/// Pango reports both rectangles, so the correction is measured instead of
+/// guessed, at whatever size the stylesheet resolved for this label.
+fn center_glyph(label: &gtk::Label) {
+    let (ink, logical) = label.layout().extents();
+    // A glyph with no ink (a space, or a missing glyph rendered blank) has an
+    // empty ink rect whose centre is meaningless; leave it alone.
+    if ink.width() <= 0 || ink.height() <= 0 {
+        return;
+    }
+    let px = |units: i32| f64::from(units) / f64::from(pango::SCALE);
+    // How far the ink's centre sits from the centre of the text box, which is
+    // what alignment would otherwise centre.
+    let ox = px(ink.x() + ink.width() / 2) - px(logical.x() + logical.width() / 2);
+    let oy = px(ink.y() + ink.height() / 2) - px(logical.y() + logical.height() / 2);
+
+    // Grow the label's box symmetrically by twice that offset and push the
+    // text to the far side, so the ink -- not the text box -- ends up in the
+    // middle of the allocation. Expressed as a size request and an alignment
+    // fraction because GTK rejects the negative margins this would otherwise
+    // need.
+    let pad_x = (2.0 * ox.abs()).round() as i32;
+    let pad_y = (2.0 * oy.abs()).round() as i32;
+    let width = px(logical.width()).ceil() as i32 + pad_x;
+    let height = px(logical.height()).ceil() as i32 + pad_y;
+    label.set_size_request(width, height);
+    label.set_xalign(if ox > 0.0 { 0.0 } else { 1.0 });
+    label.set_yalign(if oy > 0.0 { 0.0 } else { 1.0 });
+}
+
+/// Keeps `label` centred on its ink from its first frame onwards.
+///
+/// The measurement needs the font the stylesheet resolves for this label, so
+/// it cannot run at construction time. `map` is the first point where the
+/// widget's style is settled, and re-running it on every map keeps the
+/// correction right after a stylesheet reload or a density-class change.
+fn center_glyph_on_map(label: &gtk::Label) {
+    label.connect_map(center_glyph);
 }
 
 /// Retargets a widget built by [`icon_widget`] at a different icon.
@@ -431,6 +488,9 @@ pub(crate) fn icon_widget(icon: Icon, style: IconStyle) -> gtk::Widget {
 pub(crate) fn set_icon(widget: &gtk::Widget, icon: Icon, style: IconStyle) {
     if let Some(label) = widget.downcast_ref::<gtk::Label>() {
         label.set_label(&icon.glyph().to_string());
+        // Bearings are per glyph, so the centring correction has to be
+        // re-measured whenever the glyph changes, not just when it is mapped.
+        center_glyph(label);
     } else if let Some(image) = widget.downcast_ref::<gtk::Image>() {
         image.set_icon_name(Some(&icon.symbolic()));
     }
@@ -460,6 +520,8 @@ fn apply_battery_state(widget: &gtk::Widget, icon: Icon) {
 /// target separately.
 pub(crate) fn icon_button(icon: Icon, style: IconStyle) -> gtk::Button {
     let button = gtk::Button::new();
+    button.set_overflow(Overflow::Hidden);
+    button.set_valign(Align::Center);
     button.set_child(Some(&icon_widget(icon, style)));
     button.update_property(&[gtk::accessible::Property::Label(icon.label())]);
     button
@@ -468,6 +530,8 @@ pub(crate) fn icon_button(icon: Icon, style: IconStyle) -> gtk::Button {
 /// Retargets a button built by [`icon_button`].
 pub(crate) fn set_button_icon(button: &impl IsA<gtk::Button>, icon: Icon, style: IconStyle) {
     let button = button.as_ref();
+    button.set_overflow(Overflow::Hidden);
+    button.set_valign(Align::Center);
     match button.child() {
         Some(child) => set_icon(&child, icon, style),
         None => button.set_child(Some(&icon_widget(icon, style))),
@@ -489,6 +553,8 @@ pub(crate) fn foreign_image(name: Option<&str>, fallback: Icon) -> gtk::Image {
 
 /// Points an existing `gtk::Image` at a foreign icon name or path.
 pub(crate) fn set_foreign_image(image: &gtk::Image, name: Option<&str>, fallback: Icon) {
+    image.set_halign(Align::Center);
+    image.set_valign(Align::Center);
     match name.map(str::trim).filter(|name| !name.is_empty()) {
         Some(path) if path.starts_with('/') => image.set_from_file(Some(path)),
         Some(name) => image.set_icon_name(Some(name)),

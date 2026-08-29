@@ -76,6 +76,7 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
     plugin_toggle.set_tooltip_text(Some("Show loaded TarraGon plugins"));
     let reload_button = icon::icon_button(Icon::Refresh, metrics.icons);
     reload_button.add_css_class("close-button");
+    reload_button.add_css_class("search-reload-button");
     reload_button.set_tooltip_text(Some("Reload TarraGon configuration and plugins"));
     header.append(&back_button);
     header.append(&entry);

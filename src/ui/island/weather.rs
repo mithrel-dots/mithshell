@@ -73,6 +73,7 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
 
     let forecast_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
     forecast_row.set_homogeneous(true);
+    forecast_row.set_hexpand(true);
     root.append(&forecast_row);
 
     let calendar = gtk::Calendar::new();
@@ -100,7 +101,8 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
 fn weather_day_card(day: &WeatherDay, metrics: Metrics) -> (gtk::Box, gtk::DrawingArea) {
     let card = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
     card.add_css_class("weather-day-card");
-    card.set_halign(Align::Center);
+    card.set_halign(Align::Fill);
+    card.set_hexpand(true);
 
     let weekday = gtk::Label::new(Some(short_weekday(&day.weekday)));
     weekday.add_css_class("weather-day-label");

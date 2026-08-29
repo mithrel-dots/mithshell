@@ -237,6 +237,7 @@ pub struct IslandWindow {
     /// vertical list of recent notifications, rebuilt by
     /// `update_notification_history` from the controller's bounded history.
     notification_count: gtk::Label,
+    notification_inhibit_remaining: gtk::Label,
     notification_clear_button: gtk::Button,
     notification_inhibit_button: gtk::ToggleButton,
     notification_expand_button: gtk::ToggleButton,

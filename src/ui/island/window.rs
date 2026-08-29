@@ -283,6 +283,7 @@ impl IslandWindow {
             brightness_scale: dashboard_widgets.brightness_scale,
             brightness_value: dashboard_widgets.brightness_value,
             notification_count: dashboard_widgets.notification_count,
+            notification_inhibit_remaining: dashboard_widgets.notification_inhibit_remaining,
             notification_clear_button: dashboard_widgets.notification_clear_button,
             notification_inhibit_button: dashboard_widgets.notification_inhibit_button,
             notification_expand_button: dashboard_widgets.notification_expand_button,

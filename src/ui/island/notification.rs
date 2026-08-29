@@ -300,15 +300,23 @@ impl IslandWindow {
         }
     }
 
-    pub fn update_notification_inhibition(&self, active: bool) {
+    pub fn update_notification_inhibition(&self, active: bool, remaining: Option<Duration>) {
         self.updating_notification_inhibit.set(true);
         self.notification_inhibit_button.set_active(active);
-        self.notification_inhibit_button
-            .set_tooltip_text(Some(if active {
-                "Allow notifications"
+        let remaining = remaining.map(format_inhibition_remaining);
+        self.notification_inhibit_remaining
+            .set_label(remaining.as_deref().unwrap_or_default());
+        self.notification_inhibit_remaining
+            .set_visible(remaining.is_some());
+        self.notification_inhibit_button.set_tooltip_text(Some(
+            &if let Some(remaining) = remaining {
+                format!("Allow notifications (inhibited for {remaining} more)")
+            } else if active {
+                "Allow notifications".to_owned()
             } else {
-                "Inhibit notifications"
-            }));
+                "Inhibit notifications".to_owned()
+            },
+        ));
         self.updating_notification_inhibit.set(false);
     }
 
@@ -719,5 +727,68 @@ impl IslandWindow {
             };
             self.remove_toast(oldest);
         }
+    }
+}
+
+fn format_inhibition_remaining(duration: Duration) -> String {
+    let seconds = duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() != 0));
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let total_minutes = seconds.div_ceil(60);
+    if total_minutes < 60 {
+        return format!("{total_minutes}m");
+    }
+
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if hours < 24 {
+        return if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {minutes}m")
+        };
+    }
+
+    let hours = total_minutes.div_ceil(60);
+    let days = hours / 24;
+    let hours = hours % 24;
+    if hours == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d {hours}h")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_inhibition_remaining;
+    use std::time::Duration;
+
+    #[test]
+    fn formats_notification_inhibition_countdown_compactly() {
+        assert_eq!(format_inhibition_remaining(Duration::ZERO), "0s");
+        assert_eq!(format_inhibition_remaining(Duration::from_millis(1)), "1s");
+        assert_eq!(format_inhibition_remaining(Duration::from_secs(59)), "59s");
+        assert_eq!(format_inhibition_remaining(Duration::from_secs(60)), "1m");
+        assert_eq!(
+            format_inhibition_remaining(Duration::from_secs(3_599)),
+            "1h"
+        );
+        assert_eq!(
+            format_inhibition_remaining(Duration::from_secs(5_400)),
+            "1h 30m"
+        );
+        assert_eq!(
+            format_inhibition_remaining(Duration::from_secs(93_600)),
+            "1d 2h"
+        );
+        assert_eq!(
+            format_inhibition_remaining(Duration::from_secs(89_940)),
+            "1d 1h"
+        );
     }
 }

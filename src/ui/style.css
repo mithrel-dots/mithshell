@@ -279,14 +279,25 @@ window.mithshell-notifications > contents {
 }
 
 .notification-count {
-  min-width: 18px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 1px solid alpha(@ms_outline_variant, 0.24);
+  border-radius: 8px;
   color: @ms_on_primary;
-  background: @ms_primary;
-  border-radius: 9px;
-  padding: 1px 6px;
+  background: alpha(@ms_primary, 0.82);
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.notification-inhibit-remaining {
+  color: @ms_primary;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 10px;
   font-weight: 700;
+  font-feature-settings: "tnum";
 }
 
 .notification-history-scroll,
@@ -393,11 +404,6 @@ window.mithshell-notifications > contents {
 .player-button.player-play {
   color: @ms_on_primary;
   background: @ms_primary;
-}
-
-.player-button.player-play image {
-  margin-left: 8px;
-  margin-top: 7px;
 }
 
 .player-button.player-play:hover {
@@ -551,7 +557,7 @@ scale.control-scale slider {
   /* Previously left at GTK's 16px default; stated so the glyph and themed
      representations stay the same size as each other. */
   -gtk-icon-size: 16px;
-  font-size: 21px;
+  font-size: 18px;
 }
 
 .close-button:hover,
@@ -943,7 +949,7 @@ progressbar.osd-progress progress {
 
 calendar.weather-calendar {
   padding: 1px 4px;
-  font-size: 14px;
+  font-size: 16px;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   color: @ms_on_surface;
   background: alpha(@ms_surface_low, 0.9);
@@ -1135,6 +1141,7 @@ button.lock-power-button:disabled {
 .scale-medium .player-switch-label { font-size: 11px; }
 .scale-medium .workspace-button,
 .scale-medium .close-button { min-width: 32px; min-height: 32px; border-radius: 10px; }
+.scale-medium .notification-count { min-width: 32px; min-height: 32px; border-radius: 10px; font-size: 14px; }
 .scale-medium .workspace-button { font-size: 12px; }
 .scale-medium .control-stack { padding: 0 4px; }
 .scale-medium .control-row { min-height: 36px; }
@@ -1182,10 +1189,11 @@ button.lock-power-button:disabled {
 .scale-medium .notification-row-icon { -gtk-icon-size: 22px; }
 .scale-medium .notification-row-summary { font-size: 14px; }
 .scale-medium .notification-row-body { font-size: 14px; }
+.scale-medium .notification-inhibit-remaining { font-size: 12px; }
 .scale-medium .notification-row-dismiss { min-width: 32px; min-height: 32px; border-radius: 10px; }
 .scale-medium .notification-row-dismiss image { -gtk-icon-size: 16px; }
 .scale-medium .notification-row-dismiss .icon-glyph { font-size: 21px; }
-.scale-medium .close-button { -gtk-icon-size: 20px; font-size: 26px; }
+.scale-medium .close-button { -gtk-icon-size: 20px; font-size: 22px; }
 .scale-medium .notification-toast-close { -gtk-icon-size: 17px; font-size: 22px; }
 .scale-medium .battery-icon { -gtk-icon-size: 17px; font-size: 22px; }
 .scale-medium .notification-content { padding: 0 9px 0 19px; }
@@ -1204,7 +1212,7 @@ button.lock-power-button:disabled {
 .scale-medium .weather-day-label { font-size: 12px; }
 .scale-medium .weather-day-high { font-size: 15px; }
 .scale-medium .weather-day-low { font-size: 13px; }
-.scale-medium calendar.weather-calendar { padding: 4px 8px; border-radius: 14px; }
+.scale-medium calendar.weather-calendar { padding: 4px 8px; border-radius: 14px; font-size: 18px; }
 
 .scale-medium .lock-card { padding: 33px 30px 28px 30px; }
 .scale-medium .lock-user { font-size: 16px; }
@@ -1257,6 +1265,7 @@ button.lock-power-button:disabled {
 .scale-large .player-switch-label { font-size: 13px; }
 .scale-large .workspace-button,
 .scale-large .close-button { min-width: 38px; min-height: 38px; border-radius: 12px; }
+.scale-large .notification-count { min-width: 38px; min-height: 38px; border-radius: 12px; font-size: 16px; }
 .scale-large .workspace-button { font-size: 14px; }
 .scale-large .control-stack { padding: 0 5px; }
 .scale-large .control-row { min-height: 46px; }
@@ -1304,10 +1313,11 @@ button.lock-power-button:disabled {
 .scale-large .notification-row-icon { -gtk-icon-size: 26px; }
 .scale-large .notification-row-summary { font-size: 16px; }
 .scale-large .notification-row-body { font-size: 16px; }
+.scale-large .notification-inhibit-remaining { font-size: 14px; }
 .scale-large .notification-row-dismiss { min-width: 38px; min-height: 38px; border-radius: 12px; }
 .scale-large .notification-row-dismiss image { -gtk-icon-size: 19px; }
 .scale-large .notification-row-dismiss .icon-glyph { font-size: 25px; }
-.scale-large .close-button { -gtk-icon-size: 24px; font-size: 31px; }
+.scale-large .close-button { -gtk-icon-size: 24px; font-size: 26px; }
 .scale-large .notification-toast-close { -gtk-icon-size: 20px; font-size: 26px; }
 .scale-large .battery-icon { -gtk-icon-size: 20px; font-size: 26px; }
 .scale-large .notification-content { padding: 0 12px 0 24px; }
@@ -1326,7 +1336,7 @@ button.lock-power-button:disabled {
 .scale-large .weather-day-label { font-size: 14px; }
 .scale-large .weather-day-high { font-size: 17px; }
 .scale-large .weather-day-low { font-size: 15px; }
-.scale-large calendar.weather-calendar { padding: 5px 10px; border-radius: 16px; }
+.scale-large calendar.weather-calendar { padding: 5px 10px; border-radius: 16px; font-size: 20px; }
 .scale-large .lock-card { padding: 40px 36px 34px 36px; }
 .scale-large .lock-user { font-size: 19px; }
 .scale-large .lock-system-info { font-size: 14px; }

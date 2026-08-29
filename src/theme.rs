@@ -11,7 +11,7 @@ use material_colors::{
     scheme::Scheme,
     theme::ThemeBuilder,
 };
-use notify::{Event, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecursiveMode, Watcher, event::ModifyKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -227,6 +227,27 @@ fn normalize_hex(value: &str) -> Option<String> {
 /// the user) rewrites it. The parent directory is watched non-recursively
 /// rather than the file itself, since tools typically replace config files
 /// via a temp-file-then-rename rather than an in-place write.
+/// Whether an inotify event means the file's contents may differ, as opposed
+/// to it merely having been looked at.
+///
+/// Reading a file is itself an inotify event. The palette regeneration this
+/// watcher triggers opens `gtk.css` to parse it, which fires `OPEN`, `ACCESS`
+/// and `CLOSE_NOWRITE` for the very path being watched; forwarding those fed
+/// the regeneration back into itself, re-parsing and re-applying the whole
+/// stylesheet several times a second for as long as the daemon ran, with the
+/// coalescing delay in `attach_gtk_css_watch` setting the pace. Metadata-only
+/// changes are excluded for the same reason: an access-time update is not a
+/// new palette.
+fn changes_content(kind: EventKind) -> bool {
+    match kind {
+        EventKind::Access(_) | EventKind::Other => false,
+        EventKind::Modify(ModifyKind::Metadata(_)) => false,
+        // `Any` is what a backend reports when it cannot classify an event;
+        // treat it as a possible write rather than miss a real palette change.
+        EventKind::Any | EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => true,
+    }
+}
+
 pub fn watch_gtk_css(sender: Sender<()>) -> Option<thread::JoinHandle<()>> {
     let path = gtk_user_css_path().ok()?;
     let watch_dir = path.parent()?.to_path_buf();
@@ -240,7 +261,7 @@ pub fn watch_gtk_css(sender: Sender<()>) -> Option<thread::JoinHandle<()>> {
             let Ok(event) = event else {
                 return;
             };
-            if event.paths.iter().any(|changed| changed == &target) {
+            if changes_content(event.kind) && event.paths.iter().any(|changed| changed == &target) {
                 let _ = sender.send_blocking(());
             }
         }) {
@@ -379,6 +400,40 @@ mod tests {
     #[test]
     fn formats_argb_as_css_rgb() {
         assert_eq!(hex(Argb::new(255, 10, 132, 255)), "#0a84ff");
+    }
+
+    #[test]
+    fn reading_the_watched_file_is_not_a_content_change() {
+        use notify::event::{AccessKind, AccessMode, DataChange, MetadataKind, ModifyKind};
+
+        // The regeneration this watcher drives reads gtk.css, so treating a
+        // read as a change makes the watcher retrigger itself forever.
+        assert!(!changes_content(EventKind::Access(AccessKind::Open(
+            AccessMode::Read
+        ))));
+        assert!(!changes_content(EventKind::Access(AccessKind::Read)));
+        assert!(!changes_content(EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+        assert!(!changes_content(EventKind::Modify(ModifyKind::Metadata(
+            MetadataKind::AccessTime
+        ))));
+
+        // Real rewrites, including the temp-file-then-rename tools normally
+        // use, still have to get through.
+        assert!(changes_content(EventKind::Modify(ModifyKind::Data(
+            DataChange::Content
+        ))));
+        assert!(changes_content(EventKind::Modify(ModifyKind::Name(
+            notify::event::RenameMode::To
+        ))));
+        assert!(changes_content(EventKind::Create(
+            notify::event::CreateKind::File
+        )));
+        assert!(changes_content(EventKind::Remove(
+            notify::event::RemoveKind::File
+        )));
+        assert!(changes_content(EventKind::Any));
     }
 
     #[test]

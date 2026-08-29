@@ -450,6 +450,13 @@ impl NotificationInhibition {
             Self::Indefinite
         }
     }
+
+    fn remaining(self) -> Option<Duration> {
+        match self {
+            Self::Until(deadline) => deadline.duration_since(SystemTime::now()).ok(),
+            Self::Off | Self::Indefinite => None,
+        }
+    }
 }
 
 impl NotificationEpochRegistry {
@@ -1146,14 +1153,28 @@ impl Controller {
                     controller.set_notification_inhibition(NotificationInhibition::Off);
                 }
             });
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local(Duration::from_secs(1), move || {
+                let Some(controller) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if controller.notification_inhibition_generation.get() != generation
+                    || controller.notification_inhibition.get()
+                        != NotificationInhibition::Until(deadline)
+                {
+                    return glib::ControlFlow::Break;
+                }
+                controller.sync_notification_inhibition();
+                glib::ControlFlow::Continue
+            });
         }
         inhibition
     }
 
     fn sync_notification_inhibition(&self) {
-        let active = self.notification_inhibition.get().active();
+        let inhibition = self.notification_inhibition.get();
         for island in self.islands.borrow().values() {
-            island.update_notification_inhibition(active);
+            island.update_notification_inhibition(inhibition.active(), inhibition.remaining());
         }
     }
 
@@ -1167,9 +1188,8 @@ impl Controller {
                     .duration_since(UNIX_EPOCH)
                     .ok()
                     .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
-                let remaining = deadline
-                    .duration_since(SystemTime::now())
-                    .ok()
+                let remaining = inhibition
+                    .remaining()
                     .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
                 ("timed", until, remaining)
             }
@@ -2009,7 +2029,8 @@ impl Controller {
                 island.update_tarragon_status(status);
             }
             island.update_notification_history(self.notifications.borrow().as_slice());
-            island.update_notification_inhibition(self.notification_inhibition.get().active());
+            let inhibition = self.notification_inhibition.get();
+            island.update_notification_inhibition(inhibition.active(), inhibition.remaining());
             self.islands.borrow_mut().insert(connector, island);
         }
 
