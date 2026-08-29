@@ -97,35 +97,69 @@ impl IslandWindow {
         surface.set_size_request(metrics.compact_width, metrics.compact_height);
 
         let content = Fixed::new();
-        content.set_size_request(metrics.search_width, metrics.search_height);
+        content.set_size_request(metrics.window_width, metrics.window_height);
         surface.set_child(Some(&content));
 
         let (compact, compact_workspaces, compact_clock, compact_battery, compact_tray) =
             compact_view(metrics);
         content.put(
             &compact,
-            f64::from((metrics.search_width - metrics.compact_width) / 2),
+            f64::from((metrics.window_width - metrics.compact_width) / 2),
             0.0,
         );
 
         let dashboard_widgets = dashboard_view(metrics);
         content.put(
             &dashboard_widgets.root,
-            f64::from((metrics.search_width - metrics.dashboard_width) / 2),
+            f64::from((metrics.window_width - metrics.dashboard_width) / 2),
             0.0,
         );
         dashboard_widgets.root.set_opacity(0.0);
         dashboard_widgets.root.set_visible(false);
 
         let search_widgets = search_view(metrics);
-        content.put(&search_widgets.root, 0.0, 0.0);
-        search_widgets.root.set_opacity(0.0);
-        search_widgets.root.set_visible(false);
+        let search_window = ApplicationWindow::builder()
+            .application(application)
+            .title("mithshell search")
+            .decorated(false)
+            .resizable(false)
+            .default_width(metrics.search_window_width)
+            .default_height(metrics.search_window_height)
+            .build();
+        search_window.add_css_class("mithshell-window");
+        if let Some(class) = metrics.css_class() {
+            search_window.add_css_class(class);
+        }
+        search_window.init_layer_shell();
+        search_window.set_namespace(Some("mithshell-search"));
+        search_window.set_layer(Layer::Top);
+        search_window.set_keyboard_mode(KeyboardMode::None);
+        search_window.set_monitor(Some(monitor));
+        search_window.set_anchor(Edge::Top, true);
+        search_window.set_margin(Edge::Top, metrics.spacing(shell.top_margin));
+        // Search must share the island's absolute top origin instead of being
+        // displaced by the island's own reserved panel zone.
+        search_window.set_exclusive_zone(-1);
+
+        let search_fixed = Fixed::new();
+        search_fixed.set_size_request(metrics.search_window_width, metrics.search_window_height);
+        search_window.set_child(Some(&search_fixed));
+
+        let search_surface = gtk::ScrolledWindow::new();
+        search_surface.add_css_class("island-surface");
+        search_surface.set_overflow(Overflow::Hidden);
+        search_surface.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+        search_surface.set_propagate_natural_width(false);
+        search_surface.set_propagate_natural_height(false);
+        search_surface.set_kinetic_scrolling(false);
+        search_surface.set_has_frame(false);
+        search_surface.set_child(Some(&search_widgets.root));
+        search_fixed.put(&search_surface, 0.0, 0.0);
 
         let media_widgets = media_view(metrics);
         content.put(
             &media_widgets.root,
-            f64::from((metrics.search_width - metrics.compact_width) / 2),
+            f64::from((metrics.window_width - metrics.compact_width) / 2),
             0.0,
         );
         media_widgets.root.set_opacity(0.0);
@@ -134,7 +168,7 @@ impl IslandWindow {
         let (osd, osd_icon, osd_title, osd_progress, osd_value) = osd_view(metrics);
         content.put(
             &osd,
-            f64::from((metrics.search_width - metrics.osd_width) / 2),
+            f64::from((metrics.window_width - metrics.osd_width) / 2),
             0.0,
         );
         osd.set_opacity(0.0);
@@ -144,7 +178,7 @@ impl IslandWindow {
             notification_view(metrics);
         content.put(
             &notification,
-            f64::from((metrics.search_width - metrics.notification_width) / 2),
+            f64::from((metrics.window_width - metrics.notification_width) / 2),
             0.0,
         );
         notification.set_opacity(0.0);
@@ -171,7 +205,7 @@ impl IslandWindow {
         let weather_widgets = weather_view(metrics, config.weather.provider);
         content.put(
             &weather_widgets.root,
-            f64::from((metrics.search_width - metrics.weather_width) / 2),
+            f64::from((metrics.window_width - metrics.weather_width) / 2),
             0.0,
         );
         weather_widgets.root.set_opacity(0.0);
@@ -183,6 +217,9 @@ impl IslandWindow {
             monitor_name,
             metrics,
             window,
+            search_window,
+            search_fixed,
+            search_surface,
             dismiss_window,
             fixed,
             content,
@@ -298,6 +335,13 @@ impl IslandWindow {
             last_search_dispatch: Cell::new(None),
             search_snapshot: RefCell::new(None),
             search_backend_status: RefCell::new(None),
+            search_geometry: Cell::new(Geometry::for_view(
+                View::Compact,
+                metrics,
+                metrics.compact_width,
+                metrics.compact_width,
+            )),
+            search_animation_generation: Cell::new(0),
             osd_active: Cell::new(false),
             media_playing: Cell::new(false),
             media_width: Cell::new(metrics.compact_width),
@@ -352,6 +396,12 @@ impl IslandWindow {
                 island.apply_geometry(island.geometry.get());
             }
         });
+        let weak = Rc::downgrade(&island);
+        island.search_window.connect_realize(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.apply_search_geometry(island.search_geometry.get());
+            }
+        });
         island
     }
 
@@ -375,7 +425,7 @@ impl IslandWindow {
             "media_title": self.media_title.label().to_string(),
             "dashboard_visible": self.dashboard.is_visible(),
             "dashboard_opacity": self.dashboard.opacity(),
-            "search_visible": self.search.is_visible(),
+            "search_visible": self.search_window.is_visible(),
             "search_connected": self.search_connected.get(),
             "weather_visible": self.weather.is_visible(),
             "osd_visible": self.osd.is_visible(),
@@ -408,6 +458,7 @@ impl IslandWindow {
         self.weather_open.set(false);
         self.dashboard_open.set(true);
         self.reconcile_view();
+        self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }
 
     pub fn close(self: &Rc<Self>) {
@@ -418,6 +469,7 @@ impl IslandWindow {
             .set(self.search_action_generation.get().wrapping_add(1));
         self.clear_osd();
         self.reconcile_view();
+        self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }
 
     /// Switches the island to the weather forecast view. Mirrors
@@ -432,6 +484,7 @@ impl IslandWindow {
             self.weather_status.set_label("FETCHING FORECAST");
         }
         self.reconcile_view();
+        self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }
 
     /// Redraws any active custom Cairo drawing after a theme change --
@@ -446,10 +499,13 @@ impl IslandWindow {
     /// while the session is locked, so it may not resume until we submit one.
     pub fn recomposite(&self) {
         self.window.queue_draw();
+        self.search_window.queue_draw();
     }
 
     pub fn update_shell_config(&self, config: &ShellConfig, animations_enabled: bool) {
         self.window
+            .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
+        self.search_window
             .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
         if let Some(overlay) = &self.pill_overlay {
             overlay
@@ -464,6 +520,7 @@ impl IslandWindow {
 
     pub fn destroy(&self) {
         self.dismiss_window.close();
+        self.search_window.close();
         self.window.close();
         if let Some(toasts) = &self.notification_toasts {
             toasts.window.close();

@@ -15,11 +15,17 @@ impl IslandWindow {
     /// focus without having to know what the active view expects.
     pub(super) fn refresh_keyboard_mode(&self) {
         let mode = match self.current_view.get() {
-            View::Search | View::Weather => KeyboardMode::Exclusive,
+            View::Weather => KeyboardMode::Exclusive,
             _ if self.tray_menu_open.get() => KeyboardMode::OnDemand,
             _ => KeyboardMode::None,
         };
         self.window.set_keyboard_mode(mode);
+        self.search_window
+            .set_keyboard_mode(if self.search_open.get() {
+                KeyboardMode::Exclusive
+            } else {
+                KeyboardMode::None
+            });
     }
 
     pub(super) fn reconcile_view(self: &Rc<Self>) {
@@ -33,8 +39,6 @@ impl IslandWindow {
             View::Notification
         } else if self.osd_active.get() {
             View::Osd
-        } else if self.search_open.get() {
-            View::Search
         } else if self.weather_open.get() {
             View::Weather
         } else if self.dashboard_open.get() {
@@ -58,16 +62,26 @@ impl IslandWindow {
 
     pub(super) fn set_view(self: &Rc<Self>, view: View) {
         let target = self.geometry_for_view(view);
+        if matches!(view, View::Dashboard | View::Weather) {
+            self.window.set_layer(gtk4_layer_shell::Layer::Overlay);
+            self.dismiss_window.present();
+            self.window.present();
+        } else if self.search_open.get() {
+            if self.search_window.is_visible() {
+                self.search_window.present();
+            }
+            // Search promotes the island to Overlay while mapped, keeping its
+            // animated origin behind the persistent pill.
+            self.window.present();
+        } else {
+            self.window.set_layer(gtk4_layer_shell::Layer::Top);
+            self.dismiss_window.set_visible(false);
+        }
         if self.current_view.get() == view && self.geometry.get() == target {
+            self.refresh_keyboard_mode();
             return;
         }
         self.current_view.set(view);
-        if matches!(view, View::Dashboard | View::Search | View::Weather) {
-            self.dismiss_window.present();
-            self.window.present();
-        } else {
-            self.dismiss_window.set_visible(false);
-        }
 
         for (widget, widget_view) in self.view_widgets() {
             widget.set_visible(true);
@@ -116,19 +130,18 @@ impl IslandWindow {
 
     /// Every animatable view surface paired with its view, in the fixed
     /// order the `start` opacity array is indexed by.
-    fn view_widgets(&self) -> [(&gtk::Box, View); 7] {
+    fn view_widgets(&self) -> [(&gtk::Box, View); 6] {
         [
             (&self.compact, View::Compact),
             (&self.media, View::Media),
             (&self.dashboard, View::Dashboard),
-            (&self.search, View::Search),
             (&self.weather, View::Weather),
             (&self.osd, View::Osd),
             (&self.notification, View::Notification),
         ]
     }
 
-    pub(super) fn apply_content_opacity(&self, target: View, progress: f64, start: [f64; 7]) {
+    pub(super) fn apply_content_opacity(&self, target: View, progress: f64, start: [f64; 6]) {
         let progress = 1.0 - (1.0 - progress).powi(3);
         for ((widget, widget_view), start_opacity) in self.view_widgets().into_iter().zip(start) {
             let end = if widget_view == target { 1.0 } else { 0.0 };
@@ -155,7 +168,7 @@ impl IslandWindow {
         self.fixed.move_(&self.surface, f64::from(x), f64::from(y));
         self.surface
             .hadjustment()
-            .set_value(f64::from((self.metrics.search_width - width) / 2));
+            .set_value(f64::from((self.metrics.window_width - width) / 2));
         self.surface.vadjustment().set_value(0.0);
         if let Some(surface) = self.window.surface() {
             let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(

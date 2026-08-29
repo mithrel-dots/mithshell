@@ -1,6 +1,6 @@
 //! The dynamic island: a layer-shell window that morphs between the
-//! compact pill and the dashboard, launcher, weather, OSD, and
-//! notification views.
+//! compact pill and the dashboard, weather, OSD, and notification views,
+//! alongside an independent launcher window.
 
 use std::{
     cell::{Cell, RefCell},
@@ -40,6 +40,7 @@ use crate::tarragon::{TarragonSnapshot, TarragonStatus};
 use crate::ui::icon::{self, Icon};
 
 const WINDOW_WIDTH: i32 = 860;
+const WINDOW_HEIGHT: i32 = DASHBOARD_HEIGHT;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
 /// Floor for the pill's content-driven width (`resize_compact`), so it
@@ -76,8 +77,10 @@ const NOTIFICATION_HEIGHT: i32 = 36;
 
 const SEARCH_WIDTH: i32 = 820;
 const SEARCH_HEIGHT: i32 = 620;
-// Kept comfortably under SEARCH_HEIGHT/SEARCH_WIDTH, which size the shared
-// Fixed container every view is centered inside of.
+/// Transparent room around the independent search surface for its CSS shadow.
+/// Without it, the layer window clips the blur into faint square corner bands.
+const SEARCH_SHADOW_MARGIN: i32 = 56;
+// Kept comfortably under the main island canvas dimensions.
 const WEATHER_WIDTH: i32 = 380;
 const WEATHER_HEIGHT: i32 = 390;
 
@@ -86,7 +89,6 @@ enum View {
     Compact,
     Media,
     Dashboard,
-    Search,
     Weather,
     Osd,
     /// Only reachable when `notifications.position = "pill"`; the other
@@ -119,11 +121,6 @@ impl Geometry {
                 height: f64::from(metrics.dashboard_height),
                 y: 0.0,
             },
-            View::Search => Self {
-                width: f64::from(metrics.search_width),
-                height: f64::from(metrics.search_height),
-                y: f64::from(metrics.search_y),
-            },
             View::Weather => Self {
                 width: f64::from(metrics.weather_width),
                 height: f64::from(metrics.weather_height),
@@ -155,6 +152,9 @@ pub struct IslandWindow {
     monitor_name: String,
     metrics: Metrics,
     window: ApplicationWindow,
+    search_window: ApplicationWindow,
+    search_fixed: Fixed,
+    search_surface: gtk::ScrolledWindow,
     dismiss_window: ApplicationWindow,
     fixed: Fixed,
     content: Fixed,
@@ -299,6 +299,8 @@ pub struct IslandWindow {
     last_search_dispatch: Cell<Option<Instant>>,
     search_snapshot: RefCell<Option<TarragonSnapshot>>,
     search_backend_status: RefCell<Option<TarragonStatus>>,
+    search_geometry: Cell<Geometry>,
+    search_animation_generation: Cell<u64>,
     osd_active: Cell<bool>,
     media_playing: Cell<bool>,
     media_width: Cell<i32>,

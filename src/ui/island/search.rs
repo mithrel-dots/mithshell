@@ -4,11 +4,13 @@
 use super::*;
 
 use std::{
+    cell::Cell,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use gtk::{Align, Orientation, glib};
+use gtk4_layer_shell::Layer;
 
 use super::{IslandWindow, Metrics};
 use crate::preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData};
@@ -774,10 +776,22 @@ impl IslandWindow {
     }
 
     pub fn open_search(self: &Rc<Self>) {
+        if self.search_open.get() {
+            self.search_window.present();
+            self.window.present();
+            let entry = self.search_entry.clone();
+            glib::idle_add_local_once(move || {
+                entry.grab_focus();
+            });
+            return;
+        }
+
+        let start = self.geometry.get();
         self.clear_osd();
         self.dashboard_open.set(false);
         self.weather_open.set(false);
         self.search_open.set(true);
+        self.embed_current_notification_for_search();
         self.search_plugin_toggle.set_active(false);
         self.search_stack.set_visible_child_name("results");
         self.search_entry.set_text("");
@@ -796,10 +810,153 @@ impl IslandWindow {
             (self.actions.tarragon_status)();
         }
         self.reconcile_view();
+        self.present_search_window(start);
         let entry = self.search_entry.clone();
         glib::idle_add_local_once(move || {
             entry.grab_focus();
         });
+    }
+
+    fn search_target_geometry(&self) -> Geometry {
+        Geometry {
+            width: f64::from(self.metrics.search_width),
+            height: f64::from(self.metrics.search_height),
+            y: f64::from(self.metrics.search_y),
+        }
+    }
+
+    fn present_search_window(self: &Rc<Self>, start: Geometry) {
+        let generation = self.search_animation_generation.get().wrapping_add(1);
+        self.search_animation_generation.set(generation);
+        let animate = self.animations_enabled.get() && self.animation_ms.get() > 0;
+        let target = self.search_target_geometry();
+        self.search.set_opacity(if animate { 0.0 } else { 1.0 });
+        self.search.set_can_target(true);
+        self.apply_search_geometry(if animate { start } else { target });
+        self.window.set_layer(Layer::Overlay);
+        self.search_window.present();
+        self.window.present();
+        if !animate {
+            return;
+        }
+
+        let duration_us = i64::from(self.animation_ms.get()) * 1000;
+        let start_time = Cell::new(None::<i64>);
+        let weak = Rc::downgrade(self);
+        self.search.add_tick_callback(move |_, frame_clock| {
+            let Some(island) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if island.search_animation_generation.get() != generation || !island.search_open.get() {
+                return glib::ControlFlow::Break;
+            }
+            let now = frame_clock.frame_time();
+            let started = if let Some(started) = start_time.get() {
+                started
+            } else {
+                start_time.set(Some(now));
+                now
+            };
+            let linear = ((now - started) as f64 / duration_us as f64).clamp(0.0, 1.0);
+            let geometry_progress = 1.0 - (1.0 - linear).powi(5);
+            let opacity_progress = 1.0 - (1.0 - linear).powi(3);
+            island.apply_search_geometry(start.interpolate(target, geometry_progress));
+            island.search.set_opacity(opacity_progress);
+            if linear >= 1.0 {
+                island.apply_search_geometry(target);
+                island.search.set_opacity(1.0);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    pub(super) fn dismiss_search_window(self: &Rc<Self>, target: Geometry) {
+        if !self.search_window.is_visible() {
+            return;
+        }
+        self.search.set_can_target(false);
+        self.dismiss_window.present();
+        self.search_window.present();
+        self.window.present();
+        let generation = self.search_animation_generation.get().wrapping_add(1);
+        self.search_animation_generation.set(generation);
+        if !self.animations_enabled.get() || self.animation_ms.get() == 0 {
+            self.hide_search_window();
+            return;
+        }
+
+        let start = self.search_geometry.get();
+        let start_opacity = self.search.opacity();
+        let duration_us = i64::from(self.animation_ms.get()) * 1000;
+        let start_time = Cell::new(None::<i64>);
+        let weak = Rc::downgrade(self);
+        self.search.add_tick_callback(move |_, frame_clock| {
+            let Some(island) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if island.search_animation_generation.get() != generation {
+                return glib::ControlFlow::Break;
+            }
+            let now = frame_clock.frame_time();
+            let started = if let Some(started) = start_time.get() {
+                started
+            } else {
+                start_time.set(Some(now));
+                now
+            };
+            let linear = ((now - started) as f64 / duration_us as f64).clamp(0.0, 1.0);
+            let geometry_progress = 1.0 - (1.0 - linear).powi(5);
+            let opacity_progress = 1.0 - (1.0 - linear).powi(3);
+            island.apply_search_geometry(start.interpolate(target, geometry_progress));
+            island
+                .search
+                .set_opacity(lerp(start_opacity, 0.0, opacity_progress));
+            if linear >= 1.0 {
+                island.hide_search_window();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    pub(super) fn apply_search_geometry(&self, geometry: Geometry) {
+        self.search_geometry.set(geometry);
+        let width = geometry.width.round() as i32;
+        let height = geometry.height.round() as i32;
+        let x = (self.metrics.search_window_width - width) / 2;
+        let y = geometry.y.round() as i32;
+        self.search_surface.set_size_request(width, height);
+        self.search_fixed
+            .move_(&self.search_surface, f64::from(x), f64::from(y));
+        self.search_surface
+            .hadjustment()
+            .set_value(f64::from((self.metrics.search_width - width) / 2));
+        self.search_surface.vadjustment().set_value(0.0);
+        if let Some(surface) = self.search_window.surface() {
+            let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                x, y, width, height,
+            ));
+            surface.set_input_region(Some(&region));
+        }
+    }
+
+    pub(super) fn hide_search_window(&self) {
+        self.search_animation_generation
+            .set(self.search_animation_generation.get().wrapping_add(1));
+        self.search_window.set_visible(false);
+        self.search.set_opacity(1.0);
+        self.window
+            .set_layer(if self.dashboard_open.get() || self.weather_open.get() {
+                Layer::Overlay
+            } else {
+                Layer::Top
+            });
+        if !self.dashboard_open.get() && !self.weather_open.get() && !self.search_open.get() {
+            self.dismiss_window.set_visible(false);
+        }
     }
 
     pub(super) fn schedule_search(self: &Rc<Self>, text: String) {

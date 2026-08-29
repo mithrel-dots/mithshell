@@ -37,6 +37,8 @@ pub(super) struct Metrics {
     pub(super) search_width: i32,
     pub(super) search_height: i32,
     pub(super) search_y: i32,
+    pub(super) search_window_width: i32,
+    pub(super) search_window_height: i32,
     pub(super) weather_width: i32,
     pub(super) weather_height: i32,
 }
@@ -51,15 +53,17 @@ impl Metrics {
         let scale = resolved_scale(configured_scale, automatic_scale(monitor));
         let media_width_factor =
             media_width_factor.clamp(1.0, f64::from(DASHBOARD_WIDTH) / f64::from(COMPACT_WIDTH));
+        let search_width = scaled(SEARCH_WIDTH, scale);
         let search_height = scaled(SEARCH_HEIGHT, scale);
+        let search_shadow_margin = scaled(SEARCH_SHADOW_MARGIN, scale);
         let monitor_height = monitor.geometry().height();
         let search_y = (f64::from(monitor_height) * 0.2).round() as i32;
-        let search_y = search_y.min((monitor_height - search_height - scaled(20, scale)).max(0));
+        let search_y = search_y.min((monitor_height - search_height - search_shadow_margin).max(0));
         Self {
             scale,
             icons,
             window_width: scaled(WINDOW_WIDTH, scale),
-            window_height: search_y + search_height,
+            window_height: scaled(WINDOW_HEIGHT, scale),
             compact_width: scaled(COMPACT_WIDTH, scale),
             compact_height: scaled(COMPACT_HEIGHT, scale),
             compact_min_width: scaled(COMPACT_MIN_WIDTH, scale),
@@ -78,9 +82,11 @@ impl Metrics {
             osd_height: scaled(OSD_HEIGHT, scale),
             notification_width: scaled(NOTIFICATION_WIDTH, scale),
             notification_height: scaled(NOTIFICATION_HEIGHT, scale),
-            search_width: scaled(SEARCH_WIDTH, scale),
+            search_width,
             search_height,
             search_y,
+            search_window_width: search_width + search_shadow_margin * 2,
+            search_window_height: search_y + search_height + search_shadow_margin,
             weather_width: scaled(WEATHER_WIDTH, scale),
             weather_height: scaled(WEATHER_HEIGHT, scale),
         }

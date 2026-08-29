@@ -78,14 +78,14 @@ order, so the two agree on a default without any shared configuration.
 
 ## Launcher geometry
 
-The search view has a base size of `820x620`, scaled with the rest of the
-island. During opening, width, height, opacity, and vertical position animate
-together from the current pill or dashboard geometry. The destination starts
-20% down the monitor, clamped so the complete launcher remains on-screen.
-
-The layer window remains top-anchored. Only the visible animated surface is in
-its input region, so the transparent canvas around the launcher does not block
-applications underneath it.
+The launcher has a base size of `820x620`, scaled with the rest of the island.
+It opens in an independent top-layer window, but its internal surface retains
+the island's original transition: width, height, vertical position, and content
+opacity animate from the current island geometry. The independent surface is
+stacked behind the island, hiding its origin beneath the persistent pill until
+it expands away. The island remains free to display notifications while search
+stays open. The launcher starts 20% down the monitor, clamped so the complete
+surface leaves clearance for its lower shadow.
 
 ## Search and result state
 

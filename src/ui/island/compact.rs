@@ -94,7 +94,7 @@ impl IslandWindow {
             .set_size_request(width, self.metrics.compact_height);
         self.content.move_(
             &self.compact,
-            f64::from((self.metrics.search_width - width) / 2),
+            f64::from((self.metrics.window_width - width) / 2),
             0.0,
         );
         self.compact_width.set(width);

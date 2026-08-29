@@ -35,7 +35,7 @@ hidden entirely, while with it the level is read from and written to
 
 [TarraGon](https://github.com/iMithrellas/tarragon) is optional. When its user
 service is running, Mithshell exposes its configured search plugins through an
-embedded launcher.
+independent launcher window.
 
 `ffmpeg` and `ffmpegthumbnailer` are optional rich-preview dependencies. They
 provide video metadata and cached thumbnails; image and highlighted text

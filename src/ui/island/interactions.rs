@@ -82,9 +82,7 @@ impl IslandWindow {
         let weak = Rc::downgrade(self);
         search_back_button.connect_clicked(move |_| {
             if let Some(island) = weak.upgrade() {
-                island.search_open.set(false);
-                island.dashboard_open.set(true);
-                island.reconcile_view();
+                island.open();
             }
         });
 
@@ -171,13 +169,10 @@ impl IslandWindow {
             }
         });
 
-        // Attached to the window itself (not a specific view) so Escape closes
-        // whatever overlay currently holds keyboard focus -- the launcher today,
-        // and any future keyboard-focused widget that extends `close()`.
-        let overlay_keys = gtk::EventControllerKey::new();
-        overlay_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let search_keys = gtk::EventControllerKey::new();
+        search_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        overlay_keys.connect_key_pressed(move |_, key, _, modifiers| {
+        search_keys.connect_key_pressed(move |_, key, _, modifiers| {
             let Some(island) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
@@ -219,12 +214,27 @@ impl IslandWindow {
                 _ => glib::Propagation::Proceed,
             }
         });
+        self.search_window.add_controller(search_keys);
+
+        let overlay_keys = gtk::EventControllerKey::new();
+        overlay_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        overlay_keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape
+                && let Some(island) = weak.upgrade()
+            {
+                island.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
         self.window.add_controller(overlay_keys);
 
         // t5: the frame carrying the updated results reached the compositor.
         // Only wired when tracing is on, so normal runs pay nothing.
         if crate::latency::enabled() {
-            self.window.connect_realize(|window| {
+            self.search_window.connect_realize(|window| {
                 if let Some(clock) = window.frame_clock() {
                     clock.connect_after_paint(|_| crate::latency::mark_paint());
                 }
@@ -264,7 +274,7 @@ impl IslandWindow {
             .connect_value_changed(move |adjustment| {
                 if let Some(island) = weak.upgrade() {
                     let target = f64::from(
-                        (island.metrics.search_width - island.geometry.get().width.round() as i32)
+                        (island.metrics.window_width - island.geometry.get().width.round() as i32)
                             / 2,
                     );
                     if (adjustment.value() - target).abs() > f64::EPSILON {

@@ -448,6 +448,7 @@ impl IslandWindow {
         let overlay_active = self
             .notifications
             .overlay_applies(pending.notification.urgency, fullscreen)
+            && !self.search_open.get()
             && self.pill_overlay.is_some();
         if overlay_active {
             let overlay = self.pill_overlay.as_ref().expect("checked above");
@@ -495,6 +496,25 @@ impl IslandWindow {
                 (island.actions.notification_expired)(id, epoch);
             }
         });
+    }
+
+    /// Moves a fullscreen-overlay notification back into the island before
+    /// search raises the persistent pill to the overlay layer.
+    pub(super) fn embed_current_notification_for_search(&self) {
+        let mut current = self.notification_current.borrow_mut();
+        let Some(current) = current.as_mut().filter(|current| current.overlay) else {
+            return;
+        };
+        apply_notification_content(
+            &self.notification_icon,
+            &self.notification_app,
+            &self.notification_body,
+            &current.pending.notification,
+        );
+        current.overlay = false;
+        if let Some(overlay) = &self.pill_overlay {
+            overlay.window.set_visible(false);
+        }
     }
 
     /// Handles a click on the `pill`-position notification view. Invokes
