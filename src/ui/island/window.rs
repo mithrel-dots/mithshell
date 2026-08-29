@@ -330,6 +330,7 @@ impl IslandWindow {
             preview_generation: Cell::new(0),
             search_action_generation: Cell::new(0),
             search_selection_pending: Cell::new(false),
+            search_selection_keep_open: Cell::new(false),
             search_preview_key: RefCell::new(None),
             search_dispatched: RefCell::new(None),
             last_search_dispatch: Cell::new(None),

@@ -290,6 +290,9 @@ pub struct IslandWindow {
     preview_generation: Cell<u64>,
     search_action_generation: Cell<u64>,
     search_selection_pending: Cell<bool>,
+    /// Whether the in-flight selection should leave the launcher open after
+    /// a successful response.
+    search_selection_keep_open: Cell<bool>,
     search_preview_key: RefCell<Option<String>>,
     /// Text of the most recently dispatched query. Snapshots are matched
     /// against this rather than the live entry text, so results still land

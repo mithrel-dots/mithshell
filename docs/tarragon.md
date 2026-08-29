@@ -194,11 +194,18 @@ inspectable but cannot be executed.
 Mithshell sends the exact query ID, plugin, result ID, and action name back to
 TarraGon. Only one selection is accepted at a time because TarraGon's
 `select_response` does not identify the originating query or action and is
-broadcast to every frontend. Success closes the launcher. Failure remains open
-and displays the daemon or plugin message. After five seconds without a
-response, Mithshell reports that the action is still pending but keeps later
-actions serialized; unlocking early could misattribute a delayed broadcast to
-a newer action.
+broadcast to every frontend. A successful normal selection closes the launcher;
+`keep_open` actions and failures remain open and display the daemon or plugin
+message. After five seconds without a response, Mithshell reports that the
+action is still pending but keeps later actions serialized; unlocking early
+could misattribute a delayed broadcast to a newer action.
+
+Result actions may provide a `type` field:
+
+- Untyped actions perform a normal selection and close the launcher after success.
+- `keep_open` performs a normal selection but leaves the launcher open after success.
+- `query_replace` replaces the search query and leaves the launcher open without
+  sending a selection request.
 
 The immediate `{"type":"ok"}` response means only that TarraGon accepted the
 request; Mithshell waits for `select_response` before reporting success.

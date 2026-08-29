@@ -513,10 +513,11 @@ impl IslandWindow {
     }
 
     pub fn update_tarragon_selection(self: &Rc<Self>, success: bool, message: &str) {
+        let keep_open = self.search_selection_keep_open.replace(false);
         self.search_selection_pending.set(false);
-        if success && self.search_open.get() {
+        if success && !keep_open && self.search_open.get() {
             self.close();
-        } else if !success && self.search_open.get() {
+        } else if self.search_open.get() {
             self.search_status.set_label(message);
         }
     }
@@ -1042,11 +1043,13 @@ impl IslandWindow {
     }
 
     pub(super) fn execute_search_action(self: &Rc<Self>, index: i32, action: &TarragonAction) {
-        if action.action_type.as_deref() == Some("query_replace")
-            && let Some(query) = action.query.as_deref()
-        {
-            self.search_entry.set_text(query);
-            self.search_entry.grab_focus();
+        if action.action_type.as_deref() == Some("query_replace") {
+            if let Some(query) = action.query.as_deref() {
+                self.search_entry.set_text(query);
+                self.search_entry.grab_focus();
+            } else {
+                self.search_status.set_label("QUERY REPLACE HAS NO QUERY");
+            }
             return;
         }
         if self.search_selection_pending.replace(true) {
@@ -1060,6 +1063,8 @@ impl IslandWindow {
             self.search_selection_pending.set(false);
             return;
         };
+        self.search_selection_keep_open
+            .set(action.action_type.as_deref() == Some("keep_open"));
         (self.actions.select)(TarragonSelection {
             query_id: snapshot.query_id,
             plugin: result.plugin.clone(),
