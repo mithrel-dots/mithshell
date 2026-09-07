@@ -162,21 +162,39 @@ pub fn query_battery() -> Result<Option<BatteryState>> {
     let Ok(entries) = fs::read_dir(root) else {
         return Ok(None);
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if fs::read_to_string(path.join("type"))
-            .unwrap_or_default()
-            .trim()
-            != "Battery"
-        {
+    let mut batteries: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            fs::read_to_string(path.join("type"))
+                .unwrap_or_default()
+                .trim()
+                == "Battery"
+        })
+        .collect();
+    // HID devices can expose a second, often-zero battery (for example a
+    // touchpad or stylus). Prefer the kernel's conventional BAT* device and
+    // make the choice independent of power_supply enumeration order.
+    batteries.sort_by_key(|path| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        (!name.starts_with("BAT"), name.to_owned())
+    });
+
+    for path in batteries {
+        let Ok(percent) = read_u64(&path.join("capacity")) else {
             continue;
-        }
-        let percent = read_u64(&path.join("capacity"))?.min(100) as u8;
+        };
         let status = fs::read_to_string(path.join("status"))
             .unwrap_or_else(|_| "Unknown".into())
             .trim()
             .to_owned();
-        return Ok(Some(BatteryState { percent, status }));
+        return Ok(Some(BatteryState {
+            percent: percent.min(100) as u8,
+            status,
+        }));
     }
     Ok(None)
 }
@@ -334,5 +352,12 @@ mod tests {
         assert_eq!(PowerAction::PowerOff.systemctl_argument(), "poweroff");
         assert_eq!(PowerAction::Suspend.systemctl_argument(), "suspend");
         assert_eq!(PowerAction::Reboot.systemctl_argument(), "reboot");
+    }
+
+    #[test]
+    fn conventional_batteries_sort_before_hid_batteries() {
+        let mut names = ["hid-foo-battery", "BAT0", "BAT1"];
+        names.sort_by_key(|name| (!name.starts_with("BAT"), (*name).to_owned()));
+        assert_eq!(names, ["BAT0", "BAT1", "hid-foo-battery"]);
     }
 }
