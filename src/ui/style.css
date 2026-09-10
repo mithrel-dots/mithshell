@@ -76,6 +76,11 @@ window.mithshell-notifications > contents {
   padding: 0 15px;
 }
 
+.compact-battery-wave {
+  background: transparent;
+  color: @ms_primary;
+}
+
 .compact-clock {
   color: @ms_tertiary;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;

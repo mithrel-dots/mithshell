@@ -130,14 +130,14 @@ impl IslandWindow {
 
     /// Every animatable view surface paired with its view, in the fixed
     /// order the `start` opacity array is indexed by.
-    fn view_widgets(&self) -> [(&gtk::Box, View); 6] {
+    fn view_widgets(&self) -> [(&gtk::Widget, View); 6] {
         [
             (&self.compact, View::Compact),
-            (&self.media, View::Media),
-            (&self.dashboard, View::Dashboard),
-            (&self.weather, View::Weather),
-            (&self.osd, View::Osd),
-            (&self.notification, View::Notification),
+            (self.media.upcast_ref(), View::Media),
+            (self.dashboard.upcast_ref(), View::Dashboard),
+            (self.weather.upcast_ref(), View::Weather),
+            (self.osd.upcast_ref(), View::Osd),
+            (self.notification.upcast_ref(), View::Notification),
         ]
     }
 

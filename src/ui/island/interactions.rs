@@ -23,7 +23,7 @@ impl IslandWindow {
             search_reload_button,
             weather_back_button,
         } = buttons;
-        for pill in [&self.compact, &self.media] {
+        for pill in [&self.compact, self.media.upcast_ref()] {
             let click = GestureClick::new();
             let weak = Rc::downgrade(self);
             click.connect_released(move |gesture, _, _, _| {

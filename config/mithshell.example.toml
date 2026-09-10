@@ -11,6 +11,15 @@ scale = 0
 # Maximum media-pill width as a multiple of the compact pill width.
 max_width_factor = 1.8
 
+[battery]
+# Draw a moving divider behind the text, positioned by battery percentage.
+wave = false
+# Blend the level color into the active theme. Set false for the raw color.
+tint = true
+# "horizontal": fill bottom to top; "vertical": fill left to right.
+# At 99% the divider is almost at the top/right edge; at 100% it disappears.
+orientation = "horizontal"
+
 [notifications]
 # What to do when the focused monitor has a fullscreen window and the
 # notification does not qualify for overlay rendering: "ignore" keeps it on

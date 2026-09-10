@@ -109,6 +109,27 @@ max_width_factor = 1.8
 The factor is clamped to the available dashboard canvas. Short titles only
 expand as far as needed; longer titles use the maximum and are ellipsized.
 
+The compact pill can show battery charge as a moving wave:
+
+```toml
+[battery]
+wave = true
+tint = true
+orientation = "horizontal"
+```
+
+The divider moves with the battery level behind the text and workspace dots.
+`orientation = "horizontal"` fills from bottom to top; `"vertical"` fills
+from left to right. At 99% the wave is almost at the top/right edge and barely
+visible; at 100% the divider disappears and the fill covers the pill.
+
+The color transitions from green at full charge through yellow and orange to
+red at empty. With `tint = true`, a subtle translucent gradient blends those
+colors with the active theme; set it to `false` for an opaque battery color.
+The feature is disabled by default and hidden when battery data is unavailable.
+`daemon --no-animations` keeps the divider static. Run `mithshell reload` after
+changing these settings.
+
 ### Automatic OSD and media
 
 Volume and mute changes are detected through PipeWire's PulseAudio-compatible

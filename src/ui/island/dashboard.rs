@@ -288,11 +288,7 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_clear_button.set_tooltip_text(Some("Clear notification history"));
     notification_clear_button.set_sensitive(false);
     let notification_inhibit_button = gtk::ToggleButton::new();
-    icon::set_button_icon(
-        &notification_inhibit_button,
-        Icon::BellOff,
-        metrics.icons,
-    );
+    icon::set_button_icon(&notification_inhibit_button, Icon::BellOff, metrics.icons);
     notification_inhibit_button.add_css_class("close-button");
     notification_inhibit_button.set_tooltip_text(Some("Inhibit notifications"));
     // Flips the dashboard into a notifications-only layout: the status
@@ -537,6 +533,11 @@ impl IslandWindow {
         }
 
         if let Some(battery) = &snapshot.battery {
+            // let battery = crate::state::BatteryState {
+            //     percent: 25,
+            //     ..battery.clone()
+            // }; // TEST OVERRIDE
+            //
             let icon = battery_icon(battery.percent, &battery.status);
             icon::set_icon(&self.battery_icon, icon, self.metrics.icons);
             self.battery_label
@@ -545,9 +546,11 @@ impl IslandWindow {
                 .set_label(&format!("{}%", battery.percent));
             self.battery_chip.set_visible(true);
             self.compact_battery.set_visible(true);
+            self.update_battery_wave(Some(battery.percent));
         } else {
             self.battery_chip.set_visible(false);
             self.compact_battery.set_visible(false);
+            self.update_battery_wave(None);
         }
         self.updating_controls.set(false);
         self.resize_compact();

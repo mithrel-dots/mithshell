@@ -15,6 +15,7 @@ pub const DEFAULT_SOURCE_COLOR: &str = "#9aa7ff";
 pub struct AppConfig {
     pub shell: ShellConfig,
     pub media: MediaConfig,
+    pub battery: BatteryConfig,
     pub theme: ThemeConfig,
     pub weather: WeatherConfig,
     pub lock: LockConfig,
@@ -79,6 +80,35 @@ impl Default for MediaConfig {
             max_width_factor: 1.8,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BatteryConfig {
+    /// Draw the compact pill's battery level as a moving wave.
+    pub wave: bool,
+    /// Blend the battery hue into the active surface instead of using it raw.
+    pub tint: bool,
+    /// Direction of the divider: horizontal fills upward, vertical fills rightward.
+    pub orientation: BatteryOrientation,
+}
+
+impl Default for BatteryConfig {
+    fn default() -> Self {
+        Self {
+            wave: false,
+            tint: true,
+            orientation: BatteryOrientation::Horizontal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BatteryOrientation {
+    #[default]
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -535,6 +565,39 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.media.max_width_factor, 1.6);
+    }
+
+    #[test]
+    fn battery_wave_defaults_to_disabled_tinted_mode() {
+        let config = BatteryConfig::default();
+        assert!(!config.wave);
+        assert!(config.tint);
+        assert_eq!(config.orientation, BatteryOrientation::Horizontal);
+        assert_eq!(AppConfig::default().battery, config);
+    }
+
+    #[test]
+    fn parses_battery_wave_and_flat_color_mode() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [battery]
+            wave = true
+            tint = false
+            orientation = "vertical"
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.battery.wave);
+        assert!(!config.battery.tint);
+        assert_eq!(config.battery.orientation, BatteryOrientation::Vertical);
+    }
+
+    #[test]
+    fn battery_orientation_is_optional_and_rejects_typos() {
+        let config: AppConfig = toml::from_str("[battery]\nwave = true\ntint = true").unwrap();
+        assert_eq!(config.battery.orientation, BatteryOrientation::Horizontal);
+        assert!(toml::from_str::<AppConfig>("[battery]\norientation = 'diagonal'").is_err());
     }
 
     #[test]

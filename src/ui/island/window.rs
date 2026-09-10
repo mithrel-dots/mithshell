@@ -100,8 +100,15 @@ impl IslandWindow {
         content.set_size_request(metrics.window_width, metrics.window_height);
         surface.set_child(Some(&content));
 
-        let (compact, compact_workspaces, compact_clock, compact_battery, compact_tray) =
-            compact_view(metrics);
+        let (
+            compact,
+            compact_workspaces,
+            compact_clock,
+            compact_battery,
+            compact_tray,
+            compact_battery_wave,
+            compact_battery_percent,
+        ) = compact_view(metrics, animations_enabled, config.battery);
         content.put(
             &compact,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -224,7 +231,7 @@ impl IslandWindow {
             fixed,
             content,
             surface,
-            compact,
+            compact: compact.upcast(),
             media: media_widgets.root,
             dashboard: dashboard_widgets.root,
             search: search_widgets.root,
@@ -234,6 +241,9 @@ impl IslandWindow {
             compact_workspaces,
             compact_clock,
             compact_battery,
+            compact_battery_wave,
+            compact_battery_percent,
+            compact_battery_wave_enabled: config.battery.wave,
             compact_tray,
             compact_width: Cell::new(metrics.compact_width),
             tray_hovered: Cell::new(false),
@@ -492,6 +502,7 @@ impl IslandWindow {
     /// Redraws any active custom Cairo drawing after a theme change --
     /// swapping the CSS provider doesn't trigger that on its own.
     pub fn update_palette(&self) {
+        self.compact_battery_wave.queue_draw();
         for icon in self.weather_icons.borrow().iter() {
             icon.queue_draw();
         }
