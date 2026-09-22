@@ -16,7 +16,7 @@ pub(crate) struct CircleContent {
     pub full: Option<gtk::Widget>,
 }
 
-type OnChange = Box<dyn Fn(&CircleHost)>;
+type OnChange = Rc<dyn Fn(&CircleHost)>;
 
 pub(crate) struct CircleHost {
     surface: CircleSurface,
@@ -24,6 +24,9 @@ pub(crate) struct CircleHost {
     radius_style: gtk::CssProvider,
     state: Cell<State>,
     frame: Cell<Option<Frame>>,
+    /// The page currently presented.  `state.mode()` is the requested page;
+    /// these intentionally differ while the integration fades between them.
+    presented_page: Cell<Option<Mode>>,
     on_change: RefCell<Option<OnChange>>,
 }
 
@@ -75,6 +78,7 @@ impl CircleHost {
             radius_style,
             state: Cell::new(State::new(supports_full)),
             frame: Cell::new(None),
+            presented_page: Cell::new(None),
             on_change: RefCell::new(None),
         });
         let motion = gtk::EventControllerMotion::new();
@@ -126,10 +130,10 @@ impl CircleHost {
         self.frame.get()
     }
 
-    /// A single layout invalidation hook; install before the first Content event.
-    /// Do not dispatch more events or replace this hook from inside the hook.
+    /// A single layout invalidation hook; install before the first Content
+    /// event. The hook may dispatch events or replace itself reentrantly.
     pub(crate) fn set_on_change(&self, callback: impl Fn(&CircleHost) + 'static) {
-        self.on_change.replace(Some(Box::new(callback)));
+        self.on_change.replace(Some(Rc::new(callback)));
     }
 
     pub(crate) fn dispatch(&self, event: Event) {
@@ -140,22 +144,58 @@ impl CircleHost {
         self.state.set(state);
         if state.mode() == Mode::Absent {
             self.frame.set(None);
+            self.presented_page.set(None);
             self.surface.set_visible(false);
-        } else {
-            self.stack.set_visible_child_name(match state.mode() {
-                Mode::Compact => "compact",
-                Mode::FullExpanded => "full",
-                _ => "hover",
-            });
         }
-        if let Some(callback) = self.on_change.borrow().as_ref() {
+        // Clone before invoking: callbacks may dispatch recursively or replace
+        // the hook, neither of which may occur while `on_change` is borrowed.
+        let callback = self.on_change.borrow().clone();
+        if let Some(callback) = callback {
             callback(self);
         }
     }
 
+    /// The page requested by the current state.  The presented page remains
+    /// unchanged until `commit_page`, allowing an outgoing fade to finish.
+    pub(crate) fn target_page(&self) -> Option<Mode> {
+        match self.state.get().mode() {
+            Mode::Absent => None,
+            mode => Some(mode),
+        }
+    }
+
+    /// The page currently visible in the stack, if any.
+    pub(crate) fn presented_page(&self) -> Option<Mode> {
+        self.presented_page.get()
+    }
+
+    /// Commit the page captured for `revision` after the caller's outgoing
+    /// transition.  Stale callbacks cannot reveal an old page.  A caller that
+    /// has no animation can call this immediately after dispatch; a valid
+    /// frame is still required before the surface becomes visible.
+    pub(crate) fn commit_page(&self, revision: Revision) -> bool {
+        if !self.state.get().accepts(revision) {
+            return false;
+        }
+        let mode = self.state.get().mode();
+        let name = match mode {
+            Mode::Absent => return false,
+            Mode::Compact => "compact",
+            Mode::HoverExpanded => "hover",
+            Mode::FullExpanded => "full",
+        };
+        self.stack.set_visible_child_name(name);
+        self.presented_page.set(Some(mode));
+        if self.frame.get().is_some() {
+            self.surface.set_visible(true);
+        }
+        true
+    }
+
     /// Apply only current work. `None` suppresses a present slot that cannot fit.
     /// The caller owns Fixed positioning and the window's complete input union.
-    /// Visibility is enabled only here, after valid bounded geometry exists.
+    /// Visibility is enabled only here, after valid bounded geometry exists and
+    /// after the integration commits a page with `commit_page`.
     pub(crate) fn render(&self, revision: Revision, frame: Option<Frame>) -> bool {
         if !self.state.get().accepts(revision) {
             return false;
@@ -172,7 +212,8 @@ impl CircleHost {
             self.surface
                 .set_size_request(frame.rect.width as i32, frame.rect.height as i32);
             self.surface.queue_draw();
-            self.surface.set_visible(true);
+            self.surface
+                .set_visible(self.presented_page.get().is_some());
         } else {
             self.surface.set_visible(false);
         }

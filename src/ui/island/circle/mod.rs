@@ -9,7 +9,10 @@
 //! The caller selects Material profiles and interpolates `Visual` from the last
 //! rendered value (including on reversal). Each frame calls `layout` with the
 //! **current animated central bounds**, calls `render`, and only on success moves
-//! the widget. Union each host's current `frame().input_rectangles()` with the
+//! the widget. Page changes are staged: keep the old page through the outgoing
+//! fade, then call `commit_page(revision)` before the incoming fade. A
+//! no-animation integration may render and commit synchronously. Union each
+//! host's current `frame().input_rectangles()` with the
 //! central input region (a missing frame contributes nothing). All origins
 //! must be in the same window-local GTK logical coordinate system; translate the
 //! monitor into that system first. Do not multiply by the monitor's device scale.
@@ -108,12 +111,21 @@ impl State {
         let old = *self;
         match event {
             Event::Content(present) => {
+                // Content(true) is also the snapshot invalidation signal.  A
+                // module can remain present while its widget tree/data is
+                // replaced, so do not let an old frame callback survive that
+                // snapshot boundary.
+                let snapshot_refresh = present && self.present;
                 self.present = present;
                 if !present {
                     self.hovered = false;
                     self.menu = false;
                     self.focus = false;
                     self.full = false;
+                }
+                if snapshot_refresh {
+                    self.revision.0 = self.revision.0.wrapping_add(1);
+                    return true;
                 }
             }
             _ if !self.present => return false,
@@ -196,6 +208,17 @@ mod tests {
         state.apply(Event::Pointer(false));
         state.apply(Event::Pointer(true));
         assert_eq!(state.mode(), Mode::HoverExpanded);
+        assert!(!state.accepts(old));
+        assert!(state.accepts(state.revision()));
+    }
+
+    #[test]
+    fn repeated_present_content_invalidates_the_previous_snapshot() {
+        let mut state = State::new(false);
+        assert!(state.apply(Event::Content(true)));
+        let old = state.revision();
+        assert!(state.apply(Event::Content(true)));
+        assert_eq!(state.mode(), Mode::Compact);
         assert!(!state.accepts(old));
         assert!(state.accepts(state.revision()));
     }
