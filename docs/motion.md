@@ -9,6 +9,8 @@ The definitions below are legacy Material Design 3 duration/easing tokens for
 these transitions, not the newer Material Expressive physics system. Numerical
 values were verified against the first-party M3 documentation (content version
 `2026-09-16_06-10-03`) on 2026-09-22:
+The shell uses them as named profiles; the use-case mapping is a project choice,
+not a claim that Google prescribes these timings for this custom surface.
 
 - https://m3.material.io/styles/motion/easing-and-duration/tokens-specs
 - https://m3.material.io/styles/motion/easing-and-duration/applying-easing-and-duration
@@ -63,7 +65,8 @@ even when a particular coordinate increases.
 use std::time::Duration;
 use crate::ui::motion::Profile;
 
-// Preserve today's shell.animation_ms literally, including zero and 280.
+// Presentation resolves the historical default 280 to the named profile;
+// non-default values (including zero) remain exact overrides.
 let geometry = Profile::CONTAINER_EXPAND
     .with_timing(animations_enabled, Some(shell.animation_ms));
 
@@ -86,14 +89,12 @@ for a tick. A finished scalar sample returns the exact target, avoiding residual
 rounding errors. Use `is_complete(elapsed)` for lifecycle completion; floating
 point eased progress can round to one just before the clock's endpoint.
 
-The existing `shell.animation_ms` is a defaulted `u32` (280), so the runtime value
-cannot distinguish an omitted default from an explicitly configured 280. Do not
-silently treat 280 as a sentinel for token timing. Recommended integration:
-preserve `Some(shell.animation_ms)` for existing paths until configuration has
-an explicit token-timing opt-in or preserves field presence. For new paths,
-choose token timing deliberately and still honor the global zero-duration
-setting: pass `Some(0)` when `shell.animation_ms == 0`. A blanket `None` loses
-that compatibility. Timing resolution belongs at the integration boundary.
+The existing `shell.animation_ms` is a defaulted `u32` (280), so the runtime
+value cannot distinguish an omitted default from an explicitly configured 280.
+Presentation call sites use 280 as the compatibility default for named profiles;
+any other positive value is an exact override, and zero/disabled animation is
+always immediate. This convention is documented rather than hidden, and an
+explicit token-timing config can remove the ambiguity later.
 
 For interruption, cancel/invalidate the old tick generation, capture the current
 rendered geometry and opacities, and restart elapsed at zero with those values
@@ -113,9 +114,10 @@ be finite. `Duration` avoids negative/NaN durations and elapsed times.
 
 Unit tests cover analytic Bezier points, exact endpoints, boundedness,
 monotonicity, nonfinite normalized time, duration overrides, immediate completion,
-large durations/scalar ranges, and position-continuous reversal. This contract
-is staged without call-site changes. UI choreography, hover stability, clipping,
-focus, and input regions need integration review and compositor-level testing.
+large durations/scalar ranges, and position-continuous reversal. The island
+presentation additionally tests reversible hover geometry and uses
+generation-cancelled GTK frame tracks. Clipping, focus, and compositor input
+regions still need live desktop review.
 Continuous battery-wave motion is not transition easing; it is outside this API.
 
 Transition choreography guidance: https://m3.material.io/styles/motion/transitions/applying-transitions
