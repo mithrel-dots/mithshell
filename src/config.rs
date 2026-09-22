@@ -14,6 +14,8 @@ pub const DEFAULT_SOURCE_COLOR: &str = "#9aa7ff";
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
     pub shell: ShellConfig,
+    pub circles: CirclesConfig,
+    pub launcher: LauncherConfig,
     pub media: MediaConfig,
     pub battery: BatteryConfig,
     pub theme: ThemeConfig,
@@ -65,6 +67,71 @@ impl ShellConfig {
             .iter()
             .any(|name| name == "*" || name == connector)
     }
+}
+
+/// Optional module placement beside the island. Assignment is independent of
+/// content availability: an empty assigned module stays out of its legacy view.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+pub struct CirclesConfig {
+    pub left: CircleModule,
+    pub right: CircleModule,
+}
+
+impl CirclesConfig {
+    /// Whether a real module belongs to a circle instead of its legacy view.
+    /// `None` is an empty slot, never a placed module.
+    pub fn contains(&self, module: CircleModule) -> bool {
+        module != CircleModule::None && (self.left == module || self.right == module)
+    }
+}
+
+impl<'de> Deserialize<'de> for CirclesConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default, deny_unknown_fields)]
+        struct Slots {
+            left: CircleModule,
+            right: CircleModule,
+        }
+
+        let slots = Slots::deserialize(deserializer)?;
+        let config = Self {
+            left: slots.left,
+            right: slots.right,
+        };
+        // Both empty slots are valid, but a real module must have one owner.
+        // Validate during parsing so AppConfig::load fails before reload teardown.
+        if config.left != CircleModule::None && config.left == config.right {
+            return Err(serde::de::Error::custom(
+                "circles.left and circles.right must not assign the same non-none module",
+            ));
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CircleModule {
+    #[default]
+    None,
+    Tray,
+    Media,
+    Notifications,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LauncherConfig {
+    pub presentation: LauncherPresentation,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LauncherPresentation {
+    #[default]
+    Independent,
+    Integrated,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -193,8 +260,11 @@ pub struct NotificationConfig {
     /// `below-pill`/corner positions; `pill` shows one notification at a
     /// time, queueing the rest.
     pub max_visible: usize,
-    /// Number of notifications kept in the dashboard's notification history.
+    /// Number of notifications kept in history, in the dashboard or a circle.
     pub max_history: usize,
+    /// Latest retained notifications to preview on circle hover. Zero keeps
+    /// only the minimal header and full-history affordance; it does not clear history.
+    pub hover_preview_count: usize,
     /// Spacing between stacked toasts, and between the island and the
     /// popup in `below-pill` position.
     pub gap: i32,
@@ -216,6 +286,7 @@ impl Default for NotificationConfig {
             timeout_ms: 5_000,
             max_visible: 5,
             max_history: 50,
+            hover_preview_count: 3,
             gap: 8,
             margin: 12,
             fullscreen_strategy: FullscreenStrategy::default(),
@@ -306,12 +377,29 @@ pub struct TrayConfig {
     /// `org.kde.StatusNotifierItem` tray icons, and the pill never grows a
     /// tray section.
     pub enabled: bool,
+    /// Compact circle appearance; the legacy pill-hover tray is unaffected.
+    pub compact_style: TrayCompactStyle,
+    /// Maximum icons around the circle's count in `count-with-icons` mode.
+    /// Zero is count-only. Expanded access and the total count are unaffected.
+    pub max_compact_icons: usize,
 }
 
 impl Default for TrayConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            compact_style: TrayCompactStyle::Count,
+            max_compact_icons: 4,
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrayCompactStyle {
+    #[default]
+    Count,
+    CountWithIcons,
 }
 
 /// How mithshell draws its own chrome icons.
@@ -503,6 +591,163 @@ mod tests {
         };
         assert!(shell.shows_on("DP-2"));
         assert!(!shell.shows_on("DP-1"));
+    }
+
+    #[test]
+    fn optional_presentation_defaults_preserve_legacy_placement() {
+        for source in ["", "[circles]\n[launcher]\n[tray]\n[notifications]"] {
+            let config: AppConfig = toml::from_str(source).unwrap();
+            assert_eq!(config.circles, CirclesConfig::default());
+            assert_eq!(config.circles.left, CircleModule::None);
+            assert_eq!(config.circles.right, CircleModule::None);
+            assert!(!config.circles.contains(CircleModule::None));
+            assert!(!config.circles.contains(CircleModule::Tray));
+            assert_eq!(
+                config.launcher.presentation,
+                LauncherPresentation::Independent
+            );
+            assert_eq!(config.tray.compact_style, TrayCompactStyle::Count);
+            assert_eq!(config.tray.max_compact_icons, 4);
+            assert_eq!(config.notifications.hover_preview_count, 3);
+        }
+        let config: AppConfig = toml::from_str("[circles]\nright = 'media'").unwrap();
+        assert_eq!(config.circles.left, CircleModule::None);
+        assert!(config.circles.contains(CircleModule::Media));
+    }
+
+    #[test]
+    fn circle_placements_allow_each_pair_except_duplicate_modules() {
+        let modules = [
+            ("none", CircleModule::None),
+            ("tray", CircleModule::Tray),
+            ("media", CircleModule::Media),
+            ("notifications", CircleModule::Notifications),
+        ];
+        for (left_name, left) in modules {
+            for (right_name, right) in modules {
+                let source = format!("[circles]\nleft = '{left_name}'\nright = '{right_name}'");
+                let parsed = toml::from_str::<AppConfig>(&source);
+                if left == right && left != CircleModule::None {
+                    let error = parsed.unwrap_err().to_string();
+                    assert!(error.contains("same non-none module"), "{error}");
+                    continue;
+                }
+                let config = parsed.unwrap();
+                assert_eq!(config.circles, CirclesConfig { left, right });
+                for (_, module) in modules {
+                    assert_eq!(
+                        config.circles.contains(module),
+                        module != CircleModule::None && (left == module || right == module)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parses_and_round_trips_presentation_options() {
+        let source = r#"
+            [circles]
+            left = "tray"
+            right = "notifications"
+            [launcher]
+            presentation = "integrated"
+            [tray]
+            compact_style = "count-with-icons"
+            max_compact_icons = 7
+            [notifications]
+            hover_preview_count = 6
+        "#;
+        let config: AppConfig = toml::from_str(source).unwrap();
+        assert_eq!(
+            config.launcher.presentation,
+            LauncherPresentation::Integrated
+        );
+        assert_eq!(config.tray.compact_style, TrayCompactStyle::CountWithIcons);
+        assert_eq!(config.tray.max_compact_icons, 7);
+        assert_eq!(config.notifications.hover_preview_count, 6);
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("compact_style = \"count-with-icons\""));
+        let restored: AppConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(restored.circles, config.circles);
+        assert_eq!(restored.launcher, config.launcher);
+        assert_eq!(restored.tray, config.tray);
+        assert_eq!(restored.notifications, config.notifications);
+    }
+
+    #[test]
+    fn zero_preview_limits_preserve_modules_and_history_capacity() {
+        let config: AppConfig = toml::from_str(
+            "[tray]\ncompact_style = 'count-with-icons'\nmax_compact_icons = 0\n\
+             [notifications]\nhover_preview_count = 0",
+        )
+        .unwrap();
+        assert!(config.tray.enabled);
+        assert_eq!(config.tray.max_compact_icons, 0);
+        assert!(config.notifications.enabled);
+        assert_eq!(config.notifications.hover_preview_count, 0);
+        assert_eq!(config.notifications.max_history, 50);
+    }
+
+    #[test]
+    fn presentation_options_reject_unknown_fields_values_and_negative_counts() {
+        for source in [
+            "[circles]\nleft = 'clock'",
+            "[circles]\nright = 'Media'",
+            "[circles]\ncenter = 'tray'",
+            "[launcher]\npresentation = 'floating'",
+            "[launcher]\nmode = 'integrated'",
+            "[tray]\ncompact_style = 'count_with_icons'",
+            "[tray]\nmax_compact_icons = -1",
+            "[tray]\nmax_icons = 4",
+            "[notifications]\nhover_preview_count = -1",
+            "[notifications]\nhover_previews = 3",
+        ] {
+            assert!(toml::from_str::<AppConfig>(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn load_rejects_duplicate_circles_at_the_reload_boundary() {
+        // Keep test files in the project rather than the system temporary directory.
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("config-load-test-{}.toml", std::process::id()));
+        fs::write(&path, "[circles]\nleft = 'media'\nright = 'media'").unwrap();
+        let result = AppConfig::load(&path);
+        fs::remove_file(&path).unwrap();
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("same non-none module"), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert_eq!(
+            AppConfig::load(&path).unwrap().circles,
+            CirclesConfig::default()
+        );
+    }
+
+    #[test]
+    fn legacy_example_without_presentation_options_keeps_its_defaults() {
+        // The shipped example's existing sections remain a supported legacy config
+        // when all newly introduced presentation keys are omitted.
+        let mut legacy: toml::Table =
+            toml::from_str(include_str!("../config/mithshell.example.toml")).unwrap();
+        legacy.remove("circles");
+        legacy.remove("launcher");
+        let tray = legacy["tray"].as_table_mut().unwrap();
+        tray.remove("compact_style");
+        tray.remove("max_compact_icons");
+        legacy["notifications"]
+            .as_table_mut()
+            .unwrap()
+            .remove("hover_preview_count");
+        let config: AppConfig = legacy.try_into().unwrap();
+        assert_eq!(config.circles, CirclesConfig::default());
+        assert_eq!(config.launcher, LauncherConfig::default());
+        assert_eq!(config.tray, TrayConfig::default());
+        assert_eq!(config.notifications, NotificationConfig::default());
+        assert_eq!(config.shell.monitors, ["*"]);
+        assert_eq!(config.media.max_width_factor, 1.8);
+        assert_eq!(config.theme.source, ThemeSource::default());
     }
 
     #[test]

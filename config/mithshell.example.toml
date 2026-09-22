@@ -7,6 +7,21 @@ animation_ms = 280
 # 0 selects an automatic scale from each monitor's logical width.
 scale = 0
 
+# Circle/launcher options below define the configuration contract; their UI
+# integration is pending. See README's "Circle and launcher configuration".
+[circles]
+# Each side accepts "none", "tray", "media", or "notifications".
+# A non-none module may appear on only one side. Empty circles are absent.
+# Unassigned tray retains pill-hover access; media/notifications stay in the
+# dashboard. Media assignment also removes the central playing-media view.
+left = "none"
+right = "none"
+
+[launcher]
+# "independent" keeps the separate launcher; "integrated" requests an
+# island-replacing launcher that emerges from and merges back into the island.
+presentation = "independent"
+
 [media]
 # Maximum media-pill width as a multiple of the compact pill width.
 max_width_factor = 1.8
@@ -46,8 +61,12 @@ timeout_ms = 5000
 # the corner positions; "pill" always shows one at a time and queues the
 # rest.
 max_visible = 5
-# Notifications kept in the dashboard's notification history.
+# Notifications kept in history (dashboard, or circle when assigned).
+# The circle count is retained history, including expired popups, not unread.
 max_history = 50
+# Latest retained entries requested for circle hover (pending UI integration).
+# Zero requests only a minimal header and access to the full history view.
+hover_preview_count = 3
 # Spacing between stacked toasts, and between the island and the popup in
 # "below-pill" position.
 gap = 8
@@ -57,8 +76,13 @@ margin = 12
 [tray]
 # When false, mithshell neither hosts nor watches for
 # org.kde.StatusNotifierItem tray icons, and the pill never grows a tray
-# section. Icons only appear while hovering the pill.
+# section. Without a circle assignment, icons appear while hovering the pill.
 enabled = true
+# Compact circle contract (pending UI integration): "count" or "count-with-icons".
+compact_style = "count"
+# Maximum tiny preview icons in "count-with-icons" mode. Zero is count-only;
+# neither the total count nor access to every expanded tray item is limited.
+max_compact_icons = 4
 
 [icons]
 # How mithshell's own controls are drawn.

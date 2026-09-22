@@ -130,6 +130,63 @@ The feature is disabled by default and hidden when battery data is unavailable.
 `daemon --no-animations` keeps the divider static. Run `mithshell reload` after
 changing these settings.
 
+### Circle and launcher configuration
+
+The following options are parsed and validated now; their UI integration is
+pending. They define the intended presentation contract. Omitting them preserves
+the existing layout and launcher behavior.
+
+```toml
+[circles]
+left = "none"
+right = "none"
+
+[launcher]
+presentation = "independent"
+
+[tray]
+compact_style = "count"
+max_compact_icons = 4
+
+[notifications]
+hover_preview_count = 3
+```
+
+Each circle slot accepts exactly `"none"`, `"tray"`, `"media"`, or
+`"notifications"`. Both default to `"none"`. A real module can occupy only one
+side: for example, `left = "tray"` and `right = "media"` is valid, while assigning
+`"media"` to both sides is rejected during config loading, before reload replaces
+any windows. Unknown fields and enum values are also rejected. Add these keys to
+existing TOML sections rather than declaring a section twice.
+
+The circle presentation contract is:
+
+* Assignment moves a module into its circle. Unassigned tray keeps its existing
+  pill-hover access; unassigned media and notification history stay in the
+  dashboard. Media assignment also removes the central playing-media view,
+  leaving the central island in its normal compact presentation during playback.
+* An assigned module with no content has no visible circle or reserved spacing;
+  it remains assigned and does not move back into the dashboard or pill.
+* Tray circles count all tracked items. `compact_style = "count"` (the default)
+  shows only the count; `"count-with-icons"` adds up to `max_compact_icons` tiny
+  icons around it (default **4**). A limit of **0** is valid and leaves just the
+  count. Hover expansion must expose every item regardless of the compact limit.
+  Disabled or empty trays have no circle; missing icons use a fallback.
+* Media circles remain available for a valid titled selected player, including
+  paused and stopped players, so controls remain reachable. The compact view and
+  expanded controls use the same player. Application or fallback icons are
+  sufficient when artwork is unavailable. No valid titled player means no circle.
+* Notification circles show a bell and the **retained history count**, including
+  expired popups until removed. Viewing history neither marks it read nor clears
+  it. Hover previews the latest `hover_preview_count` entries (default **3**);
+  clicking opens the full scrollable history. **0** previews is valid: hover still
+  offers a minimal header and access to full history. This limit does not change
+  `max_history`, popup routing, or history retention. Empty history has no circle.
+
+`launcher.presentation` accepts `"independent"` (the default, separate launcher
+surface with the island still present) or `"integrated"` (a launcher replacing the
+island, emerging from it and merging back when closed).
+
 ### Automatic OSD and media
 
 Volume and mute changes are detected through PipeWire's PulseAudio-compatible
