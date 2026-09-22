@@ -967,9 +967,6 @@ mod tests {
             notification_host.test_escape_key(),
             gtk::glib::Propagation::Stop
         );
-        island.animation_ms.set(100);
-        island.animations_enabled.set(true);
-        island.relayout_circles();
         assert_eq!(notification_host.mode(), super::circle::Mode::Compact);
         assert_eq!(
             notification_host.presented_page(),
@@ -977,6 +974,23 @@ mod tests {
         );
         assert!(island.circle_full_active());
         assert!(island.dismiss_window.is_visible());
+        let interruption = gtk::Button::with_label("focus interruption");
+        interruption.set_can_focus(true);
+        interruption.set_can_target(true);
+        island.fixed.put(&interruption, 0.0, 0.0);
+        interruption.grab_focus();
+        focus_root.set_focus(Some(&interruption));
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert_eq!(
+            focus_root
+                .focus()
+                .map(|focused| focused == *interruption.upcast_ref::<gtk::Widget>()),
+            Some(true)
+        );
+        island.relayout_circles();
+        assert_eq!(notification_host.mode(), super::circle::Mode::Compact);
         let dismiss_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         while island.circle_full_active() && std::time::Instant::now() < dismiss_deadline {
             island.relayout_circles();
