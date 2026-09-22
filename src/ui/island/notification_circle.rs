@@ -666,11 +666,15 @@ mod tests {
         .unwrap();
         assert!(circle.host.render(circle.host.revision(), Some(frame)));
         assert!(circle.host.frame().is_some());
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
         let callbacks_before_empty = hook_calls.get();
         circle.update(&[]);
-        assert!(
-            hook_calls.get() > callbacks_before_empty,
-            "empty update must notify host disappearance"
+        assert_eq!(
+            hook_calls.get(),
+            callbacks_before_empty + 1,
+            "empty update must notify host disappearance exactly once"
         );
         assert_eq!(circle.host.mode(), super::super::circle::Mode::Absent);
         assert!(circle.host.frame().is_none());

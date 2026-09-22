@@ -9,6 +9,7 @@ are expected from ``new_for_test``; fatal GTK criticals are not.
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import tempfile
@@ -26,7 +27,7 @@ TESTS = [
     "ui::island::search::tests::integrated_search_host_is_idempotent_on_real_widgets",
     "ui::island::search::tests::integrated_return_focus_guard_handles_reparent_and_stale_close",
     "ui::island::view::tests::finished_integrated_search_is_visible_and_targetable",
-    "ui::island::tray::tests::broadway_popovers_share_global_lifetime_and_close_on_invalidation",
+    "ui::island::tray::tracker_tests::broadway_popovers_share_global_lifetime_and_close_on_invalidation",
     "ui::island::media_circle::tests::gtk_update_selection_and_timer_lifecycle",
     "ui::island::battery_wave::tests::playing_media_keeps_a_live_full_width_battery_background",
 ]
@@ -84,6 +85,33 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
         and item.get("executable")
         and "lib" in item["target"]["kind"]
     )
+    listed = subprocess.run(
+        [binary, "--list"],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    available = {}
+    for line in listed.stdout.splitlines():
+        match = re.fullmatch(r"(.+): test", line)
+        if match:
+            available[match.group(1)] = available.get(match.group(1), 0) + 1
+    invalid = [
+        test
+        for test in TESTS
+        if available.get(test, 0) != 1
+    ]
+    if invalid:
+        details = ", ".join(
+            f"{test} (listed {available.get(test, 0)} times)" for test in invalid
+        )
+        raise RuntimeError(
+            "expected GTK regression test filter did not match exactly one listed test: "
+            + details
+        )
 
     server = None
     try:
@@ -101,11 +129,18 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                 raise RuntimeError((runtime / "broadway.log").read_text())
             result = 0
             for test in TESTS:
-                result |= subprocess.run(
+                completed = subprocess.run(
                     [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"],
                     cwd=ROOT,
                     env=env,
-                ).returncode
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                print(f"\n== {test} ==")
+                print(completed.stdout, end="")
+                if completed.returncode != 0:
+                    result = completed.returncode
     finally:
         stop(server)
 
