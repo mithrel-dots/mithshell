@@ -169,6 +169,11 @@ impl CircleHost {
         self.presented_page.get()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_visible_page(&self) -> Option<String> {
+        self.stack.visible_child_name().map(|name| name.to_string())
+    }
+
     /// Commit the page captured for `revision` after the caller's outgoing
     /// transition.  Stale callbacks cannot reveal an old page.  A caller that
     /// has no animation can call this immediately after dispatch; a valid

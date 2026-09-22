@@ -4,16 +4,39 @@
 //! their shadows and input regions out of the central surface's clip while
 //! retaining one layer window, one snapshot owner, and one dismissal path.
 
-use std::rc::Rc;
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    time::{Duration, Instant},
+};
 
 use super::IslandWindow;
 use super::circle::{self, CircleHost, CircleRequest, CircleSpec, Event, Rect, Size, Visual};
 use super::media_circle::{MediaCircle, MediaCircleActions};
 use super::notification_circle::{NotificationCircle, NotificationCircleCallbacks};
+use super::profile_timing;
 use super::tray_circle::TrayCircle;
 use crate::config::{CircleModule, NotificationConfig, TrayConfig};
 use crate::state::{MediaState, Notification, TrayItem};
-use gtk::prelude::*;
+use gtk::{glib, prelude::*};
+
+struct CircleAnimation {
+    revision: circle::Revision,
+    mode: circle::Mode,
+    from: Visual,
+    target: Visual,
+    started: Instant,
+    geometry: crate::ui::motion::Profile,
+    out: crate::ui::motion::Profile,
+    incoming: crate::ui::motion::Profile,
+}
+
+fn sample_visual(animation: &CircleAnimation, now: Instant) -> Visual {
+    let elapsed = now.saturating_duration_since(animation.started);
+    animation
+        .from
+        .interpolate(animation.target, animation.geometry.progress(elapsed))
+}
 
 struct Slot {
     module: CircleModule,
@@ -26,6 +49,9 @@ pub(crate) struct CircleIntegration {
     tray: Option<TrayCircle>,
     media: Option<Rc<MediaCircle>>,
     notifications: Option<Rc<NotificationCircle>>,
+    animations: RefCell<[Option<CircleAnimation>; 2]>,
+    tick_scheduled: Cell<bool>,
+    owner: Weak<IslandWindow>,
 }
 
 impl CircleIntegration {
@@ -70,12 +96,22 @@ impl CircleIntegration {
             clear: island.actions.notification_clear_all.clone(),
             inhibit: island.actions.notification_inhibit.clone(),
             open_full: Rc::new(move || {
-                if let Some(island) = weak.upgrade()
-                    && let Some(circles) = island.circles.borrow().as_ref()
-                    && let Some(circle) = circles.notifications.as_ref()
-                {
-                    circle.host.dispatch(Event::OpenFull);
-                    island.relayout_circles();
+                if let Some(island) = weak.upgrade() {
+                    let host = island
+                        .circles
+                        .borrow()
+                        .as_ref()
+                        .and_then(|circles| circles.notifications.as_ref())
+                        .map(|circle| circle.host.clone());
+                    if let Some(host) = host {
+                        host.dispatch(Event::OpenFull);
+                    }
+                    let weak = Rc::downgrade(&island);
+                    glib::idle_add_local_once(move || {
+                        if let Some(island) = weak.upgrade() {
+                            island.relayout_circles();
+                        }
+                    });
                 }
             }),
         };
@@ -96,6 +132,9 @@ impl CircleIntegration {
             tray,
             media,
             notifications,
+            animations: RefCell::new([None, None]),
+            tick_scheduled: Cell::new(false),
+            owner: Rc::downgrade(island),
         };
         for (index, module) in [left, right].into_iter().enumerate() {
             let host = match module {
@@ -122,6 +161,20 @@ impl CircleIntegration {
                         }
                     });
                 });
+                let key = gtk::EventControllerKey::new();
+                let weak = Rc::downgrade(island);
+                let host_for_key = host.clone();
+                key.connect_key_pressed(move |_, key, _, _| {
+                    if key == gtk::gdk::Key::Escape {
+                        host_for_key.dispatch(Event::Dismiss);
+                        if let Some(island) = weak.upgrade() {
+                            island.relayout_circles();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    glib::Propagation::Proceed
+                });
+                host.widget().add_controller(key);
                 result.slots[index] = Some(Slot { module, host, spec });
             }
         }
@@ -143,10 +196,23 @@ impl CircleIntegration {
             circle.update(history);
         }
     }
+    pub(crate) fn update_inhibition(&self, active: bool, remaining: Option<&str>) {
+        if let Some(circle) = &self.notifications {
+            circle.update_inhibition(active, remaining);
+        }
+    }
     pub(crate) fn redraw_theme(&self) {
         if let Some(circle) = &self.media {
             circle.redraw_theme();
         }
+    }
+
+    pub(crate) fn full_host(&self) -> Option<Rc<CircleHost>> {
+        self.slots
+            .iter()
+            .flatten()
+            .find(|slot| slot.host.mode() == circle::Mode::FullExpanded)
+            .map(|slot| slot.host.clone())
     }
 
     #[cfg(test)]
@@ -164,6 +230,32 @@ impl CircleIntegration {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_media_select_service(&self, service: &str) {
+        if let Some(media) = &self.media {
+            media.test_select_service(service);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_media_service(&self) -> Option<String> {
+        self.media.as_ref().and_then(|media| media.test_service())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_notification_view_all(&self) {
+        if let Some(circle) = &self.notifications {
+            circle.test_click_view_all();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_notification_inhibition(&self) -> Option<(bool, String, bool)> {
+        self.notifications
+            .as_ref()
+            .map(|circle| circle.test_inhibition())
+    }
+
     pub(crate) fn relayout(&self, island: &IslandWindow) {
         let central = island.central_circle_rect();
         let monitor = Rect {
@@ -172,12 +264,111 @@ impl CircleIntegration {
             width: f64::from(island.metrics.window_width),
             height: f64::from(island.metrics.window_height),
         };
+        let now = Instant::now();
+        let mut animations = self.animations.borrow_mut();
+        let mut commit = [false; 2];
         let slots = self
             .slots
             .iter()
-            .map(|slot| {
+            .enumerate()
+            .map(|(index, slot)| {
                 slot.as_ref().and_then(|slot| {
-                    let visual = slot.spec.visual(slot.host.mode())?;
+                    let mode = slot.host.mode();
+                    if mode == circle::Mode::Absent {
+                        animations[index] = None;
+                        slot.host.widget().set_opacity(0.0);
+                        return None;
+                    }
+                    let target = slot.spec.visual(mode)?;
+                    let presented = slot.host.presented_page();
+                    if presented == Some(mode) {
+                        // A same-page snapshot revision invalidates stale
+                        // callbacks but must not flicker or restart motion.
+                        animations[index] = None;
+                        return Some(CircleRequest {
+                            spec: slot.spec,
+                            visual: target,
+                        });
+                    }
+                    let restart = animations[index].as_ref().is_none_or(|animation| {
+                        animation.revision != slot.host.revision() || animation.mode != mode
+                    });
+                    if restart {
+                        if presented.is_none() {
+                            animations[index] = None;
+                            commit[index] = true;
+                            return Some(CircleRequest {
+                                spec: slot.spec,
+                                visual: target,
+                            });
+                        }
+                        let from = animations[index]
+                            .as_ref()
+                            .map(|animation| sample_visual(animation, now))
+                            .or_else(|| presented.and_then(|old| slot.spec.visual(old)))
+                            .unwrap_or(target);
+                        let animation_ms = island.animation_ms.get();
+                        if !island.animations_enabled.get() || animation_ms == 0 {
+                            animations[index] = None;
+                            commit[index] = true;
+                            slot.host.widget().set_opacity(1.0);
+                            return Some(CircleRequest {
+                                spec: slot.spec,
+                                visual: target,
+                            });
+                        }
+                        let geometry = profile_timing(
+                            if mode == circle::Mode::Compact {
+                                crate::ui::motion::Profile::CONTAINER_COLLAPSE
+                            } else {
+                                crate::ui::motion::Profile::CONTAINER_EXPAND
+                            },
+                            true,
+                            animation_ms,
+                        );
+                        let out = profile_timing(
+                            crate::ui::motion::Profile::CONTENT_OUT,
+                            true,
+                            animation_ms,
+                        );
+                        let incoming = profile_timing(
+                            crate::ui::motion::Profile::CONTENT_IN,
+                            true,
+                            animation_ms,
+                        );
+                        animations[index] = Some(CircleAnimation {
+                            revision: slot.host.revision(),
+                            mode,
+                            from,
+                            target,
+                            started: now,
+                            geometry,
+                            out,
+                            incoming,
+                        });
+                    }
+                    let animation = animations[index].as_ref().expect("animation installed");
+                    let elapsed = now.saturating_duration_since(animation.started);
+                    let visual = sample_visual(animation, now);
+                    let total = animation.geometry.duration.max(
+                        animation
+                            .out
+                            .duration
+                            .saturating_add(animation.incoming.duration),
+                    );
+                    let opacity = if elapsed < animation.out.duration {
+                        1.0 - animation.out.progress(elapsed)
+                    } else {
+                        animation
+                            .incoming
+                            .progress(elapsed.saturating_sub(animation.out.duration))
+                    };
+                    slot.host.widget().set_opacity(opacity);
+                    if elapsed >= total {
+                        commit[index] = true;
+                        slot.host.widget().set_opacity(1.0);
+                        animations[index] = None;
+                    }
                     Some(CircleRequest {
                         spec: slot.spec,
                         visual,
@@ -188,11 +379,12 @@ impl CircleIntegration {
             .try_into()
             .unwrap();
         let frames = circle::layout(central, monitor, island.metrics.scale, slots);
-        for (slot, frame) in self.slots.iter().zip(frames) {
+        for (index, (slot, frame)) in self.slots.iter().zip(frames).enumerate() {
             if let Some(slot) = slot {
                 let revision = slot.host.revision();
-                if slot.host.render(revision, frame) && slot.host.presented_page().is_none() {
-                    slot.host.commit_page(revision);
+                let rendered = slot.host.render(revision, frame);
+                if rendered && (slot.host.presented_page().is_none() || commit[index]) {
+                    let _ = slot.host.commit_page(revision);
                 }
                 if let Some(frame) = frame {
                     slot.host
@@ -205,6 +397,30 @@ impl CircleIntegration {
             }
         }
         island.update_circle_input_region();
+        drop(animations);
+        if self.animations.borrow().iter().any(Option::is_some) {
+            self.ensure_tick(island);
+        }
+        island.refresh_keyboard_mode();
+    }
+
+    fn ensure_tick(&self, _island: &IslandWindow) {
+        if self.tick_scheduled.replace(true) {
+            return;
+        }
+        let weak = self.owner.clone();
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            let Some(island) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            island.relayout_circles();
+            if island.circle_animation_active() {
+                glib::ControlFlow::Continue
+            } else {
+                island.clear_circle_tick_flag();
+                glib::ControlFlow::Break
+            }
+        });
     }
 }
 
@@ -222,6 +438,42 @@ impl IslandWindow {
     pub(crate) fn relayout_circles(&self) {
         if let Some(circles) = self.circles.borrow().as_ref() {
             circles.relayout(self);
+        }
+    }
+
+    pub(crate) fn dismiss_full_circle(&self) -> bool {
+        let host = self
+            .circles
+            .borrow()
+            .as_ref()
+            .and_then(CircleIntegration::full_host);
+        if let Some(host) = host {
+            host.dispatch(Event::Dismiss);
+            self.relayout_circles();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn circle_full_active(&self) -> bool {
+        self.circles
+            .borrow()
+            .as_ref()
+            .and_then(CircleIntegration::full_host)
+            .is_some()
+    }
+
+    fn circle_animation_active(&self) -> bool {
+        self.circles
+            .borrow()
+            .as_ref()
+            .is_some_and(|circles| circles.animations.borrow().iter().any(Option::is_some))
+    }
+
+    fn clear_circle_tick_flag(&self) {
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.tick_scheduled.set(false);
         }
     }
 

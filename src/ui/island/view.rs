@@ -45,6 +45,7 @@ impl IslandWindow {
             View::Weather => KeyboardMode::Exclusive,
             View::Search => KeyboardMode::Exclusive,
             _ if self.tray_menu_open.get() => KeyboardMode::OnDemand,
+            _ if self.circle_full_active() => KeyboardMode::OnDemand,
             _ => KeyboardMode::None,
         };
         self.window.set_keyboard_mode(mode);
@@ -57,6 +58,14 @@ impl IslandWindow {
                 KeyboardMode::None
             },
         );
+        if self.circle_full_active() {
+            self.dismiss_window.present();
+        } else if !matches!(
+            self.current_view.get(),
+            View::Dashboard | View::Weather | View::Search
+        ) {
+            self.dismiss_window.set_visible(false);
+        }
     }
 
     pub(super) fn reconcile_view(self: &Rc<Self>) {
@@ -374,6 +383,7 @@ impl IslandWindow {
             surface.set_input_region(Some(&region));
         }
         self.relayout_circles();
+        self.refresh_keyboard_mode();
     }
 }
 

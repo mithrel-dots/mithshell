@@ -326,6 +326,7 @@ impl IslandWindow {
         dismiss_click.connect_released(move |gesture, _, _, _| {
             if gesture.current_button() == 1
                 && let Some(island) = weak.upgrade()
+                && !island.dismiss_full_circle()
             {
                 island.close();
             }
