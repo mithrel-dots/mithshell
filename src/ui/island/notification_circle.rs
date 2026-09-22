@@ -151,12 +151,12 @@ impl NotificationCircle {
         );
         rebuild(
             &self.full_list,
-            history.iter(),
+            full_history(history).into_iter(),
             &self.callbacks,
             self.style,
             false,
         );
-        self.host.dispatch(Event::Content(!history.is_empty()));
+        self.host.dispatch(Event::Content(has_content(history)));
     }
 
     pub(crate) fn update_inhibition(&self, active: bool, remaining: Option<&str>) {
@@ -261,6 +261,14 @@ fn action_target(id: u32, key: &str) -> (u32, String) {
     (id, key.to_owned())
 }
 
+fn full_history(history: &[Notification]) -> Vec<&Notification> {
+    history.iter().collect()
+}
+
+fn has_content(history: &[Notification]) -> bool {
+    !history.is_empty()
+}
+
 fn body_line_limit(preview: bool) -> Option<i32> {
     preview.then_some(3)
 }
@@ -306,6 +314,12 @@ mod tests {
     fn full_history_has_no_body_line_cap_while_preview_is_bounded() {
         assert_eq!(body_line_limit(true), Some(3));
         assert_eq!(body_line_limit(false), None);
+        let history = vec![
+            notification(3, "new"),
+            notification(2, "middle"),
+            notification(1, "old"),
+        ];
+        assert_eq!(full_history(&history).len(), history.len());
     }
 
     #[test]
@@ -329,6 +343,7 @@ mod tests {
         // A zero preview count is intentionally content-free; the hover
         // header's View all button remains the only affordance.
         assert!(preview_history(&[notification(1, "x")], 0).is_empty());
+        assert!(!has_content(&[]));
     }
 
     /// Requires an isolated GTK display.  This exercises the production host
