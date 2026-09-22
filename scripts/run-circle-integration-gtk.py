@@ -26,7 +26,11 @@ def stop(process):
 
 
 with tempfile.TemporaryDirectory(
-    prefix=f"circle-integration-{os.getpid()}-", dir=target
+    # Keep the Broadway Unix socket below the 108-byte sockaddr limit even in
+    # this deliberately long worktree path. The runtime directory itself is
+    # the disposable directory; do not add another nested component.
+    prefix="c-",
+    dir=target,
 ) as name:
     runtime = pathlib.Path(name)
     for directory in ("tmp", "cache", "config", "data", "chromium"):
