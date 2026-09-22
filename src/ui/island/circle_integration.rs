@@ -22,6 +22,7 @@ use gtk::{glib, prelude::*};
 
 struct CircleAnimation {
     revision: circle::Revision,
+    from_mode: circle::Mode,
     mode: circle::Mode,
     from: Visual,
     target: Visual,
@@ -39,6 +40,29 @@ struct CircleAnimation {
 enum AnimationPhase {
     Outgoing,
     Incoming,
+}
+
+fn mode_rank(mode: circle::Mode) -> u8 {
+    match mode {
+        circle::Mode::Absent => 0,
+        circle::Mode::Compact => 1,
+        circle::Mode::HoverExpanded => 2,
+        circle::Mode::FullExpanded => 3,
+    }
+}
+
+/// Selects the container profile from the actual transition direction.  The
+/// previous target is used while reversing so a pending Full→Compact change
+/// remains a collapse even if the old page is still presented by the stack.
+pub(crate) fn circle_transition_profile(
+    from: circle::Mode,
+    to: circle::Mode,
+) -> crate::ui::motion::Profile {
+    if mode_rank(to) < mode_rank(from) {
+        crate::ui::motion::Profile::CONTAINER_COLLAPSE
+    } else {
+        crate::ui::motion::Profile::CONTAINER_EXPAND
+    }
 }
 
 fn sample_visual(animation: &CircleAnimation, now: Instant) -> Visual {
@@ -209,7 +233,10 @@ impl CircleIntegration {
             let slot = slot.as_ref()?;
             let pending_full = self.animations.borrow()[index]
                 .as_ref()
-                .is_some_and(|animation| animation.mode == circle::Mode::FullExpanded);
+                .is_some_and(|animation| {
+                    animation.mode == circle::Mode::FullExpanded
+                        || animation.from_mode == circle::Mode::FullExpanded
+                });
             (slot.host.mode() == circle::Mode::FullExpanded
                 || slot.host.presented_page() == Some(circle::Mode::FullExpanded)
                 || pending_full)
@@ -245,9 +272,9 @@ impl CircleIntegration {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_notification_view_all(&self) {
+    pub(crate) fn test_notification_compact_click(&self) {
         if let Some(circle) = &self.notifications {
-            circle.test_click_view_all();
+            circle.test_click_compact();
         }
     }
 
@@ -311,7 +338,11 @@ impl CircleIntegration {
                             .map(|animation| sample_visual(animation, now))
                             .or_else(|| presented.and_then(|old| slot.spec.visual(old)))
                             .unwrap_or(target);
-                        let from_mode = presented.unwrap_or(circle::Mode::Compact);
+                        let from_mode = animations[index]
+                            .as_ref()
+                            .map(|animation| animation.mode)
+                            .or(presented)
+                            .unwrap_or(circle::Mode::Compact);
                         let geometry_only = presented == Some(mode);
                         let opacity_start = slot.host.widget().opacity();
                         let animation_ms = island.animation_ms.get();
@@ -325,17 +356,7 @@ impl CircleIntegration {
                             });
                         }
                         let geometry = profile_timing(
-                            if matches!(
-                                (from_mode, mode),
-                                (
-                                    circle::Mode::FullExpanded,
-                                    circle::Mode::HoverExpanded | circle::Mode::Compact
-                                )
-                            ) {
-                                crate::ui::motion::Profile::CONTAINER_COLLAPSE
-                            } else {
-                                crate::ui::motion::Profile::CONTAINER_EXPAND
-                            },
+                            circle_transition_profile(from_mode, mode),
                             true,
                             animation_ms,
                         );
@@ -356,6 +377,7 @@ impl CircleIntegration {
                         });
                         animations[index] = Some(CircleAnimation {
                             revision: slot.host.revision(),
+                            from_mode,
                             mode,
                             from,
                             target,
@@ -532,6 +554,9 @@ impl IslandWindow {
             host.dispatch(Event::Focus(false));
             host.dispatch(Event::Dismiss);
             self.relayout_circles();
+            if self.circle_full_active() {
+                self.present_dismiss_catcher_behind_main();
+            }
             true
         } else {
             false

@@ -290,6 +290,7 @@ impl IslandWindow {
             search_fixed,
             search_surface,
             dismiss_window,
+            dismiss_click: RefCell::new(None),
             fixed,
             hover_region,
             content,

@@ -31,6 +31,7 @@ pub(crate) struct NotificationCircleCallbacks {
 pub(crate) struct NotificationCircle {
     pub(crate) host: Rc<CircleHost>,
     compact: gtk::Box,
+    compact_click: GestureClick,
     compact_style: gtk::CssProvider,
     compact_count: gtk::Label,
     hover: gtk::Box,
@@ -78,7 +79,7 @@ impl NotificationCircle {
         let open_callback = callbacks.open_full.clone();
         let click = GestureClick::new();
         click.connect_released(move |_, _, _, _| open_callback());
-        compact.add_controller(click);
+        compact.add_controller(click.clone());
 
         let hover = gtk::Box::new(Orientation::Vertical, 6);
         let hover_header = gtk::Box::new(Orientation::Horizontal, 6);
@@ -153,6 +154,7 @@ impl NotificationCircle {
         let circle = Rc::new(Self {
             host,
             compact,
+            compact_click: click,
             compact_style,
             compact_count: count,
             hover,
@@ -200,8 +202,11 @@ impl NotificationCircle {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_click_view_all(&self) {
-        self.hover_open.emit_clicked();
+    pub(crate) fn test_click_compact(&self) {
+        self.compact_click
+            .emit_by_name::<()>("pressed", &[&1_i32, &0.0_f64, &0.0_f64]);
+        self.compact_click
+            .emit_by_name::<()>("released", &[&1_i32, &0.0_f64, &0.0_f64]);
     }
 
     #[cfg(test)]

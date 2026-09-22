@@ -10,6 +10,14 @@ use gtk::{EventControllerMotion, GestureClick, gdk, glib};
 use super::{IslandWindow, OverlayButtons, dominant_scroll_direction};
 
 impl IslandWindow {
+    #[cfg(test)]
+    pub(crate) fn test_emit_dismiss_click(&self) {
+        if let Some(click) = self.dismiss_click.borrow().as_ref() {
+            click.emit_by_name::<()>("pressed", &[&1_i32, &0.0_f64, &0.0_f64]);
+            click.emit_by_name::<()>("released", &[&1_i32, &0.0_f64, &0.0_f64]);
+        }
+    }
+
     pub(super) fn connect_interactions(
         self: &Rc<Self>,
         buttons: OverlayButtons<'_>,
@@ -323,15 +331,15 @@ impl IslandWindow {
 
         let dismiss_click = GestureClick::new();
         let weak = Rc::downgrade(self);
-        dismiss_click.connect_released(move |gesture, _, _, _| {
-            if gesture.current_button() == 1
-                && let Some(island) = weak.upgrade()
+        dismiss_click.connect_released(move |_, _, _, _| {
+            if let Some(island) = weak.upgrade()
                 && !island.dismiss_full_circle()
             {
                 island.close();
             }
         });
-        dismiss_area.add_controller(dismiss_click);
+        dismiss_area.add_controller(dismiss_click.clone());
+        *self.dismiss_click.borrow_mut() = Some(dismiss_click);
 
         let header_click = GestureClick::new();
         header_click.set_propagation_phase(gtk::PropagationPhase::Bubble);

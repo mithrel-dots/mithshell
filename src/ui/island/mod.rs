@@ -178,6 +178,7 @@ pub struct IslandWindow {
     search_fixed: Fixed,
     search_surface: gtk::ScrolledWindow,
     dismiss_window: ApplicationWindow,
+    dismiss_click: RefCell<Option<gtk::GestureClick>>,
     fixed: Fixed,
     /// Stable, neutral hover hit target behind the moving pill. Its allocation
     /// does not change with tray width or depth motion.
@@ -478,6 +479,47 @@ mod tests {
         assert_eq!(
             override_profile.duration,
             std::time::Duration::from_millis(333)
+        );
+    }
+
+    #[test]
+    fn circle_transition_profiles_cover_all_ordered_modes_and_reversals() {
+        use super::circle::Mode;
+        use crate::ui::island::circle_integration::circle_transition_profile;
+
+        let compact = Mode::Compact;
+        let hover = Mode::HoverExpanded;
+        let full = Mode::FullExpanded;
+        let cases = [
+            (compact, hover, false),
+            (compact, full, false),
+            (hover, compact, true),
+            (hover, full, false),
+            (full, compact, true),
+            (full, hover, true),
+        ];
+        for (from, to, collapse) in cases {
+            let profile = circle_transition_profile(from, to);
+            assert_eq!(
+                profile.duration,
+                if collapse {
+                    crate::ui::motion::Profile::CONTAINER_COLLAPSE.duration
+                } else {
+                    crate::ui::motion::Profile::CONTAINER_EXPAND.duration
+                },
+                "unexpected profile for {from:?} -> {to:?}"
+            );
+        }
+
+        // The reversal uses the pending target as its source, not the still
+        // presented GTK page: Full→Compact must remain a 200 ms collapse.
+        assert_eq!(
+            circle_transition_profile(full, compact).duration,
+            std::time::Duration::from_millis(200)
+        );
+        assert_eq!(
+            circle_transition_profile(compact, full).duration,
+            std::time::Duration::from_millis(500)
         );
     }
 
@@ -880,10 +922,7 @@ mod tests {
             .borrow()
             .as_ref()
             .unwrap()
-            .test_notification_view_all();
-        while gtk::glib::MainContext::default().pending() {
-            gtk::glib::MainContext::default().iteration(false);
-        }
+            .test_notification_compact_click();
         let notification_host = island
             .circles
             .borrow()
@@ -891,10 +930,30 @@ mod tests {
             .unwrap()
             .test_host(1)
             .unwrap();
-        assert!(notification_host.widget().is_focusable());
-        // Broadway does not reliably expose compositor focus ownership for
-        // these non-layer test windows; the mapped focusable host and actual
-        // GTK key-controller signal are still exercised below.
+        let focus_root = notification_host
+            .widget()
+            .root()
+            .expect("mapped GTK focus root");
+        let focus_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while focus_root
+            .focus()
+            .is_none_or(|focused| focused != *notification_host.widget())
+            && std::time::Instant::now() < focus_deadline
+        {
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            focus_root
+                .focus()
+                .map(|focused| focused == *notification_host.widget()),
+            Some(true),
+            "deferred production full-page focus must own the mapped GTK root"
+        );
+        assert!(island.dismiss_window.is_visible());
+        assert!(island.window.is_visible());
         assert_eq!(notification_host.mode(), super::circle::Mode::FullExpanded);
         assert_eq!(
             notification_host.presented_page(),
@@ -917,6 +976,7 @@ mod tests {
             Some(super::circle::Mode::FullExpanded)
         );
         assert!(island.circle_full_active());
+        assert!(island.dismiss_window.is_visible());
         let dismiss_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         while island.circle_full_active() && std::time::Instant::now() < dismiss_deadline {
             island.relayout_circles();
@@ -927,6 +987,33 @@ mod tests {
             notification_host.presented_page(),
             Some(super::circle::Mode::Compact)
         );
+
+        island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_notification_compact_click();
+        let reopen_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !island.circle_full_active() && std::time::Instant::now() < reopen_deadline {
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert!(island.circle_full_active());
+        assert!(island.dismiss_window.is_visible());
+        island.test_emit_dismiss_click();
+        assert_eq!(notification_host.mode(), super::circle::Mode::Compact);
+        let catcher_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while island.dismiss_window.is_visible() && std::time::Instant::now() < catcher_deadline {
+            island.relayout_circles();
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+        assert!(!island.dismiss_window.is_visible());
 
         // Exercise the real timer path. The GTK stack must retain the outgoing
         // page during CONTENT_OUT, switch exactly at the phase boundary, then

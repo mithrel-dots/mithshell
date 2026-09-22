@@ -37,6 +37,22 @@ fn transition_duration(
 }
 
 impl IslandWindow {
+    /// Presents the outside-click catcher below the interactive island.
+    ///
+    /// Presenting the catcher can raise it above the island, so a newly shown
+    /// catcher is immediately followed by the main window.  Already-visible
+    /// surfaces are left alone to avoid stealing focus or changing stacking
+    /// order during snapshot and animation updates.
+    pub(super) fn present_dismiss_catcher_behind_main(&self) {
+        let catcher_was_visible = self.dismiss_window.is_visible();
+        if !catcher_was_visible {
+            self.dismiss_window.present();
+        }
+        if !catcher_was_visible || !self.window.is_visible() {
+            self.window.present();
+        }
+    }
+
     /// Re-applies the keyboard mode the current state wants. Split out of
     /// `set_view` so showing/dismissing a tray menu can borrow the surface's
     /// focus without having to know what the active view expects.
@@ -59,7 +75,7 @@ impl IslandWindow {
             },
         );
         if self.circle_full_active() {
-            self.dismiss_window.present();
+            self.present_dismiss_catcher_behind_main();
         } else if !matches!(
             self.current_view.get(),
             View::Dashboard | View::Weather | View::Search
@@ -125,8 +141,7 @@ impl IslandWindow {
         }
         if matches!(view, View::Dashboard | View::Weather | View::Search) {
             self.window.set_layer(gtk4_layer_shell::Layer::Overlay);
-            self.dismiss_window.present();
-            self.window.present();
+            self.present_dismiss_catcher_behind_main();
         } else if self.search_open.get()
             && self.launcher_presentation == crate::config::LauncherPresentation::Independent
         {
