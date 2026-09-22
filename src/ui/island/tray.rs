@@ -23,12 +23,16 @@ pub(crate) struct TrayMenuTracker {
     manager: Rc<TrayMenuManager>,
     open: Cell<usize>,
     epoch: Cell<u64>,
+    batch_depth: Cell<usize>,
+    pending_change: Cell<bool>,
     on_change: Rc<dyn Fn(bool)>,
     popovers: RefCell<Vec<glib::WeakRef<gtk::Popover>>>,
 }
 
 pub(crate) struct TrayMenuManager {
     open: Cell<usize>,
+    batch_depth: Cell<usize>,
+    pending_change: Cell<bool>,
     on_change: RefCell<Option<MenuCallback>>,
 }
 
@@ -36,6 +40,8 @@ impl TrayMenuManager {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             open: Cell::new(0),
+            batch_depth: Cell::new(0),
+            pending_change: Cell::new(false),
             on_change: RefCell::new(None),
         })
     }
@@ -45,17 +51,41 @@ impl TrayMenuManager {
     fn acquire(&self) {
         let was_empty = self.open.get() == 0;
         self.open.set(self.open.get() + 1);
-        if was_empty && let Some(callback) = self.on_change.borrow().as_ref() {
-            callback(true);
+        if was_empty {
+            self.changed();
         }
     }
     fn release(&self) {
         let open = self.open.get().saturating_sub(1);
         self.open.set(open);
-        if open == 0
-            && let Some(callback) = self.on_change.borrow().as_ref()
-        {
-            callback(false);
+        if open == 0 {
+            self.changed();
+        }
+    }
+
+    pub(crate) fn begin_batch(&self) {
+        self.batch_depth.set(self.batch_depth.get() + 1);
+    }
+
+    pub(crate) fn end_batch(&self) {
+        let depth = self.batch_depth.get().saturating_sub(1);
+        self.batch_depth.set(depth);
+        if depth == 0 && self.pending_change.replace(false) {
+            self.notify(self.open.get() != 0);
+        }
+    }
+
+    fn changed(&self) {
+        if self.batch_depth.get() != 0 {
+            self.pending_change.set(true);
+        } else {
+            self.notify(self.open.get() != 0);
+        }
+    }
+
+    fn notify(&self, open: bool) {
+        if let Some(callback) = self.on_change.borrow().as_ref() {
+            callback(open);
         }
     }
     fn release_many(&self, count: usize) {
@@ -81,6 +111,8 @@ impl TrayMenuTracker {
             manager,
             open: Cell::new(0),
             epoch: Cell::new(0),
+            batch_depth: Cell::new(0),
+            pending_change: Cell::new(false),
             on_change: Rc::new(on_change),
             popovers: RefCell::new(Vec::new()),
         })
@@ -89,7 +121,7 @@ impl TrayMenuTracker {
         self.epoch.set(self.epoch.get().wrapping_add(1));
         let open = self.open.replace(0);
         if open != 0 {
-            (self.on_change)(false);
+            self.changed(false);
             self.manager.release_many(open);
         }
         let popovers: Vec<_> = self
@@ -100,6 +132,28 @@ impl TrayMenuTracker {
             .collect();
         for popover in popovers {
             popover.popdown();
+        }
+    }
+
+    pub(crate) fn begin_batch(&self) {
+        self.manager.begin_batch();
+        self.batch_depth.set(self.batch_depth.get() + 1);
+    }
+
+    pub(crate) fn end_batch(&self) {
+        let depth = self.batch_depth.get().saturating_sub(1);
+        self.batch_depth.set(depth);
+        if depth == 0 && self.pending_change.replace(false) {
+            self.changed(self.open.get() != 0);
+        }
+        self.manager.end_batch();
+    }
+
+    fn changed(&self, open: bool) {
+        if self.batch_depth.get() != 0 {
+            self.pending_change.set(true);
+        } else {
+            (self.on_change)(open);
         }
     }
     fn register(&self, popover: &gtk::Popover) {
@@ -116,7 +170,7 @@ impl TrayMenuTracker {
             ended: Cell::new(false),
         };
         if was_empty {
-            (self.on_change)(true);
+            self.changed(true);
         }
         if lease.epoch != self.epoch.get() {
             lease.ended.set(true);
@@ -144,7 +198,7 @@ impl TrayMenuLease {
         self.tracker.open.set(open);
         self.tracker.manager.release();
         if open == 0 {
-            (self.tracker.on_change)(false);
+            self.tracker.changed(false);
         }
     }
 }
@@ -199,6 +253,7 @@ impl IslandWindow {
     /// dots -- tray churn is rare enough that reusing widgets isn't worth
     /// the bookkeeping.
     pub fn update_tray(self: &Rc<Self>, items: &[TrayItem]) {
+        self.tray_menu_tracker.begin_batch();
         let in_circle = self
             .circles
             .borrow()
@@ -229,6 +284,7 @@ impl IslandWindow {
         self.resize_compact();
         self.resize_media();
         self.reconcile_pill_geometry();
+        self.tray_menu_tracker.end_batch();
     }
 
     pub(crate) fn build_tray_icon_with_tracker(

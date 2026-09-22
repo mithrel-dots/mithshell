@@ -88,10 +88,16 @@ with tempfile.TemporaryDirectory(prefix="tray-circle-", dir=target) as name:
         else:
             raise RuntimeError(f"gtk4-broadwayd could not bind: {log_path.read_text()}")
         result = subprocess.run(
-            [binary, "broadway_popovers_share_global_lifetime_and_close_on_invalidation",
-             "--ignored", "--test-threads=1", "--nocapture"],
+            [binary, "ui::island::tray_circle::tests::gtk_tray_pages_have_visible_allocated_children_for_mixed_icons",
+             "--ignored", "--exact", "--test-threads=1", "--nocapture"],
             cwd=root, env=env,
         ).returncode
+        if result == 0:
+            result = subprocess.run(
+                [binary, "ui::island::tray::tracker_tests::broadway_popovers_share_global_lifetime_and_close_on_invalidation",
+                 "--ignored", "--test-threads=1", "--nocapture"],
+                cwd=root, env=env,
+            ).returncode
     finally:
         stop_process(server)
 
