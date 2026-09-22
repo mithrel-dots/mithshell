@@ -211,6 +211,7 @@ pub struct IslandWindow {
     /// requiring a leave event from a widget whose allocation was replaced.
     pointer_in_hover_region: Cell<bool>,
     tray_item_count: Cell<usize>,
+    tray_circle_assigned: bool,
     /// `true` while a tray item's context menu popover is up. Opening a
     /// popover takes a pointer grab, which makes the pill's motion
     /// controller report a `leave` -- without pinning the tray open here,
@@ -683,21 +684,38 @@ mod tests {
             can_go_next: true,
             can_go_previous: true,
             status: PlaybackStatus::Playing,
-            players: vec![MediaPlayer {
-                player: "Test Player".into(),
-                service: "org.test.Player".into(),
-                title: "Track".into(),
-                artist: Some("Artist".into()),
-                album: None,
-                app_icon: Some("audio-x-generic".into()),
-                position_us: 25,
-                length_us: Some(100),
-                can_play: true,
-                can_pause: true,
-                can_go_next: true,
-                can_go_previous: true,
-                status: PlaybackStatus::Playing,
-            }],
+            players: vec![
+                MediaPlayer {
+                    player: "Test Player".into(),
+                    service: "org.test.Player".into(),
+                    title: "Track".into(),
+                    artist: Some("Artist".into()),
+                    album: None,
+                    app_icon: Some("audio-x-generic".into()),
+                    position_us: 25,
+                    length_us: Some(100),
+                    can_play: true,
+                    can_pause: true,
+                    can_go_next: true,
+                    can_go_previous: true,
+                    status: PlaybackStatus::Playing,
+                },
+                MediaPlayer {
+                    player: "Second Player".into(),
+                    service: "org.test.Second".into(),
+                    title: "Second Track".into(),
+                    artist: None,
+                    album: None,
+                    app_icon: Some("audio-x-generic".into()),
+                    position_us: 10,
+                    length_us: Some(200),
+                    can_play: true,
+                    can_pause: true,
+                    can_go_next: true,
+                    can_go_previous: true,
+                    status: PlaybackStatus::Paused,
+                },
+            ],
         };
         let tray = TrayItem {
             key: "test/item".into(),
@@ -725,8 +743,9 @@ mod tests {
             timeout: NotificationTimeout::Never,
         };
         island.update_media(Some(&media));
-        island.update_tray(&[tray]);
+        island.update_tray(std::slice::from_ref(&tray));
         island.update_notification_history(&[notification]);
+        island.update_notification_inhibition(true, Some(std::time::Duration::from_secs(65)));
         island.relayout_circles();
         island
             .circles
@@ -796,10 +815,109 @@ mod tests {
                 matrix_actions.clone(),
                 false,
             );
+            test.update_tray(std::slice::from_ref(&tray));
+            test.set_tray_hovered(true);
             test.relayout_circles();
             assert!(test.debug_state()["circles"]["slots"].is_array());
+            if left == CircleModule::Tray {
+                assert_eq!(test.debug_state()["tray_visible"], false);
+                assert_eq!(test.debug_state()["tray_visible_media"], false);
+            }
         }
         assert_eq!(calls.get(), 1, "state updates do not duplicate callbacks");
+
+        // Real host page transitions use the production host event and the
+        // actual GTK stack page, not a mirrored state helper.
+        island.update_media(Some(&media));
+        let media_host = island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_host(0)
+            .unwrap();
+        media_host.dispatch(super::circle::Event::Pointer(true));
+        island.relayout_circles();
+        assert_eq!(
+            media_host.presented_page(),
+            Some(super::circle::Mode::HoverExpanded)
+        );
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+
+        island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_media_select_service("org.test.Second");
+        assert_eq!(
+            island
+                .circles
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .test_media_service()
+                .as_deref(),
+            Some("org.test.Second")
+        );
+        assert_eq!(island.debug_state()["player_card_visible"], false);
+        assert_eq!(island.debug_state()["notification_history_visible"], false);
+        assert_eq!(
+            island
+                .circles
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .test_notification_inhibition(),
+            Some((true, "2m".to_owned(), true))
+        );
+
+        island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_notification_view_all();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let notification_host = island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_host(1)
+            .unwrap();
+        assert_eq!(notification_host.mode(), super::circle::Mode::FullExpanded);
+        assert_eq!(
+            notification_host.presented_page(),
+            Some(super::circle::Mode::FullExpanded)
+        );
+        assert_eq!(
+            notification_host.test_visible_page().as_deref(),
+            Some("full")
+        );
+        assert!(island.dismiss_full_circle());
+        assert_eq!(notification_host.mode(), super::circle::Mode::Compact);
+
+        // Exercise the real timer path, including reversal from the current
+        // rendered visual rather than restarting from the compact target.
+        island.animation_ms.set(40);
+        island.animations_enabled.set(true);
+        media_host.dispatch(super::circle::Event::Pointer(false));
+        island.relayout_circles();
+        media_host.dispatch(super::circle::Event::Pointer(true));
+        island.relayout_circles();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while media_host.presented_page() != Some(super::circle::Mode::HoverExpanded)
+            && std::time::Instant::now() < deadline
+        {
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
     }
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {

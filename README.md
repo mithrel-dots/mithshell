@@ -165,9 +165,8 @@ disable, or change the simulated percentage; launch a new test run to change it.
 
 ### Circle and launcher configuration
 
-The following options are parsed and validated now; their UI integration is
-pending. They define the intended presentation contract. Omitting them preserves
-the existing layout and launcher behavior.
+The following options are parsed, validated, and wired into the production GTK
+island. Omitting them preserves the existing layout and launcher behavior.
 
 ```toml
 [circles]
@@ -191,6 +190,12 @@ side: for example, `left = "tray"` and `right = "media"` is valid, while assigni
 `"media"` to both sides is rejected during config loading, before reload replaces
 any windows. Unknown fields and enum values are also rejected. Add these keys to
 existing TOML sections rather than declaring a section twice.
+
+The slots are independent: either side may be used, or both may be assigned to
+different modules. For example, `left = "notifications"` and
+`right = "media"` places those modules beside the island; `left = "tray"` and
+`right = "none"` places only the tray on the left. Circle geometry follows the
+animated central island and is constrained to the usable monitor area.
 
 The circle presentation contract is:
 

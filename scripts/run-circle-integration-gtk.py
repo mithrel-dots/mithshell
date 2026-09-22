@@ -10,7 +10,6 @@ import os
 import pathlib
 import random
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -45,9 +44,10 @@ env.update(
 )
 env.pop("GSK_RENDERER", None)
 
-display = 100 + (os.getpid() % 30000)
+# The runtime directory is private to this invocation, so the conventional
+# display zero is collision-free and avoids stale global Broadway socket names.
+env["BROADWAY_DISPLAY"] = ":0"
 port = random.SystemRandom().randint(20000, 45000)
-env["BROADWAY_DISPLAY"] = f":{display}"
 
 server = None
 try:
@@ -69,24 +69,30 @@ try:
     )
     log_path = run_dir / "broadway.log"
     with log_path.open("w") as log:
+        server_env = env.copy()
+        # Passing the display both through the environment and argv makes
+        # this GTK build attempt to bind its Unix socket twice.
+        server_env.pop("BROADWAY_DISPLAY", None)
+        server_env.pop("GDK_BACKEND", None)
         server = subprocess.Popen(
             ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
             cwd=root,
-            env=env,
+            env=server_env,
             stdout=log,
             stderr=log,
         )
+        # Debian/GTK4 builds expose Broadway through the XDG runtime socket;
+        # some builds also expose the optional HTTP port, so checking TCP
+        # alone makes the runner report a false startup failure.
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if server.poll() is not None:
-                raise RuntimeError(f"gtk4-broadwayd exited; see {log_path}")
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                    break
-            except OSError:
-                time.sleep(0.05)
+                raise RuntimeError(f"gtk4-broadwayd exited; see {log_path}: {log_path.read_text()}")
+            if list(runtime.glob("broadway*.socket")):
+                break
+            time.sleep(0.05)
         else:
-            raise RuntimeError(f"Broadway did not listen on {port}; see {log_path}")
+            raise RuntimeError(f"Broadway did not create a runtime socket; see {log_path}")
 
         result = subprocess.run(
             [

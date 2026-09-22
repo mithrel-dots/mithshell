@@ -37,6 +37,7 @@ pub(crate) struct NotificationCircle {
     hover_list: gtk::Box,
     full: gtk::Box,
     full_list: gtk::Box,
+    hover_open: gtk::Button,
     hover_count: usize,
     style: IconStyle,
     callbacks: NotificationCircleCallbacks,
@@ -158,6 +159,7 @@ impl NotificationCircle {
             hover_list,
             full,
             full_list,
+            hover_open,
             hover_count: config.hover_preview_count,
             style,
             callbacks,
@@ -195,6 +197,20 @@ impl NotificationCircle {
         self.inhibit_remaining
             .set_label(remaining.unwrap_or_default());
         self.inhibit_remaining.set_visible(remaining.is_some());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_click_view_all(&self) {
+        self.hover_open.emit_clicked();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_inhibition(&self) -> (bool, String, bool) {
+        (
+            self.inhibit.is_active(),
+            self.inhibit_remaining.label().to_string(),
+            self.inhibit_remaining.is_visible(),
+        )
     }
 }
 

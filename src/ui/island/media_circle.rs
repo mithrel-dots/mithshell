@@ -293,6 +293,16 @@ impl MediaCircle {
     pub(super) fn redraw_theme(&self) {
         self.progress_area.queue_draw();
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_select_service(&self, service: &str) {
+        self.player_select.set_active_id(Some(service));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_service(&self) -> Option<String> {
+        self.current_service.borrow().clone()
+    }
 }
 
 impl Drop for MediaCircle {
