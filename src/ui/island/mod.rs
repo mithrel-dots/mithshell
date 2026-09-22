@@ -200,6 +200,10 @@ pub struct IslandWindow {
     /// only shown (and only then counted into `resize_compact`) while this
     /// is set and at least one tray item exists.
     tray_hovered: Cell<bool>,
+    /// Physical pointer state from the stable neutral hover region. Kept
+    /// separately so a page switch can clear presentation depth without
+    /// requiring a leave event from a widget whose allocation was replaced.
+    pointer_in_hover_region: Cell<bool>,
     tray_item_count: Cell<usize>,
     /// `true` while a tray item's context menu popover is up. Opening a
     /// popover takes a pointer grab, which makes the pill's motion

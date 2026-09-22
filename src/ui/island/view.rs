@@ -26,6 +26,16 @@ fn sequential_fade_progress(
     }
 }
 
+fn transition_duration(
+    geometry: crate::ui::motion::Profile,
+    outgoing: crate::ui::motion::Profile,
+    incoming: crate::ui::motion::Profile,
+) -> Duration {
+    geometry
+        .duration
+        .max(outgoing.duration.saturating_add(incoming.duration))
+}
+
 impl IslandWindow {
     /// Re-applies the keyboard mode the current state wants. Split out of
     /// `set_view` so showing/dismissing a tray menu can borrow the surface's
@@ -33,12 +43,7 @@ impl IslandWindow {
     pub(super) fn refresh_keyboard_mode(&self) {
         let mode = match self.current_view.get() {
             View::Weather => KeyboardMode::Exclusive,
-            _ if self.search_open.get()
-                && self.launcher_presentation
-                    == crate::config::LauncherPresentation::Integrated =>
-            {
-                KeyboardMode::Exclusive
-            }
+            View::Search => KeyboardMode::Exclusive,
             _ if self.tray_menu_open.get() => KeyboardMode::OnDemand,
             _ => KeyboardMode::None,
         };
@@ -91,7 +96,20 @@ impl IslandWindow {
     }
 
     pub(super) fn set_view(self: &Rc<Self>, view: View) {
+        let pill_view = matches!(view, View::Compact | View::Media);
+        let desired_hover = pill_view && self.pointer_in_hover_region.get();
+        let hover_changed = self.tray_hovered.get() != desired_hover;
+        self.tray_hovered.set(desired_hover);
+        if hover_changed && pill_view {
+            self.resize_compact();
+            self.resize_media();
+        }
         let target = self.presentation_target_geometry(view);
+        if self.launcher_presentation == crate::config::LauncherPresentation::Integrated
+            && view == View::Search
+        {
+            self.ensure_integrated_search_host();
+        }
         if matches!(view, View::Dashboard | View::Weather | View::Search) {
             self.window.set_layer(gtk4_layer_shell::Layer::Overlay);
             self.dismiss_window.present();
@@ -114,17 +132,19 @@ impl IslandWindow {
             return;
         }
         let previous_view = self.current_view.get();
+        let search_start_opacity = self.search.opacity();
         self.current_view.set(view);
 
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated
             && view == View::Search
         {
-            self.ensure_integrated_search_host();
             self.search.set_visible(true);
             self.search.set_can_target(false);
             if previous_view != View::Search {
                 self.search.set_opacity(0.0);
             }
+        } else if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
+            self.search.set_can_target(false);
         }
 
         for (widget, _widget_view) in self.view_widgets() {
@@ -152,6 +172,17 @@ impl IslandWindow {
             self.animations_enabled.get(),
             self.animation_ms.get(),
         );
+        let content_out = profile_timing(
+            crate::ui::motion::Profile::CONTENT_OUT,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let content_in = profile_timing(
+            crate::ui::motion::Profile::CONTENT_IN,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let transition_duration = transition_duration(profile, content_out, content_in);
         let start_time = Cell::new(None::<i64>);
         let start_opacities = self.view_widgets().map(|(widget, _)| widget.opacity());
         let weak = Rc::downgrade(self);
@@ -174,8 +205,8 @@ impl IslandWindow {
             let eased = linear;
             island.apply_geometry(start.interpolate(target, eased));
             island.apply_content_opacity(view, previous_view, elapsed, start_opacities);
-            island.apply_search_opacity(view, previous_view, elapsed);
-            if linear >= 1.0 {
+            island.apply_search_opacity(view, previous_view, elapsed, search_start_opacity);
+            if elapsed >= transition_duration {
                 island.finish_view(view);
                 glib::ControlFlow::Break
             } else {
@@ -227,7 +258,13 @@ impl IslandWindow {
         }
     }
 
-    fn apply_search_opacity(&self, target: View, previous: View, elapsed: Duration) {
+    fn apply_search_opacity(
+        &self,
+        target: View,
+        previous: View,
+        elapsed: Duration,
+        start_opacity: f64,
+    ) {
         if self.launcher_presentation != crate::config::LauncherPresentation::Integrated {
             return;
         }
@@ -245,11 +282,17 @@ impl IslandWindow {
             sequential_fade_progress(previous, target, elapsed, outgoing, incoming);
         if target == View::Search {
             self.search.set_can_target(in_progress > 0.0);
-            self.search.set_opacity(in_progress);
+            let start = if previous == View::Search {
+                start_opacity
+            } else {
+                0.0
+            };
+            self.search.set_opacity(lerp(start, 1.0, in_progress));
         } else if previous == View::Search {
             let (out_progress, _) =
                 sequential_fade_progress(previous, target, elapsed, outgoing, incoming);
-            self.search.set_opacity(1.0 - out_progress);
+            self.search
+                .set_opacity(lerp(start_opacity, 0.0, out_progress));
         }
     }
 
@@ -262,11 +305,9 @@ impl IslandWindow {
         }
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
             if view == View::Search {
-                self.search.set_visible(true);
-                self.search.set_can_target(true);
+                finalize_integrated_search(&self.search, true);
             } else {
-                self.search.set_visible(false);
-                self.search.set_can_target(false);
+                finalize_integrated_search(&self.search, false);
                 self.restore_integrated_search_host();
             }
         }
@@ -328,6 +369,15 @@ impl IslandWindow {
     }
 }
 
+/// Commits the terminal state of the integrated launcher page. Keeping this
+/// in the production finish path prevents zero-duration and short-override
+/// transitions from leaving a visible-but-untargetable or transparent page.
+fn finalize_integrated_search(search: &gtk::Box, active: bool) {
+    search.set_visible(active);
+    search.set_can_target(active);
+    search.set_opacity(if active { 1.0 } else { 0.0 });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +413,47 @@ mod tests {
             incoming,
         );
         assert!(in_after_out > 0.0);
+    }
+
+    #[test]
+    fn master_transition_waits_for_all_tracks_and_honors_overrides() {
+        let geometry = crate::ui::motion::Profile::CONTAINER_EXPAND;
+        let outgoing = crate::ui::motion::Profile::CONTENT_OUT;
+        let incoming = crate::ui::motion::Profile::CONTENT_IN;
+        assert_eq!(
+            transition_duration(geometry, outgoing, incoming),
+            Duration::from_millis(500)
+        );
+
+        let short_geometry = geometry.with_timing(true, Some(1));
+        let short_outgoing = outgoing.with_timing(true, Some(1));
+        let short_incoming = incoming.with_timing(true, Some(1));
+        assert_eq!(
+            transition_duration(short_geometry, short_outgoing, short_incoming),
+            Duration::from_millis(2)
+        );
+
+        let disabled = geometry.with_timing(false, Some(1));
+        let disabled_outgoing = outgoing.with_timing(false, Some(1));
+        let disabled_incoming = incoming.with_timing(false, Some(1));
+        assert_eq!(
+            transition_duration(disabled, disabled_outgoing, disabled_incoming),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display; run with run-island-presentation-gtk.py"]
+    fn finished_integrated_search_is_visible_and_targetable() {
+        gtk::init().expect("GTK display");
+        let search = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        finalize_integrated_search(&search, true);
+        assert!(search.is_visible());
+        assert!(search.can_target());
+        assert_eq!(search.opacity(), 1.0);
+        finalize_integrated_search(&search, false);
+        assert!(!search.is_visible());
+        assert!(!search.can_target());
+        assert_eq!(search.opacity(), 0.0);
     }
 }

@@ -399,19 +399,22 @@ impl IslandWindow {
     /// Moves the modern launcher widget between its independent scroller and
     /// the shared island canvas. The layer window itself never changes size.
     pub(super) fn ensure_integrated_search_host(&self) {
-        if self
+        let shared_canvas = self
             .surface
             .child()
-            .is_some_and(|child| child == self.content.clone().upcast::<gtk::Widget>())
-        {
-            self.search_surface.set_child(None::<&gtk::Widget>);
-            let width = self.metrics.search_width;
-            let x = (self.metrics.window_width - width) / 2;
-            self.content
-                .put(&self.search, f64::from(x), f64::from(self.metrics.search_y));
-            self.search
-                .set_size_request(width, self.metrics.search_height);
+            .is_some_and(|child| child == self.content.clone().upcast::<gtk::Widget>());
+        if !shared_canvas {
+            return;
         }
+        mount_integrated_search(
+            &self.search_surface,
+            &self.content,
+            &self.search,
+            self.metrics.search_width,
+            self.metrics.search_height,
+            (self.metrics.window_width - self.metrics.search_width) / 2,
+            self.metrics.search_y,
+        );
     }
 
     pub(super) fn restore_integrated_search_host(&self) {
@@ -420,8 +423,7 @@ impl IslandWindow {
             .parent()
             .is_some_and(|parent| parent == self.content.clone().upcast::<gtk::Widget>())
         {
-            self.content.remove(&self.search);
-            self.search_surface.set_child(Some(&self.search));
+            restore_independent_search(&self.search_surface, &self.content, &self.search);
         }
     }
 
@@ -1179,5 +1181,85 @@ impl IslandWindow {
                 island.search_status.set_label("ACTION STILL PENDING");
             }
         });
+    }
+}
+
+/// Production ownership transition used by integrated `View::Search`.
+/// Reconciliation may call this repeatedly; parent identity is authoritative
+/// and an already-mounted widget is only repositioned, never re-added.
+fn mount_integrated_search(
+    search_surface: &gtk::ScrolledWindow,
+    content: &gtk::Fixed,
+    search: &gtk::Box,
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+) {
+    let content_widget = content.clone().upcast::<gtk::Widget>();
+    if search
+        .parent()
+        .is_some_and(|parent| parent == content_widget)
+    {
+        content.move_(search, f64::from(x), f64::from(y));
+        search.set_size_request(width, height);
+        return;
+    }
+    if search_surface.child().is_some() {
+        search_surface.set_child(None::<&gtk::Widget>);
+    }
+    // ScrolledWindow may interpose an internal viewport parent. Ensure the
+    // actual widget is detached before Fixed::put, even when that parent is
+    // not the public ScrolledWindow object.
+    if search.parent().is_some() {
+        search.unparent();
+    }
+    content.put(search, f64::from(x), f64::from(y));
+    search.set_size_request(width, height);
+}
+
+fn restore_independent_search(
+    search_surface: &gtk::ScrolledWindow,
+    content: &gtk::Fixed,
+    search: &gtk::Box,
+) {
+    if search
+        .parent()
+        .is_some_and(|parent| parent == content.clone().upcast::<gtk::Widget>())
+    {
+        content.remove(search);
+        search_surface.set_child(Some(search));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK display; run with run-island-presentation-gtk.py"]
+    fn integrated_search_host_is_idempotent_on_real_widgets() {
+        gtk::init().expect("GTK display");
+        let search_surface = gtk::ScrolledWindow::new();
+        let content = gtk::Fixed::new();
+        let search = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        search_surface.set_child(Some(&search));
+
+        mount_integrated_search(&search_surface, &content, &search, 820, 620, 20, 40);
+        assert!(
+            search
+                .parent()
+                .is_some_and(|parent| parent == content.clone().upcast::<gtk::Widget>())
+        );
+        mount_integrated_search(&search_surface, &content, &search, 820, 620, 30, 50);
+        assert!(
+            search
+                .parent()
+                .is_some_and(|parent| parent == content.clone().upcast::<gtk::Widget>())
+        );
+        assert!(search_surface.child().is_none());
+
+        restore_independent_search(&search_surface, &content, &search);
+        assert!(search_surface.child().is_some());
     }
 }

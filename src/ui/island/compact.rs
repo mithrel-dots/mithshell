@@ -134,6 +134,15 @@ impl IslandWindow {
         self.reconcile_pill_geometry();
     }
 
+    pub(super) fn set_pointer_in_hover_region(self: &Rc<Self>, inside: bool) {
+        self.pointer_in_hover_region.set(inside);
+        if matches!(self.current_view.get(), View::Compact | View::Media) {
+            self.set_tray_hovered(inside);
+        } else {
+            self.tray_hovered.set(false);
+        }
+    }
+
     /// The sole geometry track for compact/media presentation. It includes
     /// content-driven width, tray visibility, and hover depth, so a tray update
     /// cannot race a second hover animator. Its start is always the currently

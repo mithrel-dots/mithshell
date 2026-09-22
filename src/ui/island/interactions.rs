@@ -39,13 +39,13 @@ impl IslandWindow {
             let weak = Rc::downgrade(self);
             motion.connect_enter(move |_, _, _| {
                 if let Some(island) = weak.upgrade() {
-                    island.set_tray_hovered(true);
+                    island.set_pointer_in_hover_region(true);
                 }
             });
             let weak = Rc::downgrade(self);
             motion.connect_leave(move |_| {
                 if let Some(island) = weak.upgrade() {
-                    island.set_tray_hovered(false);
+                    island.set_pointer_in_hover_region(false);
                 }
             });
             pill.add_controller(motion);
@@ -58,13 +58,13 @@ impl IslandWindow {
         let weak = Rc::downgrade(self);
         surface_motion.connect_enter(move |_, _, _| {
             if let Some(island) = weak.upgrade() {
-                island.set_tray_hovered(true);
+                island.set_pointer_in_hover_region(true);
             }
         });
         let weak = Rc::downgrade(self);
         surface_motion.connect_leave(move |_| {
             if let Some(island) = weak.upgrade() {
-                island.set_tray_hovered(false);
+                island.set_pointer_in_hover_region(false);
             }
         });
         self.hover_region.add_controller(surface_motion);
@@ -194,6 +194,11 @@ impl IslandWindow {
             let Some(island) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
+            if island.launcher_presentation == crate::config::LauncherPresentation::Integrated
+                && island.current_view.get() != View::Search
+            {
+                return glib::Propagation::Proceed;
+            }
             let results_active = island.search_open.get()
                 && island.search_stack.visible_child_name().as_deref() == Some("results");
             // t0: capture the moment a text-mutating key arrives, before the
