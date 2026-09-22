@@ -8,7 +8,7 @@ HTTP port are process-specific so two invocations can run back-to-back.
 import json
 import os
 import pathlib
-import random
+import socket
 import shutil
 import subprocess
 import sys
@@ -44,10 +44,9 @@ env.update(
 )
 env.pop("GSK_RENDERER", None)
 
-# The runtime directory is private to this invocation, so the conventional
-# display zero is collision-free and avoids stale global Broadway socket names.
-env["BROADWAY_DISPLAY"] = ":0"
-port = random.SystemRandom().randint(20000, 45000)
+# The runtime directory is private to this invocation; use a process-specific
+# display so the same runner can be launched concurrently.
+env["BROADWAY_DISPLAY"] = f":{os.getpid()}"
 
 server = None
 try:
@@ -68,31 +67,27 @@ try:
         and "lib" in item["target"]["kind"]
     )
     log_path = run_dir / "broadway.log"
-    with log_path.open("w") as log:
-        server_env = env.copy()
-        # Passing the display both through the environment and argv makes
-        # this GTK build attempt to bind its Unix socket twice.
-        server_env.pop("BROADWAY_DISPLAY", None)
-        server_env.pop("GDK_BACKEND", None)
-        server = subprocess.Popen(
-            ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
-            cwd=root,
-            env=server_env,
-            stdout=log,
-            stderr=log,
-        )
-        # Debian/GTK4 builds expose Broadway through the XDG runtime socket;
-        # some builds also expose the optional HTTP port, so checking TCP
-        # alone makes the runner report a false startup failure.
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            if server.poll() is not None:
-                raise RuntimeError(f"gtk4-broadwayd exited; see {log_path}: {log_path.read_text()}")
-            if list(runtime.glob("broadway*.socket")):
-                break
-            time.sleep(0.05)
-        else:
-            raise RuntimeError(f"Broadway did not create a runtime socket; see {log_path}")
+    for attempt in range(5):
+        env["BROADWAY_DISPLAY"] = f":{os.getpid() + attempt + 1}"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with log_path.open("w") as log:
+            server = subprocess.Popen(
+                ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
+                cwd=root,
+                env=env,
+                stdout=log,
+                stderr=log,
+            )
+        time.sleep(0.3)
+        if server.poll() is None:
+            break
+        server.terminate()
+        server.wait(timeout=5)
+        server = None
+    else:
+        raise RuntimeError(f"gtk4-broadwayd could not bind: {log_path.read_text()}")
 
         result = subprocess.run(
             [
