@@ -133,6 +133,8 @@ impl IslandWindow {
         window.set_child(Some(&fixed));
 
         let hover_region = gtk::Box::new(Orientation::Vertical, 0);
+        // Motion hot-zone only; it must never win GTK picking over the pill.
+        hover_region.set_can_target(false);
         hover_region.set_size_request(
             metrics.media_max_width + metrics.spacing(16),
             metrics.compact_height + metrics.spacing(16),
@@ -151,6 +153,7 @@ impl IslandWindow {
         surface.set_propagate_natural_height(false);
         surface.set_kinetic_scrolling(false);
         surface.set_has_frame(false);
+        surface.set_can_target(true);
         fixed.put(
             &surface,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -292,7 +295,6 @@ impl IslandWindow {
             dismiss_window,
             dismiss_click: RefCell::new(None),
             fixed,
-            hover_region,
             content,
             surface,
             compact: compact.upcast(),

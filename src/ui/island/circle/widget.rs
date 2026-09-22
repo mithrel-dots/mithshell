@@ -116,7 +116,14 @@ impl CircleHost {
         let weak = Rc::downgrade(&host);
         focus.connect_enter(move |_| {
             if let Some(host) = weak.upgrade() {
-                host.dispatch(Event::Focus(true));
+                // A hover-page control (especially media play/pause) must not
+                // turn transient pointer hover into a keyboard pin. Focus is
+                // intentional only for the full page.
+                if host.mode() == Mode::FullExpanded
+                    || host.presented_page() == Some(Mode::FullExpanded)
+                {
+                    host.dispatch(Event::Focus(true));
+                }
             }
         });
         let weak = Rc::downgrade(&host);

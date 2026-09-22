@@ -5,7 +5,7 @@ use super::*;
 
 use std::{rc::Rc, time::Duration};
 
-use gtk::{EventControllerMotion, GestureClick, gdk, glib};
+use gtk::{GestureClick, gdk, glib};
 
 use super::{IslandWindow, OverlayButtons, dominant_scroll_direction};
 
@@ -42,31 +42,27 @@ impl IslandWindow {
                 }
             });
             pill.add_controller(click);
-
-            let motion = EventControllerMotion::new();
-            let weak = Rc::downgrade(self);
-            motion.connect_enter(move |_, _, _| {
-                if let Some(island) = weak.upgrade() {
-                    island.set_pointer_in_hover_region(true);
-                }
-            });
-            let weak = Rc::downgrade(self);
-            motion.connect_leave(move |_| {
-                if let Some(island) = weak.upgrade() {
-                    island.set_pointer_in_hover_region(false);
-                }
-            });
-            pill.add_controller(motion);
         }
 
-        // Observe the stable padded surface as well as the foreground pill.
-        // The pill grows/moves on hover, so relying on its old bounds alone
-        // would cause a leave event while the pointer is stationary.
+        // Observe motion in capture phase on the actual GTK root. The old
+        // transparent sibling could win picking over the pill and report
+        // enter/leave for stale geometry. Root coordinates remain stable while
+        // the pill grows and this controller never becomes the target.
         let surface_motion = gtk::EventControllerMotion::new();
+        surface_motion.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        surface_motion.connect_enter(move |_, _, _| {
+        surface_motion.connect_motion(move |_, x, y| {
             if let Some(island) = weak.upgrade() {
-                island.set_pointer_in_hover_region(true);
+                let left = f64::from(island.metrics.window_width - island.metrics.media_max_width)
+                    / 2.0
+                    - f64::from(island.metrics.spacing(8));
+                let right =
+                    left + f64::from(island.metrics.media_max_width + island.metrics.spacing(16));
+                let inside = x >= left
+                    && x < right
+                    && y >= 0.0
+                    && y < f64::from(island.metrics.compact_height + island.metrics.spacing(16));
+                island.set_pointer_in_hover_region(inside);
             }
         });
         let weak = Rc::downgrade(self);
@@ -75,7 +71,7 @@ impl IslandWindow {
                 island.set_pointer_in_hover_region(false);
             }
         });
-        self.hover_region.add_controller(surface_motion);
+        self.fixed.add_controller(surface_motion);
 
         let mut notification_views = vec![self.notification.clone()];
         if let Some(overlay) = &self.pill_overlay {

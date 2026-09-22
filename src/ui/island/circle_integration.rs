@@ -639,7 +639,9 @@ impl IslandWindow {
 }
 
 fn spec_for(module: CircleModule, _scale: f64) -> (CircleSpec, Visual) {
-    let diameter = 48.0;
+    // The neutral pill is 32 design pixels high.  Layout applies the shell
+    // scale once; the old 48px value made compact circles 48*scale high.
+    let diameter = 32.0;
     let hover = match module {
         CircleModule::Notifications => Size {
             width: 300.0,

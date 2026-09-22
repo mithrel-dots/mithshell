@@ -410,7 +410,9 @@ impl IslandWindow {
             self.metrics.search_width,
             self.metrics.search_height,
             (self.metrics.window_width - self.metrics.search_width) / 2,
-            self.metrics.search_y,
+            // `apply_geometry` moves the shared surface to search_y already;
+            // this coordinate is local to that surface.
+            0,
         );
     }
 
@@ -910,8 +912,10 @@ impl IslandWindow {
             // fixed-size layer canvas is retained; only its clipped child is
             // replaced, avoiding the stale opaque rectangles caused by layer
             // window resizing in the original implementation.
-            self.search_surface.set_child(None::<&gtk::Widget>);
-            self.surface.set_child(Some(&self.search));
+            // `ensure_integrated_search_host` already mounted search in the
+            // shared Fixed. Reparenting it again during allocation triggers
+            // gtk_widget_insert_after criticals and can invalidate a later
+            // callback; the surface remains parented to content.
             self.search_window.set_visible(false);
         }
         self.search.set_opacity(if animate { 0.0 } else { 1.0 });
@@ -1059,8 +1063,9 @@ impl IslandWindow {
         self.search_animation_generation
             .set(self.search_animation_generation.get().wrapping_add(1));
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
-            self.surface.set_child(Some(&self.content));
-            self.search_surface.set_child(Some(&self.search));
+            // Move the widget back through the guarded ownership helper. Do
+            // not mutate either parent directly while GTK is allocating.
+            self.restore_integrated_search_host();
             self.search.set_can_target(false);
             let destination = if self.dashboard_open.get() {
                 View::Dashboard

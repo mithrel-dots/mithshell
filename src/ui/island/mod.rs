@@ -182,7 +182,6 @@ pub struct IslandWindow {
     fixed: Fixed,
     /// Stable, neutral hover hit target behind the moving pill. Its allocation
     /// does not change with tray width or depth motion.
-    hover_region: gtk::Box,
     content: Fixed,
     surface: gtk::ScrolledWindow,
     compact: gtk::Widget,
