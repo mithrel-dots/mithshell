@@ -109,10 +109,6 @@ impl IslandWindow {
             0.0,
         );
         self.compact_width.set(width);
-
-        if self.current_view.get() == View::Compact {
-            self.set_view(View::Compact);
-        }
     }
 
     /// Whether the tray row should be shown: at least one item exists, and
@@ -126,37 +122,45 @@ impl IslandWindow {
     /// the currently active one animates; the other silently follows so
     /// it's already correct if the view switches while hovered).
     pub(super) fn set_tray_hovered(self: &Rc<Self>, hovered: bool) {
-        if !matches!(self.current_view.get(), View::Compact | View::Media) {
-            return;
-        }
         if self.tray_hovered.get() == hovered {
             return;
         }
         self.tray_hovered.set(hovered);
+        if !matches!(self.current_view.get(), View::Compact | View::Media) {
+            return;
+        }
         self.resize_compact();
         self.resize_media();
-        self.animate_pill_hover(hovered);
+        self.reconcile_pill_geometry();
     }
 
-    /// Gives the pill a small, reversible depth cue independent of tray
-    /// visibility.  The input region remains padded during the transition so
-    /// moving the surface under the pointer cannot synthesize leave/enter
-    /// oscillation; generation invalidation makes reversal interruption-safe.
-    fn animate_pill_hover(self: &Rc<Self>, hovered: bool) {
-        let base = self.geometry_for_view(self.current_view.get());
-        let target = hover_geometry(base, f64::from(self.metrics.spacing(4)), hovered);
+    /// The sole geometry track for compact/media presentation. It includes
+    /// content-driven width, tray visibility, and hover depth, so a tray update
+    /// cannot race a second hover animator. Its start is always the currently
+    /// rendered geometry, making interruption and reversal continuous.
+    pub(super) fn reconcile_pill_geometry(self: &Rc<Self>) {
+        let view = self.current_view.get();
+        if !matches!(view, View::Compact | View::Media) {
+            return;
+        }
+        let target = self.presentation_target_geometry(view);
         let start = self.geometry.get();
+        if start == target {
+            return;
+        }
         let profile = profile_timing(
-            if hovered {
+            if self.tray_hovered.get() {
                 crate::ui::motion::Profile::HOVER_ENTER
+            } else if target.width >= start.width {
+                crate::ui::motion::Profile::CONTAINER_EXPAND
             } else {
-                crate::ui::motion::Profile::HOVER_EXIT
+                crate::ui::motion::Profile::CONTAINER_COLLAPSE
             },
             self.animations_enabled.get(),
             self.animation_ms.get(),
         );
-        let generation = self.hover_animation_generation.get().wrapping_add(1);
-        self.hover_animation_generation.set(generation);
+        let generation = self.animation_generation.get().wrapping_add(1);
+        self.animation_generation.set(generation);
         if profile.duration.is_zero() {
             self.apply_geometry(target);
             return;
@@ -167,7 +171,7 @@ impl IslandWindow {
             let Some(island) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if island.hover_animation_generation.get() != generation {
+            if island.animation_generation.get() != generation {
                 return glib::ControlFlow::Break;
             }
             let now = clock.frame_time();

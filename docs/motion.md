@@ -120,4 +120,14 @@ generation-cancelled GTK frame tracks. Clipping, focus, and compositor input
 regions still need live desktop review.
 Continuous battery-wave motion is not transition easing; it is outside this API.
 
+## Island presentation notes
+
+The compact/media pill uses one cancellable geometry track for content width,
+tray visibility, and hover depth. A fixed neutral GTK hover region sits behind
+the moving pill; its allocation is stable while the compositor input region is
+kept in the same scaled bounds. This avoids relying on padding alone to keep
+GTK motion events stable. Integrated launcher presentation uses `View::Search`
+on the fixed island canvas, while independent presentation keeps its separate
+search surface and persistent pill.
+
 Transition choreography guidance: https://m3.material.io/styles/motion/transitions/applying-transitions

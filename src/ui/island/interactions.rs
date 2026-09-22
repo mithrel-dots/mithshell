@@ -67,7 +67,7 @@ impl IslandWindow {
                 island.set_tray_hovered(false);
             }
         });
-        self.surface.add_controller(surface_motion);
+        self.hover_region.add_controller(surface_motion);
 
         let mut notification_views = vec![self.notification.clone()];
         if let Some(overlay) = &self.pill_overlay {
@@ -232,7 +232,15 @@ impl IslandWindow {
                 _ => glib::Propagation::Proceed,
             }
         });
-        self.search_window.add_controller(search_keys);
+        if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
+            // The main layer is the keyboard host while the launcher replaces
+            // the island; the separate search window is not mapped in this
+            // mode. Capture-phase routing preserves entry typing while giving
+            // Escape/navigation/actions a single owner.
+            self.window.add_controller(search_keys);
+        } else {
+            self.search_window.add_controller(search_keys);
+        }
 
         let overlay_keys = gtk::EventControllerKey::new();
         overlay_keys.set_propagation_phase(gtk::PropagationPhase::Capture);

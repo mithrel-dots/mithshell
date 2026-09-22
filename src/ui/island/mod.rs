@@ -102,6 +102,9 @@ enum View {
     /// Only reachable when `notifications.position = "pill"`; the other
     /// positions render notifications in a separate popup window instead.
     Notification,
+    /// The integrated launcher replaces the island's normal page in the same
+    /// fixed backing canvas. Independent launchers do not enter this state.
+    Search,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,6 +147,11 @@ impl Geometry {
                 height: f64::from(metrics.notification_height),
                 y: 0.0,
             },
+            View::Search => Self {
+                width: f64::from(metrics.search_width),
+                height: f64::from(metrics.search_height),
+                y: f64::from(metrics.search_y),
+            },
         }
     }
 
@@ -165,6 +173,9 @@ pub struct IslandWindow {
     search_surface: gtk::ScrolledWindow,
     dismiss_window: ApplicationWindow,
     fixed: Fixed,
+    /// Stable, neutral hover hit target behind the moving pill. Its allocation
+    /// does not change with tray width or depth motion.
+    hover_region: gtk::Box,
     content: Fixed,
     surface: gtk::ScrolledWindow,
     compact: gtk::Widget,
@@ -323,7 +334,6 @@ pub struct IslandWindow {
     media_width: Cell<i32>,
     geometry: Cell<Geometry>,
     animation_generation: Cell<u64>,
-    hover_animation_generation: Cell<u64>,
     animation_ms: Cell<u32>,
     animations_enabled: Cell<bool>,
     launcher_presentation: LauncherPresentation,

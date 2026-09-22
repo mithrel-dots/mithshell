@@ -9,6 +9,23 @@ use gtk4_layer_shell::KeyboardMode;
 
 use super::{Geometry, IslandWindow, View};
 
+fn sequential_fade_progress(
+    previous: View,
+    target: View,
+    elapsed: Duration,
+    outgoing: crate::ui::motion::Profile,
+    incoming: crate::ui::motion::Profile,
+) -> (f64, f64) {
+    if previous == target {
+        (0.0, incoming.progress(elapsed))
+    } else {
+        (
+            outgoing.progress(elapsed),
+            incoming.progress(elapsed.saturating_sub(outgoing.duration)),
+        )
+    }
+}
+
 impl IslandWindow {
     /// Re-applies the keyboard mode the current state wants. Split out of
     /// `set_view` so showing/dismissing a tray menu can borrow the surface's
@@ -48,6 +65,10 @@ impl IslandWindow {
             View::Notification
         } else if self.osd_active.get() {
             View::Osd
+        } else if self.search_open.get()
+            && self.launcher_presentation == crate::config::LauncherPresentation::Integrated
+        {
+            View::Search
         } else if self.weather_open.get() {
             View::Weather
         } else if self.dashboard_open.get() {
@@ -70,12 +91,14 @@ impl IslandWindow {
     }
 
     pub(super) fn set_view(self: &Rc<Self>, view: View) {
-        let target = self.geometry_for_view(view);
-        if matches!(view, View::Dashboard | View::Weather) {
+        let target = self.presentation_target_geometry(view);
+        if matches!(view, View::Dashboard | View::Weather | View::Search) {
             self.window.set_layer(gtk4_layer_shell::Layer::Overlay);
             self.dismiss_window.present();
             self.window.present();
-        } else if self.search_open.get() {
+        } else if self.search_open.get()
+            && self.launcher_presentation == crate::config::LauncherPresentation::Independent
+        {
             if self.search_window.is_visible() {
                 self.search_window.present();
             }
@@ -90,11 +113,25 @@ impl IslandWindow {
             self.refresh_keyboard_mode();
             return;
         }
+        let previous_view = self.current_view.get();
         self.current_view.set(view);
 
-        for (widget, widget_view) in self.view_widgets() {
+        if self.launcher_presentation == crate::config::LauncherPresentation::Integrated
+            && view == View::Search
+        {
+            self.ensure_integrated_search_host();
+            self.search.set_visible(true);
+            self.search.set_can_target(false);
+            if previous_view != View::Search {
+                self.search.set_opacity(0.0);
+            }
+        }
+
+        for (widget, _widget_view) in self.view_widgets() {
             widget.set_visible(true);
-            widget.set_can_target(widget_view == view && widget_view != View::Osd);
+            // Input follows the incoming CONTENT_IN track; never expose a
+            // page while the outgoing page is still fading out.
+            widget.set_can_target(false);
         }
         self.refresh_keyboard_mode();
         let start = self.geometry.get();
@@ -136,7 +173,8 @@ impl IslandWindow {
             let linear = profile.progress(elapsed);
             let eased = linear;
             island.apply_geometry(start.interpolate(target, eased));
-            island.apply_content_opacity(view, linear, start_opacities);
+            island.apply_content_opacity(view, previous_view, elapsed, start_opacities);
+            island.apply_search_opacity(view, previous_view, elapsed);
             if linear >= 1.0 {
                 island.finish_view(view);
                 glib::ControlFlow::Break
@@ -159,20 +197,91 @@ impl IslandWindow {
         ]
     }
 
-    pub(super) fn apply_content_opacity(&self, target: View, progress: f64, start: [f64; 6]) {
-        let progress = 1.0 - (1.0 - progress).powi(3);
+    pub(super) fn apply_content_opacity(
+        &self,
+        target: View,
+        previous: View,
+        elapsed: Duration,
+        start: [f64; 6],
+    ) {
+        let outgoing = profile_timing(
+            crate::ui::motion::Profile::CONTENT_OUT,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let incoming = profile_timing(
+            crate::ui::motion::Profile::CONTENT_IN,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let (out_progress, in_progress) =
+            sequential_fade_progress(previous, target, elapsed, outgoing, incoming);
         for ((widget, widget_view), start_opacity) in self.view_widgets().into_iter().zip(start) {
-            let end = if widget_view == target { 1.0 } else { 0.0 };
-            widget.set_opacity(lerp(start_opacity, end, progress));
+            if widget_view == target {
+                widget.set_opacity(lerp(start_opacity, 1.0, in_progress));
+            } else if widget_view == previous && previous != target {
+                widget.set_opacity(lerp(start_opacity, 0.0, out_progress));
+            } else {
+                widget.set_opacity(0.0);
+            }
+        }
+    }
+
+    fn apply_search_opacity(&self, target: View, previous: View, elapsed: Duration) {
+        if self.launcher_presentation != crate::config::LauncherPresentation::Integrated {
+            return;
+        }
+        let outgoing = profile_timing(
+            crate::ui::motion::Profile::CONTENT_OUT,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let incoming = profile_timing(
+            crate::ui::motion::Profile::CONTENT_IN,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let (_, in_progress) =
+            sequential_fade_progress(previous, target, elapsed, outgoing, incoming);
+        if target == View::Search {
+            self.search.set_can_target(in_progress > 0.0);
+            self.search.set_opacity(in_progress);
+        } else if previous == View::Search {
+            let (out_progress, _) =
+                sequential_fade_progress(previous, target, elapsed, outgoing, incoming);
+            self.search.set_opacity(1.0 - out_progress);
         }
     }
 
     pub(super) fn finish_view(&self, view: View) {
-        self.apply_geometry(self.geometry_for_view(view));
+        self.apply_geometry(self.presentation_target_geometry(view));
         for (widget, widget_view) in self.view_widgets() {
             let active = widget_view == view;
             widget.set_visible(active);
             widget.set_opacity(if active { 1.0 } else { 0.0 });
+        }
+        if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
+            if view == View::Search {
+                self.search.set_visible(true);
+                self.search.set_can_target(true);
+            } else {
+                self.search.set_visible(false);
+                self.search.set_can_target(false);
+                self.restore_integrated_search_host();
+            }
+        }
+    }
+
+    pub(super) fn presentation_target_geometry(&self, view: View) -> Geometry {
+        let base = self.geometry_for_view(view);
+        if matches!(view, View::Compact | View::Media) {
+            hover_geometry(
+                base,
+                f64::from(self.metrics.spacing(4)),
+                self.tray_hovered.get(),
+            )
+        } else {
+            base
         }
     }
 
@@ -189,20 +298,70 @@ impl IslandWindow {
             .set_value(f64::from((self.metrics.window_width - width) / 2));
         self.surface.vadjustment().set_value(0.0);
         if let Some(surface) = self.window.surface() {
-            let padding = if !self.search_open.get()
-                && matches!(self.current_view.get(), View::Compact | View::Media)
-            {
-                self.metrics.spacing(8)
+            let pill_region = !self.search_open.get()
+                && matches!(self.current_view.get(), View::Compact | View::Media);
+            let region_x = if pill_region {
+                (self.metrics.window_width - self.metrics.media_max_width) / 2
+                    - self.metrics.spacing(8)
             } else {
-                0
+                x
+            };
+            let region_y = if pill_region { 0 } else { y };
+            let region_width = if pill_region {
+                self.metrics.media_max_width + self.metrics.spacing(16)
+            } else {
+                width
+            };
+            let region_height = if pill_region {
+                self.metrics.compact_height + self.metrics.spacing(16)
+            } else {
+                height
             };
             let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
-                x - padding,
-                y - padding,
-                width + padding * 2,
-                height + padding * 2,
+                region_x,
+                region_y,
+                region_width,
+                region_height,
             ));
             surface.set_input_region(Some(&region));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacement_fades_out_before_fading_in() {
+        let outgoing = crate::ui::motion::Profile::CONTENT_OUT;
+        let incoming = crate::ui::motion::Profile::CONTENT_IN;
+        let (out_start, in_start) = sequential_fade_progress(
+            View::Compact,
+            View::Search,
+            Duration::ZERO,
+            outgoing,
+            incoming,
+        );
+        assert_eq!(out_start, 0.0);
+        assert_eq!(in_start, 0.0);
+
+        let (_, in_during_out) = sequential_fade_progress(
+            View::Compact,
+            View::Search,
+            Duration::from_millis(50),
+            outgoing,
+            incoming,
+        );
+        assert_eq!(in_during_out, 0.0);
+
+        let (_, in_after_out) = sequential_fade_progress(
+            View::Compact,
+            View::Search,
+            Duration::from_millis(125),
+            outgoing,
+            incoming,
+        );
+        assert!(in_after_out > 0.0);
     }
 }

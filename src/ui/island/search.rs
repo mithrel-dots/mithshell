@@ -396,6 +396,35 @@ fn highlight_color(name: &str) -> &'static str {
 }
 
 impl IslandWindow {
+    /// Moves the modern launcher widget between its independent scroller and
+    /// the shared island canvas. The layer window itself never changes size.
+    pub(super) fn ensure_integrated_search_host(&self) {
+        if self
+            .surface
+            .child()
+            .is_some_and(|child| child == self.content.clone().upcast::<gtk::Widget>())
+        {
+            self.search_surface.set_child(None::<&gtk::Widget>);
+            let width = self.metrics.search_width;
+            let x = (self.metrics.window_width - width) / 2;
+            self.content
+                .put(&self.search, f64::from(x), f64::from(self.metrics.search_y));
+            self.search
+                .set_size_request(width, self.metrics.search_height);
+        }
+    }
+
+    pub(super) fn restore_integrated_search_host(&self) {
+        if self
+            .search
+            .parent()
+            .is_some_and(|parent| parent == self.content.clone().upcast::<gtk::Widget>())
+        {
+            self.content.remove(&self.search);
+            self.search_surface.set_child(Some(&self.search));
+        }
+    }
+
     pub fn update_tarragon_connection(&self, connected: bool, message: Option<&str>) {
         self.search_connected.set(connected);
         self.search_entry.set_sensitive(connected);
@@ -816,7 +845,9 @@ impl IslandWindow {
             (self.actions.tarragon_status)();
         }
         self.reconcile_view();
-        self.present_search_window(start);
+        if self.launcher_presentation == crate::config::LauncherPresentation::Independent {
+            self.present_search_window(start);
+        }
         let entry = self.search_entry.clone();
         glib::idle_add_local_once(move || {
             entry.grab_focus();
@@ -857,6 +888,10 @@ impl IslandWindow {
         self.apply_search_geometry(if animate { start } else { target });
         self.window.set_layer(Layer::Overlay);
         self.refresh_keyboard_mode();
+        // Map the outside-click catcher first, then raise the actual search
+        // host above it. This ordering is required for IPC-opened launchers:
+        // the catcher dismisses outside clicks without stealing search input.
+        self.dismiss_window.present();
         if !integrated {
             self.search_window.present();
         }

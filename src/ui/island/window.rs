@@ -82,6 +82,17 @@ impl IslandWindow {
         fixed.set_size_request(metrics.window_width, metrics.window_height);
         window.set_child(Some(&fixed));
 
+        let hover_region = gtk::Box::new(Orientation::Vertical, 0);
+        hover_region.set_size_request(
+            metrics.media_max_width + metrics.spacing(16),
+            metrics.compact_height + metrics.spacing(16),
+        );
+        fixed.put(
+            &hover_region,
+            f64::from((metrics.window_width - metrics.media_max_width) / 2 - metrics.spacing(8)),
+            0.0,
+        );
+
         let surface = gtk::ScrolledWindow::new();
         surface.add_css_class("island-surface");
         surface.set_overflow(Overflow::Hidden);
@@ -227,6 +238,7 @@ impl IslandWindow {
             search_surface,
             dismiss_window,
             fixed,
+            hover_region,
             content,
             surface,
             compact: compact.upcast(),
@@ -362,7 +374,6 @@ impl IslandWindow {
                 metrics.compact_width,
             )),
             animation_generation: Cell::new(0),
-            hover_animation_generation: Cell::new(0),
             animation_ms: Cell::new(shell.animation_ms),
             animations_enabled: Cell::new(animations_enabled),
             launcher_presentation: config.launcher.presentation,
@@ -403,6 +414,7 @@ impl IslandWindow {
             &dismiss_area,
         );
         island.resize_compact();
+        island.reconcile_pill_geometry();
         island.start_clock();
         island.start_player_progress_timer();
         let weak = Rc::downgrade(&island);
@@ -486,7 +498,7 @@ impl IslandWindow {
         self.weather_open.set(false);
         self.dashboard_open.set(true);
         if integrated_search {
-            self.dismiss_search_window(self.geometry_for_view(View::Dashboard));
+            self.reconcile_view();
             return;
         }
         self.reconcile_view();
@@ -507,10 +519,7 @@ impl IslandWindow {
                 .is_some_and(|child| child == self.search.clone().upcast::<gtk::Widget>());
         self.search_open.set(false);
         if integrated_search {
-            // Keep the shared surface in launcher ownership until its collapse
-            // completes; otherwise reconcile_view would reparent content while
-            // the outgoing launcher is still being painted.
-            self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
+            self.reconcile_view();
             return;
         }
         self.reconcile_view();

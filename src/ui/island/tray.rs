@@ -216,6 +216,7 @@ impl IslandWindow {
         self.tray_item_count.set(items.len());
         self.resize_compact();
         self.resize_media();
+        self.reconcile_pill_geometry();
     }
 
     pub(crate) fn build_tray_icon_with_tracker(
@@ -421,6 +422,7 @@ impl IslandWindow {
         self.refresh_keyboard_mode();
         self.resize_compact();
         self.resize_media();
+        self.reconcile_pill_geometry();
 
         let weak = Rc::downgrade(self);
         present_tray_popover(&popover, lease, move || {
@@ -428,6 +430,7 @@ impl IslandWindow {
                 island.refresh_keyboard_mode();
                 island.resize_compact();
                 island.resize_media();
+                island.reconcile_pill_geometry();
             }
         });
     }

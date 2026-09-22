@@ -220,6 +220,7 @@ impl IslandWindow {
                     && island.media_playing.get()
                 {
                     island.resize_media();
+                    island.reconcile_pill_geometry();
                     island.reconcile_view();
                 }
             });
@@ -414,7 +415,7 @@ impl IslandWindow {
         self.media_width.set(width);
 
         if self.current_view.get() == View::Media {
-            self.set_view(View::Media);
+            self.reconcile_pill_geometry();
         }
     }
 }

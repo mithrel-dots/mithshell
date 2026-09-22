@@ -505,6 +505,7 @@ impl IslandWindow {
             self.workspace_row.insert(&button, -1);
         }
         self.resize_compact();
+        self.reconcile_pill_geometry();
     }
 
     pub fn update_system(self: &Rc<Self>, snapshot: &SystemSnapshot) {
@@ -554,5 +555,6 @@ impl IslandWindow {
         }
         self.updating_controls.set(false);
         self.resize_compact();
+        self.reconcile_pill_geometry();
     }
 }
