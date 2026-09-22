@@ -312,6 +312,10 @@ impl IslandWindow {
     }
 
     pub fn update_notification_inhibition(&self, active: bool, remaining: Option<Duration>) {
+        let circle_remaining = remaining.map(format_inhibition_remaining);
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.update_inhibition(active, circle_remaining.as_deref());
+        }
         self.updating_notification_inhibit.set(true);
         self.notification_inhibit_button.set_active(active);
         let remaining = remaining.map(format_inhibition_remaining);

@@ -203,9 +203,6 @@ impl IslandWindow {
             .borrow()
             .as_ref()
             .is_some_and(|c| c.owns(crate::config::CircleModule::Media));
-        if let Some(circles) = self.circles.borrow().as_ref() {
-            circles.update_media(state);
-        }
         self.player_card.set_visible(!in_circle);
         let compact_state = (!in_circle)
             .then_some(state)
@@ -250,6 +247,9 @@ impl IslandWindow {
             *self.selected_media_service.borrow_mut() = Some(selected.service.clone());
             selected
         });
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.update_media(selected.as_ref());
+        }
         self.update_player_card((!in_circle).then_some(selected.as_ref()).flatten());
         *self.latest_media.borrow_mut() = selected;
     }

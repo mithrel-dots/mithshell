@@ -310,6 +310,7 @@ impl IslandWindow {
             tray_hovered: Cell::new(false),
             pointer_in_hover_region: Cell::new(false),
             tray_item_count: Cell::new(0),
+            tray_circle_assigned: config.circles.contains(crate::config::CircleModule::Tray),
             tray_menu_open: Cell::new(false),
             tray_menu_manager,
             tray_menu_tracker,
@@ -544,6 +545,8 @@ impl IslandWindow {
             "tray_menu_open": self.tray_menu_open.get(),
             "tray_visible": self.compact_tray.is_visible(),
             "tray_visible_media": self.media_tray.is_visible(),
+            "player_card_visible": self.player_card.is_visible(),
+            "notification_history_visible": self.notification_list.is_visible(),
             "circles": self.circle_debug_state(),
         })
     }

@@ -115,7 +115,9 @@ impl IslandWindow {
     /// either the pill (compact or media, whichever is active) is hovered
     /// or one of the items' menus is currently open.
     pub(super) fn tray_visible(&self) -> bool {
-        (self.tray_hovered.get() || self.tray_menu_open.get()) && self.tray_item_count.get() > 0
+        !self.tray_circle_assigned
+            && (self.tray_hovered.get() || self.tray_menu_open.get())
+            && self.tray_item_count.get() > 0
     }
 
     /// Hides/reveals the tray row on hover, and resizes both pills (only

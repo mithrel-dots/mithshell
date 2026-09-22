@@ -402,7 +402,12 @@ impl IslandWindow {
     pub(super) fn apply_notification_takeover(&self) {
         let expanded = self.notifications_expanded.get();
         self.status_card.set_visible(!expanded);
-        self.player_card.set_visible(!expanded);
+        let media_in_circle = self
+            .circles
+            .borrow()
+            .as_ref()
+            .is_some_and(|circles| circles.owns(crate::config::CircleModule::Media));
+        self.player_card.set_visible(!expanded && !media_in_circle);
         self.controls_stack.set_visible(!expanded);
         icon::set_button_icon(
             &self.notification_expand_button,
