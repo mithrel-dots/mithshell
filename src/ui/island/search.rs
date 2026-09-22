@@ -779,7 +779,11 @@ impl IslandWindow {
 
     pub fn open_search(self: &Rc<Self>) {
         if self.search_open.get() {
-            self.search_window.present();
+            if self.launcher_presentation == crate::config::LauncherPresentation::Independent {
+                self.search_window.present();
+            } else {
+                self.window.present();
+            }
             self.window.present();
             let entry = self.search_entry.clone();
             glib::idle_add_local_once(move || {
@@ -830,19 +834,37 @@ impl IslandWindow {
     fn present_search_window(self: &Rc<Self>, start: Geometry) {
         let generation = self.search_animation_generation.get().wrapping_add(1);
         self.search_animation_generation.set(generation);
-        let animate = self.animations_enabled.get() && self.animation_ms.get() > 0;
+        let integrated =
+            self.launcher_presentation == crate::config::LauncherPresentation::Integrated;
+        let profile = profile_timing(
+            crate::ui::motion::Profile::CONTAINER_EXPAND,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let animate = !profile.duration.is_zero();
         let target = self.search_target_geometry();
+        if integrated {
+            // The launcher owns the real island surface in this mode.  The
+            // fixed-size layer canvas is retained; only its clipped child is
+            // replaced, avoiding the stale opaque rectangles caused by layer
+            // window resizing in the original implementation.
+            self.search_surface.set_child(None::<&gtk::Widget>);
+            self.surface.set_child(Some(&self.search));
+            self.search_window.set_visible(false);
+        }
         self.search.set_opacity(if animate { 0.0 } else { 1.0 });
         self.search.set_can_target(true);
         self.apply_search_geometry(if animate { start } else { target });
         self.window.set_layer(Layer::Overlay);
-        self.search_window.present();
+        self.refresh_keyboard_mode();
+        if !integrated {
+            self.search_window.present();
+        }
         self.window.present();
         if !animate {
             return;
         }
 
-        let duration_us = i64::from(self.animation_ms.get()) * 1000;
         let start_time = Cell::new(None::<i64>);
         let weak = Rc::downgrade(self);
         self.search.add_tick_callback(move |_, frame_clock| {
@@ -859,13 +881,16 @@ impl IslandWindow {
                 start_time.set(Some(now));
                 now
             };
-            let linear = ((now - started) as f64 / duration_us as f64).clamp(0.0, 1.0);
-            let geometry_progress = 1.0 - (1.0 - linear).powi(5);
-            let opacity_progress = 1.0 - (1.0 - linear).powi(3);
-            island.apply_search_geometry(start.interpolate(target, geometry_progress));
-            island.search.set_opacity(opacity_progress);
-            if linear >= 1.0 {
-                island.apply_search_geometry(target);
+            let elapsed = Duration::from_micros((now - started).max(0) as u64);
+            let progress = profile.progress(elapsed);
+            island.apply_search_geometry(start.interpolate(target, progress));
+            island.search.set_opacity(progress);
+            if progress >= 1.0 {
+                if integrated {
+                    island.apply_geometry(target);
+                } else {
+                    island.apply_search_geometry(target);
+                }
                 island.search.set_opacity(1.0);
                 glib::ControlFlow::Break
             } else {
@@ -875,23 +900,35 @@ impl IslandWindow {
     }
 
     pub(super) fn dismiss_search_window(self: &Rc<Self>, target: Geometry) {
-        if !self.search_window.is_visible() {
+        let integrated = self.launcher_presentation
+            == crate::config::LauncherPresentation::Integrated
+            && self
+                .surface
+                .child()
+                .is_some_and(|child| child == self.search.clone().upcast::<gtk::Widget>());
+        if !integrated && !self.search_window.is_visible() {
             return;
         }
         self.search.set_can_target(false);
         self.dismiss_window.present();
-        self.search_window.present();
+        if !integrated {
+            self.search_window.present();
+        }
         self.window.present();
         let generation = self.search_animation_generation.get().wrapping_add(1);
         self.search_animation_generation.set(generation);
-        if !self.animations_enabled.get() || self.animation_ms.get() == 0 {
+        let profile = profile_timing(
+            crate::ui::motion::Profile::CONTAINER_COLLAPSE,
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        if profile.duration.is_zero() {
             self.hide_search_window();
             return;
         }
 
         let start = self.search_geometry.get();
         let start_opacity = self.search.opacity();
-        let duration_us = i64::from(self.animation_ms.get()) * 1000;
         let start_time = Cell::new(None::<i64>);
         let weak = Rc::downgrade(self);
         self.search.add_tick_callback(move |_, frame_clock| {
@@ -908,14 +945,17 @@ impl IslandWindow {
                 start_time.set(Some(now));
                 now
             };
-            let linear = ((now - started) as f64 / duration_us as f64).clamp(0.0, 1.0);
-            let geometry_progress = 1.0 - (1.0 - linear).powi(5);
-            let opacity_progress = 1.0 - (1.0 - linear).powi(3);
-            island.apply_search_geometry(start.interpolate(target, geometry_progress));
+            let elapsed = Duration::from_micros((now - started).max(0) as u64);
+            let progress = profile.progress(elapsed);
+            if integrated {
+                island.apply_geometry(start.interpolate(target, progress));
+            } else {
+                island.apply_search_geometry(start.interpolate(target, progress));
+            }
             island
                 .search
-                .set_opacity(lerp(start_opacity, 0.0, opacity_progress));
-            if linear >= 1.0 {
+                .set_opacity(lerp(start_opacity, 0.0, progress));
+            if progress >= 1.0 {
                 island.hide_search_window();
                 glib::ControlFlow::Break
             } else {
@@ -926,6 +966,10 @@ impl IslandWindow {
 
     pub(super) fn apply_search_geometry(&self, geometry: Geometry) {
         self.search_geometry.set(geometry);
+        if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
+            self.apply_geometry(geometry);
+            return;
+        }
         let width = geometry.width.round() as i32;
         let height = geometry.height.round() as i32;
         let x = (self.metrics.search_window_width - width) / 2;
@@ -948,7 +992,22 @@ impl IslandWindow {
     pub(super) fn hide_search_window(&self) {
         self.search_animation_generation
             .set(self.search_animation_generation.get().wrapping_add(1));
-        self.search_window.set_visible(false);
+        if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
+            self.surface.set_child(Some(&self.content));
+            self.search_surface.set_child(Some(&self.search));
+            self.search.set_can_target(false);
+            let destination = if self.dashboard_open.get() {
+                View::Dashboard
+            } else if self.weather_open.get() {
+                View::Weather
+            } else {
+                self.current_view.get()
+            };
+            self.current_view.set(destination);
+            self.finish_view(destination);
+        } else {
+            self.search_window.set_visible(false);
+        }
         self.search.set_opacity(1.0);
         self.window
             .set_layer(if self.dashboard_open.get() || self.weather_open.get() {

@@ -38,14 +38,17 @@ use metrics::Metrics;
 
 use notification::{CurrentNotification, NotificationToasts, PendingNotification, PillOverlay};
 
-use crate::config::{IconStyle, NotificationConfig};
+use crate::config::{IconStyle, LauncherPresentation, NotificationConfig};
 use crate::media::VisualizerLevels;
 use crate::state::{HyprlandSnapshot, MediaState, WeatherState};
 use crate::tarragon::{TarragonSnapshot, TarragonStatus};
 use crate::ui::icon::{self, Icon};
 
 const WINDOW_WIDTH: i32 = 860;
-const WINDOW_HEIGHT: i32 = DASHBOARD_HEIGHT;
+// Fixed backing canvas for every presentation, including the 820x620
+// integrated launcher.  Keeping the layer window stable avoids stale opaque
+// rectangles when a launcher closes after a geometry animation.
+const WINDOW_HEIGHT: i32 = 900;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;
 /// Floor for the pill's content-driven width (`resize_compact`), so it
@@ -320,8 +323,10 @@ pub struct IslandWindow {
     media_width: Cell<i32>,
     geometry: Cell<Geometry>,
     animation_generation: Cell<u64>,
+    hover_animation_generation: Cell<u64>,
     animation_ms: Cell<u32>,
     animations_enabled: Cell<bool>,
+    launcher_presentation: LauncherPresentation,
     osd_generation: Cell<u64>,
     volume_generation: Cell<u64>,
     brightness_generation: Cell<u64>,
@@ -339,6 +344,31 @@ pub struct IslandWindow {
     notification_toasts: Option<NotificationToasts>,
     pill_overlay: Option<PillOverlay>,
     actions: IslandActions,
+}
+
+/// `280` is the historical default.  Treating that value as the compatibility
+/// default lets the named profiles select their Material timings, while any
+/// other positive value remains an explicit user override.  This is necessarily
+/// a convention because the TOML scalar cannot distinguish an omitted value
+/// from an explicitly written `280`.
+fn profile_timing(
+    profile: crate::ui::motion::Profile,
+    enabled: bool,
+    animation_ms: u32,
+) -> crate::ui::motion::Profile {
+    profile.with_timing(enabled, (animation_ms != 280).then_some(animation_ms))
+}
+
+fn hover_geometry(base: Geometry, inset: f64, hovered: bool) -> Geometry {
+    if hovered {
+        Geometry {
+            width: base.width + inset * 2.0,
+            height: base.height + inset,
+            y: base.y + inset / 2.0,
+        }
+    } else {
+        base
+    }
 }
 
 fn clear_box(container: &gtk::Box) {
@@ -379,13 +409,41 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::Icon;
     use super::dashboard::battery_icon;
     use super::media::{format_media_time, media_state_for_player};
     use super::weather::weather_provider_label;
+    use super::{Geometry, Icon, hover_geometry, profile_timing};
     use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
     use crate::ui::resolved_scale;
     use crate::weather::WeatherProvider;
+
+    #[test]
+    fn hover_geometry_is_forward_and_reversible() {
+        let resting = Geometry {
+            width: 200.0,
+            height: 32.0,
+            y: 0.0,
+        };
+        let raised = hover_geometry(resting, 4.0, true);
+        assert!(raised.width > resting.width);
+        assert!(raised.height > resting.height);
+        assert!(raised.y > resting.y);
+        assert_eq!(hover_geometry(resting, 4.0, false), resting);
+    }
+
+    #[test]
+    fn default_animation_value_selects_named_profile() {
+        let profile = profile_timing(crate::ui::motion::Profile::HOVER_ENTER, true, 280);
+        assert_eq!(
+            profile.duration,
+            crate::ui::motion::Profile::HOVER_ENTER.duration
+        );
+        let override_profile = profile_timing(crate::ui::motion::Profile::HOVER_ENTER, true, 333);
+        assert_eq!(
+            override_profile.duration,
+            std::time::Duration::from_millis(333)
+        );
+    }
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
         MediaPlayer {

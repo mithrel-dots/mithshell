@@ -51,6 +51,24 @@ impl IslandWindow {
             pill.add_controller(motion);
         }
 
+        // Observe the stable padded surface as well as the foreground pill.
+        // The pill grows/moves on hover, so relying on its old bounds alone
+        // would cause a leave event while the pointer is stationary.
+        let surface_motion = gtk::EventControllerMotion::new();
+        let weak = Rc::downgrade(self);
+        surface_motion.connect_enter(move |_, _, _| {
+            if let Some(island) = weak.upgrade() {
+                island.set_tray_hovered(true);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        surface_motion.connect_leave(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.set_tray_hovered(false);
+            }
+        });
+        self.surface.add_controller(surface_motion);
+
         let mut notification_views = vec![self.notification.clone()];
         if let Some(overlay) = &self.pill_overlay {
             notification_views.push(overlay.root.clone());

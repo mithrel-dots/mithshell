@@ -3,7 +3,7 @@
 
 use super::*;
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gtk4_layer_shell::KeyboardMode;
 
@@ -16,16 +16,25 @@ impl IslandWindow {
     pub(super) fn refresh_keyboard_mode(&self) {
         let mode = match self.current_view.get() {
             View::Weather => KeyboardMode::Exclusive,
+            _ if self.search_open.get()
+                && self.launcher_presentation
+                    == crate::config::LauncherPresentation::Integrated =>
+            {
+                KeyboardMode::Exclusive
+            }
             _ if self.tray_menu_open.get() => KeyboardMode::OnDemand,
             _ => KeyboardMode::None,
         };
         self.window.set_keyboard_mode(mode);
-        self.search_window
-            .set_keyboard_mode(if self.search_open.get() {
+        self.search_window.set_keyboard_mode(
+            if self.search_open.get()
+                && self.launcher_presentation == crate::config::LauncherPresentation::Independent
+            {
                 KeyboardMode::Exclusive
             } else {
                 KeyboardMode::None
-            });
+            },
+        );
     }
 
     pub(super) fn reconcile_view(self: &Rc<Self>) {
@@ -97,7 +106,15 @@ impl IslandWindow {
             return;
         }
 
-        let duration_us = i64::from(self.animation_ms.get()) * 1000;
+        let profile = profile_timing(
+            if view == View::Compact {
+                crate::ui::motion::Profile::CONTAINER_COLLAPSE
+            } else {
+                crate::ui::motion::Profile::CONTAINER_EXPAND
+            },
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
         let start_time = Cell::new(None::<i64>);
         let start_opacities = self.view_widgets().map(|(widget, _)| widget.opacity());
         let weak = Rc::downgrade(self);
@@ -115,8 +132,9 @@ impl IslandWindow {
                 start_time.set(Some(now));
                 now
             };
-            let linear = ((now - started) as f64 / duration_us as f64).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - linear).powi(5);
+            let elapsed = Duration::from_micros((now - started).max(0) as u64);
+            let linear = profile.progress(elapsed);
+            let eased = linear;
             island.apply_geometry(start.interpolate(target, eased));
             island.apply_content_opacity(view, linear, start_opacities);
             if linear >= 1.0 {
@@ -171,8 +189,18 @@ impl IslandWindow {
             .set_value(f64::from((self.metrics.window_width - width) / 2));
         self.surface.vadjustment().set_value(0.0);
         if let Some(surface) = self.window.surface() {
+            let padding = if !self.search_open.get()
+                && matches!(self.current_view.get(), View::Compact | View::Media)
+            {
+                self.metrics.spacing(8)
+            } else {
+                0
+            };
             let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
-                x, y, width, height,
+                x - padding,
+                y - padding,
+                width + padding * 2,
+                height + padding * 2,
             ));
             surface.set_input_region(Some(&region));
         }

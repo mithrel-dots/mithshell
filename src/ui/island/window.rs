@@ -362,8 +362,10 @@ impl IslandWindow {
                 metrics.compact_width,
             )),
             animation_generation: Cell::new(0),
+            hover_animation_generation: Cell::new(0),
             animation_ms: Cell::new(shell.animation_ms),
             animations_enabled: Cell::new(animations_enabled),
+            launcher_presentation: config.launcher.presentation,
             osd_generation: Cell::new(0),
             volume_generation: Cell::new(0),
             brightness_generation: Cell::new(0),
@@ -474,20 +476,43 @@ impl IslandWindow {
 
     pub fn open(self: &Rc<Self>) {
         self.clear_osd();
+        let integrated_search = self.launcher_presentation
+            == crate::config::LauncherPresentation::Integrated
+            && self
+                .surface
+                .child()
+                .is_some_and(|child| child == self.search.clone().upcast::<gtk::Widget>());
         self.search_open.set(false);
         self.weather_open.set(false);
         self.dashboard_open.set(true);
+        if integrated_search {
+            self.dismiss_search_window(self.geometry_for_view(View::Dashboard));
+            return;
+        }
         self.reconcile_view();
         self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }
 
     pub fn close(self: &Rc<Self>) {
         self.dashboard_open.set(false);
-        self.search_open.set(false);
         self.weather_open.set(false);
         self.search_action_generation
             .set(self.search_action_generation.get().wrapping_add(1));
         self.clear_osd();
+        let integrated_search = self.launcher_presentation
+            == crate::config::LauncherPresentation::Integrated
+            && self
+                .surface
+                .child()
+                .is_some_and(|child| child == self.search.clone().upcast::<gtk::Widget>());
+        self.search_open.set(false);
+        if integrated_search {
+            // Keep the shared surface in launcher ownership until its collapse
+            // completes; otherwise reconcile_view would reparent content while
+            // the outgoing launcher is still being painted.
+            self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
+            return;
+        }
         self.reconcile_view();
         self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }

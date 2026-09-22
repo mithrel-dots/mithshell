@@ -126,11 +126,62 @@ impl IslandWindow {
     /// the currently active one animates; the other silently follows so
     /// it's already correct if the view switches while hovered).
     pub(super) fn set_tray_hovered(self: &Rc<Self>, hovered: bool) {
+        if !matches!(self.current_view.get(), View::Compact | View::Media) {
+            return;
+        }
         if self.tray_hovered.get() == hovered {
             return;
         }
         self.tray_hovered.set(hovered);
         self.resize_compact();
         self.resize_media();
+        self.animate_pill_hover(hovered);
+    }
+
+    /// Gives the pill a small, reversible depth cue independent of tray
+    /// visibility.  The input region remains padded during the transition so
+    /// moving the surface under the pointer cannot synthesize leave/enter
+    /// oscillation; generation invalidation makes reversal interruption-safe.
+    fn animate_pill_hover(self: &Rc<Self>, hovered: bool) {
+        let base = self.geometry_for_view(self.current_view.get());
+        let target = hover_geometry(base, f64::from(self.metrics.spacing(4)), hovered);
+        let start = self.geometry.get();
+        let profile = profile_timing(
+            if hovered {
+                crate::ui::motion::Profile::HOVER_ENTER
+            } else {
+                crate::ui::motion::Profile::HOVER_EXIT
+            },
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        );
+        let generation = self.hover_animation_generation.get().wrapping_add(1);
+        self.hover_animation_generation.set(generation);
+        if profile.duration.is_zero() {
+            self.apply_geometry(target);
+            return;
+        }
+        let started = Cell::new(None::<i64>);
+        let weak = Rc::downgrade(self);
+        self.surface.add_tick_callback(move |_, clock| {
+            let Some(island) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if island.hover_animation_generation.get() != generation {
+                return glib::ControlFlow::Break;
+            }
+            let now = clock.frame_time();
+            let origin = started.get().unwrap_or_else(|| {
+                started.set(Some(now));
+                now
+            });
+            let progress = profile.progress(Duration::from_micros((now - origin).max(0) as u64));
+            island.apply_geometry(start.interpolate(target, progress));
+            if progress >= 1.0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 }
