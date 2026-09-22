@@ -8,7 +8,7 @@
 #![allow(deprecated)] // ComboBoxText remains the project's GTK4-compatible selector.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -76,6 +76,11 @@ fn interpolated_progress(progress: &Progress, now: Instant) -> f64 {
     progress_fraction(position, progress.length_us)
 }
 
+fn timer_needed(progress: &Progress) -> bool {
+    progress.status == PlaybackStatus::Playing
+        && progress.length_us.is_some_and(|length| length > 0)
+}
+
 /// A mounted circle content pair. `host()` is handed to the central layout;
 /// `update()` is called with the same selected snapshot used by the dashboard.
 pub(crate) struct MediaCircle {
@@ -91,8 +96,10 @@ pub(crate) struct MediaCircle {
     play_pause: gtk::Button,
     next: gtk::Button,
     actions: MediaCircleActions,
+    icon_style: crate::config::IconStyle,
     current_service: RefCell<Option<String>>,
     tick: RefCell<Option<glib::SourceId>>,
+    selector_updating: Cell<bool>,
 }
 
 impl MediaCircle {
@@ -130,8 +137,10 @@ impl MediaCircle {
             play_pause,
             next,
             actions,
+            icon_style: metrics.icons,
             current_service: RefCell::new(None),
             tick: RefCell::new(None),
+            selector_updating: Cell::new(false),
         });
         circle.connect_actions();
         Ok(circle)
@@ -143,9 +152,9 @@ impl MediaCircle {
 
     /// `None` hides the circle. A titled paused/stopped player remains valid so
     /// the user can resume it; an empty title/service is not valid content.
-    pub(super) fn update(&self, state: Option<&MediaState>) {
-        let valid =
-            state.filter(|state| !state.service.is_empty() && !state.title.trim().is_empty());
+    pub(super) fn update(self: &Rc<Self>, state: Option<&MediaState>) {
+        let valid = state
+            .filter(|state| !state.service.trim().is_empty() && !state.title.trim().is_empty());
         if let Some(state) = valid {
             *self.current_service.borrow_mut() = Some(state.service.clone());
             let mut progress = self.progress.borrow_mut();
@@ -168,27 +177,43 @@ impl MediaCircle {
     fn set_media(&self, state: &MediaState) {
         for image in [&self.compact_icon, &self.hover_icon] {
             icon::set_foreign_image(image, state.app_icon.as_deref(), Icon::Executable);
+            image.set_tooltip_text(Some(&format!("{} — {}", state.title, state.player)));
         }
         self.hover_title.set_label(&state.title);
         self.hover_artist
             .set_label(state.artist.as_deref().unwrap_or_default());
         self.hover_artist.set_visible(state.artist.is_some());
+        let _selector_update = SelectorUpdate::new(&self.selector_updating);
         self.player_select.remove_all();
+        let mut selected_is_listed = false;
         for player in &state.players {
+            selected_is_listed |= player.service == state.service;
             self.player_select
                 .append(Some(&player.service), &player.player);
         }
+        // A selected snapshot can briefly outlive discovery's player list.
+        // Keep valid titled media visible rather than treating that race as
+        // absence; the next snapshot reconciles the selector normally.
+        if !selected_is_listed {
+            self.player_select
+                .append(Some(&state.service), &state.player);
+        }
         self.player_select.set_active_id(Some(&state.service));
+        self.player_select
+            .set_tooltip_text(Some("Select media player"));
         self.previous.set_sensitive(state.can_go_previous);
         self.next.set_sensitive(state.can_go_next);
         self.play_pause
             .set_sensitive(state.can_play || state.can_pause);
-        self.play_pause
-            .set_icon_name(if state.status == PlaybackStatus::Playing {
-                "media-playback-pause-symbolic"
+        icon::set_button_icon(
+            &self.play_pause,
+            if state.status == PlaybackStatus::Playing {
+                Icon::Pause
             } else {
-                "media-playback-start-symbolic"
-            });
+                Icon::Play
+            },
+            self.icon_style,
+        );
     }
 
     fn connect_actions(self: &Rc<Self>) {
@@ -211,6 +236,9 @@ impl MediaCircle {
         self.player_select.connect_changed(move |combo| {
             if let Some(service) = combo.active_id() {
                 if let Some(this) = weak.upgrade() {
+                    if this.selector_updating.get() {
+                        return;
+                    }
                     this.current_service.replace(Some(service.to_string()));
                 }
                 select(service.to_string());
@@ -218,20 +246,27 @@ impl MediaCircle {
         });
     }
 
-    fn restart_timer(&self) {
+    fn restart_timer(self: &Rc<Self>) {
         self.stop_timer();
-        if self.progress.borrow().status != PlaybackStatus::Playing {
+        if !timer_needed(&self.progress.borrow()) {
             return;
         }
-        let area = self.progress_area.clone();
-        let progress = self.progress.clone();
+        let weak = Rc::downgrade(self);
         let source = glib::timeout_add_local(Duration::from_millis(50), move || {
-            area.queue_draw();
-            let snapshot = progress.borrow();
+            let Some(owner) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            owner.progress_area.queue_draw();
+            let snapshot = owner.progress.borrow();
             let done = snapshot.length_us.is_some_and(|length| {
                 length > 0 && interpolated_progress(&snapshot, Instant::now()) >= 1.0
             });
             if done {
+                // The callback is already executing, so do not call remove on
+                // its own SourceId. Dropping the handle clears the slot; Drop
+                // only removes sources which are still registered.
+                drop(snapshot);
+                owner.tick.borrow_mut().take();
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
@@ -247,6 +282,35 @@ impl MediaCircle {
     }
     fn redraw_progress(&self) {
         self.progress_area.queue_draw();
+    }
+
+    /// Called by theme/config redraw integration; the ring takes its color
+    /// from the DrawingArea's current GTK foreground color.
+    pub(super) fn redraw_theme(&self) {
+        self.progress_area.queue_draw();
+    }
+}
+
+impl Drop for MediaCircle {
+    fn drop(&mut self) {
+        if let Some(source) = self.tick.get_mut().take() {
+            source.remove();
+        }
+    }
+}
+
+struct SelectorUpdate<'a>(&'a Cell<bool>);
+
+impl SelectorUpdate<'_> {
+    fn new(updating: &Cell<bool>) -> SelectorUpdate<'_> {
+        updating.set(true);
+        SelectorUpdate(updating)
+    }
+}
+
+impl Drop for SelectorUpdate<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
     }
 }
 
@@ -265,7 +329,9 @@ fn compact_page(
     let area = gtk::DrawingArea::new();
     area.set_content_width(metrics.spacing(48));
     area.set_content_height(metrics.spacing(48));
+    area.add_css_class("media-circle-progress");
     let draw_progress = progress;
+    let draw_area = area.clone();
     area.set_draw_func(move |_, cr, width, height| {
         let fraction = interpolated_progress(&draw_progress.borrow(), Instant::now());
         let radius = f64::from(width.min(height)) * 0.5 - 2.0;
@@ -277,7 +343,13 @@ fn compact_page(
             -std::f64::consts::FRAC_PI_2,
             -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * fraction,
         );
-        cr.set_source_rgba(0.35, 0.75, 1.0, 1.0);
+        let color = draw_area.color();
+        cr.set_source_rgba(
+            f64::from(color.red()),
+            f64::from(color.green()),
+            f64::from(color.blue()),
+            f64::from(color.alpha()),
+        );
         let _ = cr.stroke();
     });
     overlay.add_overlay(&area);
@@ -319,9 +391,9 @@ fn hover_page(
     let select = gtk::ComboBoxText::new();
     select.set_hexpand(false);
     root.append(&select);
-    let previous = gtk::Button::from_icon_name("media-skip-backward-symbolic");
-    let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
-    let next = gtk::Button::from_icon_name("media-skip-forward-symbolic");
+    let previous = icon::icon_button(Icon::Previous, metrics.icons);
+    let play = icon::icon_button(Icon::Play, metrics.icons);
+    let next = icon::icon_button(Icon::Next, metrics.icons);
     for button in [&previous, &play, &next] {
         button.add_css_class("media-circle-control");
         root.append(button);
@@ -331,7 +403,9 @@ fn hover_page(
 
 #[cfg(test)]
 mod tests {
-    use super::progress_fraction;
+    use std::cell::Cell;
+
+    use super::{PlaybackStatus, Progress, SelectorUpdate, progress_fraction, timer_needed};
     #[test]
     fn progress_is_safe_for_unknown_and_invalid_values() {
         assert_eq!(progress_fraction(-1, None), 0.0);
@@ -339,5 +413,37 @@ mod tests {
         assert_eq!(progress_fraction(-10, Some(100)), 0.0);
         assert_eq!(progress_fraction(200, Some(100)), 1.0);
         assert_eq!(progress_fraction(25, Some(100)), 0.25);
+    }
+
+    #[test]
+    fn unknown_duration_never_starts_a_playback_timer() {
+        let progress = Progress {
+            status: PlaybackStatus::Playing,
+            length_us: None,
+            ..Default::default()
+        };
+        assert!(!timer_needed(&progress));
+        assert!(timer_needed(&Progress {
+            status: PlaybackStatus::Playing,
+            length_us: Some(1),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn selector_updates_suppress_snapshot_emissions_but_not_user_changes() {
+        let updating = Cell::new(false);
+        let emitted = Cell::new(0);
+        {
+            let _guard = SelectorUpdate::new(&updating);
+            if !updating.get() {
+                emitted.set(emitted.get() + 1);
+            }
+        }
+        assert_eq!(emitted.get(), 0);
+        if !updating.get() {
+            emitted.set(emitted.get() + 1);
+        }
+        assert_eq!(emitted.get(), 1);
     }
 }
