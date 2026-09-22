@@ -1491,11 +1491,22 @@ mod tests {
                 let tray_motion = motion_controller(tray_widget);
                 let center_x = f64::from(island.metrics.window_width) / 2.0;
                 let center_y = f64::from(island.metrics.compact_height) / 2.0;
+                let _: () = root_motion.emit_by_name("leave", &[]);
+                let _: () = tray_motion.emit_by_name("leave", &[]);
+                drain();
+                assert!(!island.pointer_in_hover_region.get());
+                assert!(!island.tray_hovered.get());
                 let _: () = root_motion.emit_by_name("enter", &[&center_x, &center_y]);
-                let _: () = tray_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
                 drain();
                 assert!(island.pointer_in_hover_region.get());
                 assert!(island.tray_hovered.get());
+                assert_eq!(tray_host.mode(), super::circle::Mode::Compact);
+                assert_eq!(tray_host.target_page(), Some(super::circle::Mode::Compact));
+                assert!(tray_host.frame().is_some_and(|frame| {
+                    (frame.rect.width - expected as f64).abs() < f64::EPSILON
+                }));
+                let _: () = tray_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
+                drain();
                 assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
                 assert_eq!(
                     tray_host.target_page(),

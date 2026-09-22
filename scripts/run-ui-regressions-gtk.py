@@ -140,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                 print(f"\n== {test} ==")
                 print(completed.stdout, end="")
                 if completed.returncode != 0:
-                    result = completed.returncode
+                    raise SystemExit(completed.returncode)
     finally:
         stop(server)
 
