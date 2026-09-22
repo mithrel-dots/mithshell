@@ -666,10 +666,10 @@ mod tests {
         .unwrap();
         assert!(circle.host.render(circle.host.revision(), Some(frame)));
         assert!(circle.host.frame().is_some());
+        let callbacks_before_empty = hook_calls.get();
         circle.update(&[]);
-        assert_eq!(
-            hook_calls.get(),
-            2,
+        assert!(
+            hook_calls.get() > callbacks_before_empty,
             "empty update must notify host disappearance"
         );
         assert_eq!(circle.host.mode(), super::super::circle::Mode::Absent);

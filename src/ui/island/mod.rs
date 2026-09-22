@@ -1205,6 +1205,291 @@ mod tests {
         assert!(media_host.test_opacity() >= before_retarget.min(1.0));
     }
 
+    #[test]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
+    fn real_circle_allocations_and_gtk_picking_survive_scale_and_rebuilds() {
+        gtk::init().expect("GTK display");
+        let application = gtk::Application::new(
+            Some("org.mithshell.real-pick-regression"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        application.connect_activate(|_| {});
+        application
+            .register(None::<&gtk::gio::Cancellable>)
+            .expect("register GTK application");
+        let display = gtk::gdk::Display::default().expect("Broadway display");
+        let monitor = display
+            .monitors()
+            .item(0)
+            .and_downcast::<gtk::gdk::Monitor>()
+            .expect("Broadway monitor");
+
+        fn drain() {
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+        }
+        fn point_in(root: &gtk::Widget, widget: &gtk::Widget) -> gtk::graphene::Point {
+            #[allow(deprecated)]
+            let allocation = widget.allocation();
+            let mut x = allocation.width() as f32 / 2.0;
+            let mut y = allocation.height() as f32 / 2.0;
+            let mut current = widget.clone();
+            while current != *root {
+                #[allow(deprecated)]
+                let offset = current.allocation();
+                x += offset.x() as f32;
+                y += offset.y() as f32;
+                current = current.parent().expect("widget attached to root");
+            }
+            gtk::graphene::Point::new(x, y)
+        }
+        fn ancestry_has(widget: &gtk::Widget, class: &str) -> bool {
+            let mut current = Some(widget.clone());
+            while let Some(candidate) = current {
+                if candidate.has_css_class(class) {
+                    return true;
+                }
+                current = candidate.parent();
+            }
+            false
+        }
+        fn first_descendant<W: gtk::prelude::IsA<gtk::Widget> + Clone + 'static>(
+            root: &gtk::Widget,
+        ) -> Option<W> {
+            let mut child = root.first_child();
+            while let Some(candidate) = child {
+                child = candidate.next_sibling();
+                if let Ok(found) = candidate.clone().downcast::<W>() {
+                    return Some(found);
+                }
+                if let Some(found) = first_descendant::<W>(&candidate) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        fn first_allocated<W: gtk::prelude::IsA<gtk::Widget> + Clone + 'static>(
+            root: &gtk::Widget,
+        ) -> Option<W> {
+            let mut child = root.first_child();
+            while let Some(candidate) = child {
+                child = candidate.next_sibling();
+                if candidate.is_mapped()
+                    && candidate.width() > 0
+                    && candidate.height() > 0
+                    && let Ok(found) = candidate.clone().downcast::<W>()
+                {
+                    return Some(found);
+                }
+                if let Some(found) = first_allocated::<W>(&candidate) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        fn emit_primary_click(widget: &gtk::Widget) {
+            let controllers = widget.observe_controllers();
+            for index in 0..controllers.n_items() {
+                let controller = controllers.item(index).expect("controller");
+                if let Ok(click) = controller.downcast::<gtk::GestureClick>() {
+                    click.set_button(1);
+                    click.emit_by_name::<()>("pressed", &[&1_i32, &0.0_f64, &0.0_f64]);
+                    click.emit_by_name::<()>("released", &[&1_i32, &0.0_f64, &0.0_f64]);
+                    return;
+                }
+            }
+            panic!("production click controller missing");
+        }
+
+        for cycle in 0..10 {
+            for scale in [0.75, 1.0, 1.4, 1.75] {
+                let mut config = AppConfig::default();
+                config.shell.scale = scale;
+                config.shell.animation_ms = 0;
+                config.circles.left = CircleModule::Tray;
+                config.circles.right = CircleModule::Notifications;
+                let actions = IslandActions {
+                    switch_workspace: Rc::new(|_, _| {}),
+                    set_volume: Rc::new(|_| {}),
+                    set_brightness: Rc::new(|_| {}),
+                    search: Rc::new(|_| {}),
+                    select: Rc::new(|_| {}),
+                    tarragon_status: Rc::new(|| {}),
+                    tarragon_reload: Rc::new(|| {}),
+                    load_preview: Rc::new(|_, _| {}),
+                    media_play_pause: Rc::new(|_| {}),
+                    media_next: Rc::new(|_| {}),
+                    media_previous: Rc::new(|_| {}),
+                    notification_expired: Rc::new(|_, _| {}),
+                    notification_dismiss: Rc::new(|_| {}),
+                    notification_invoke: Rc::new(|_, _| {}),
+                    notification_clear_all: Rc::new(|| {}),
+                    notification_inhibit: Rc::new(|_| {}),
+                    tray_activate: Rc::new(|_, _, _, _| {}),
+                    tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+                    tray_context_menu: Rc::new(|_, _, _, _| {}),
+                    tray_scroll: Rc::new(|_, _, _, _| {}),
+                    tray_menu_event: Rc::new(|_, _, _| {}),
+                };
+                let island = IslandWindow::new_for_test(
+                    &application,
+                    &monitor,
+                    format!("pick-{cycle}-{scale}"),
+                    &config,
+                    actions,
+                    false,
+                );
+                // This is the production snapshot path that creates the actual
+                // workspace buttons and gives the central pill a nonempty target.
+                island.update_hyprland(&crate::state::HyprlandSnapshot {
+                    monitors: vec![crate::state::HyprlandMonitor {
+                        id: 0,
+                        name: format!("pick-{cycle}-{scale}"),
+                        focused: true,
+                        active_workspace: crate::state::WorkspaceRef {
+                            id: 1,
+                            name: "1".into(),
+                        },
+                        special_workspace: Default::default(),
+                        fullscreen: false,
+                    }],
+                    workspaces: vec![crate::state::Workspace {
+                        id: 1,
+                        name: "1".into(),
+                        monitor: format!("pick-{cycle}-{scale}"),
+                        windows: 1,
+                    }],
+                    active_window: None,
+                });
+                let tray = TrayItem {
+                    key: "pick/item".into(),
+                    service: "org.pick".into(),
+                    object_path: "/StatusNotifierItem".into(),
+                    id: "pick".into(),
+                    title: "Pick item".into(),
+                    tooltip: Some("Pick item".into()),
+                    icon: TrayIcon::Name("application-x-executable".into()),
+                    status: TrayStatus::Active,
+                    item_is_menu: false,
+                    menu_path: None,
+                };
+                island.update_tray(std::slice::from_ref(&tray));
+                island.update_notification_history(&[]);
+                island.set_tray_hovered(true);
+                island.relayout_circles();
+                application.activate();
+                drain();
+                island.fixed.queue_allocate();
+                drain();
+
+                let expected = (32.0 * scale).round() as i32;
+                let tray_host = island
+                    .circles
+                    .borrow()
+                    .as_ref()
+                    .expect("production circle integration")
+                    .test_host(0)
+                    .expect("tray host");
+                let tray_widget = tray_host.widget();
+                assert_eq!(
+                    tray_widget.width(),
+                    expected,
+                    "compact width at scale {scale}"
+                );
+                assert_eq!(
+                    tray_widget.height(),
+                    expected,
+                    "compact height at scale {scale}"
+                );
+                assert!(tray_widget.is_mapped());
+                assert!(tray_widget.width() > 0 && tray_widget.height() > 0);
+
+                let root = island.fixed.clone().upcast::<gtk::Widget>();
+                let tray_point = point_in(&root, tray_widget);
+                let picked_tray = root
+                    .pick(
+                        f64::from(tray_point.x()),
+                        f64::from(tray_point.y()),
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .expect("tray compact pick");
+                assert!(ancestry_has(&picked_tray, "circle-surface"));
+                assert!(!picked_tray.has_css_class("mithshell-hover-region"));
+
+                // Enter/leave are sent through the real mapped host controller;
+                // the signal synthesis is GTK-local (not a compositor/GDK event).
+                let motion = tray_widget
+                    .observe_controllers()
+                    .item(1)
+                    .and_then(|controller| {
+                        controller.downcast::<gtk::EventControllerMotion>().ok()
+                    });
+                let motion = motion.expect("CircleHost motion controller");
+                let _: () = motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
+                island.relayout_circles();
+                island.fixed.queue_allocate();
+                drain();
+                assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
+                let tray_scroller = first_allocated::<gtk::ScrolledWindow>(tray_widget)
+                    .expect("production tray scroller");
+                assert!(tray_scroller.width() > 0 && tray_scroller.height() > 0);
+                let hover_page =
+                    first_allocated::<gtk::FlowBox>(tray_widget).expect("production tray FlowBox");
+                assert!(hover_page.width() > 0 && hover_page.height() > 0);
+                let item_button = first_descendant::<gtk::Button>(&hover_page.clone().upcast())
+                    .expect("production tray item button");
+                assert!(item_button.is_mapped());
+                assert!(item_button.width() > 0 && item_button.height() > 0);
+                let item_point = point_in(&root, &item_button.clone().upcast());
+                let picked_item = root
+                    .pick(
+                        f64::from(item_point.x()),
+                        f64::from(item_point.y()),
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .expect("tray item pick");
+                assert!(ancestry_has(&picked_item, "tray-icon"));
+                assert!(ancestry_has(&picked_item, "circle-surface"));
+                let _: () = motion.emit_by_name("leave", &[]);
+                island.relayout_circles();
+                drain();
+
+                let workspace =
+                    first_allocated::<gtk::Button>(&island.compact_workspaces.clone().upcast())
+                        .expect("workspace button");
+                let compact_root = island.compact.clone().upcast::<gtk::Widget>();
+                let workspace_point = point_in(&compact_root, &workspace.clone().upcast());
+                let picked_workspace = compact_root
+                    .pick(
+                        f64::from(workspace_point.x()),
+                        f64::from(workspace_point.y()),
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .expect("workspace pick");
+                assert!(ancestry_has(&picked_workspace, "workspace-dot"));
+                assert!(ancestry_has(&picked_workspace, "compact-content"));
+
+                // Pick the actual central pill background, then synthesize only
+                // the production GTK controller signal (not a compositor event).
+                let compact_point = point_in(&root, &island.compact);
+                let picked_compact = root
+                    .pick(
+                        f64::from(compact_point.x()),
+                        f64::from(compact_point.y()),
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .expect("central pill pick");
+                assert!(!picked_compact.has_css_class("mithshell-hover-region"));
+                emit_primary_click(&island.compact);
+                drain();
+                assert!(island.dashboard_open.get());
+                assert_eq!(island.current_view.get(), View::Dashboard);
+                assert!(island.dashboard_open.get());
+            }
+        }
+    }
+
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
         MediaPlayer {
             player: service.to_owned(),

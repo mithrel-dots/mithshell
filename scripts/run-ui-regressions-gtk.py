@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Run every ignored GTK UI regression against one private Broadway display.
+
+The runner deliberately builds into a project-local target directory and gives
+GTK, Chromium, and Broadway a disposable runtime.  GtkWindow layer warnings
+are expected from ``new_for_test``; fatal GTK criticals are not.
+"""
+
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import tempfile
+import time
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+TARGET = ROOT / "target" / "ui-regressions-cargo"
+TARGET.mkdir(mode=0o700, parents=True, exist_ok=True)
+TESTS = [
+    "ui::island::notification_circle::tests::gtk_notification_circle_integration",
+    "ui::island::tests::circle_integration_real_widgets_and_callbacks",
+    "ui::island::tests::real_circle_allocations_and_gtk_picking_survive_scale_and_rebuilds",
+    "ui::island::tests::integrated_search_return_uses_real_finish_and_scheduler_path",
+    "ui::island::search::tests::integrated_search_host_is_idempotent_on_real_widgets",
+    "ui::island::search::tests::integrated_return_focus_guard_handles_reparent_and_stale_close",
+    "ui::island::view::tests::finished_integrated_search_is_visible_and_targetable",
+    "ui::island::tray::tests::broadway_popovers_share_global_lifetime_and_close_on_invalidation",
+    "ui::island::media_circle::tests::gtk_update_selection_and_timer_lifecycle",
+    "ui::island::battery_wave::tests::playing_media_keeps_a_live_full_width_battery_background",
+]
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def stop(process):
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
+    runtime = pathlib.Path(name)
+    for directory in ("tmp", "cache", "config", "data", "chromium"):
+        (runtime / directory).mkdir(mode=0o700)
+    env = os.environ.copy()
+    env.update(
+        CARGO_TARGET_DIR=str(TARGET),
+        TMPDIR=str(runtime / "tmp"),
+        XDG_CACHE_HOME=str(runtime / "cache"),
+        XDG_CONFIG_HOME=str(runtime / "config"),
+        XDG_DATA_HOME=str(runtime / "data"),
+        XDG_RUNTIME_DIR=str(runtime),
+        GDK_BACKEND="broadway",
+        BROADWAY_DISPLAY=f":{os.getpid()}",
+        GTK_A11Y="none",
+        GSETTINGS_BACKEND="memory",
+        GTK_USE_PORTAL="0",
+        G_DEBUG="fatal-criticals",
+    )
+    env.pop("GSK_RENDERER", None)
+    build = subprocess.run(
+        ["cargo", "test", "--offline", "--no-run", "--message-format=json"],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    binary = next(
+        item["executable"]
+        for line in build.stdout.splitlines()
+        if (item := json.loads(line)).get("reason") == "compiler-artifact"
+        and item.get("executable")
+        and "lib" in item["target"]["kind"]
+    )
+
+    server = None
+    try:
+        port = free_port()
+        with (runtime / "broadway.log").open("w") as log:
+            server = subprocess.Popen(
+                ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
+                cwd=ROOT,
+                env=env,
+                stdout=log,
+                stderr=log,
+            )
+            time.sleep(0.3)
+            if server.poll() is not None:
+                raise RuntimeError((runtime / "broadway.log").read_text())
+            result = 0
+            for test in TESTS:
+                result |= subprocess.run(
+                    [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"],
+                    cwd=ROOT,
+                    env=env,
+                ).returncode
+    finally:
+        stop(server)
+
+raise SystemExit(result)
