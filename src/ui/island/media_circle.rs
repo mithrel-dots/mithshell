@@ -107,6 +107,11 @@ impl MediaCircle {
     pub(crate) fn test_click_play_pause(&self) {
         self.play_pause.emit_clicked();
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_play_pause_button(&self) -> gtk::Button {
+        self.play_pause.clone()
+    }
     pub(super) fn new(
         metrics: Metrics,
         actions: MediaCircleActions,

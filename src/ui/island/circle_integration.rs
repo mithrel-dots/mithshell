@@ -260,6 +260,13 @@ impl CircleIntegration {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_media_play_pause_button(&self) -> Option<gtk::Button> {
+        self.media
+            .as_ref()
+            .map(|media| media.test_play_pause_button())
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_media_select_service(&self, service: &str) {
         if let Some(media) = &self.media {
             media.test_select_service(service);

@@ -451,7 +451,7 @@ mod tests {
     use crate::ui::resolved_scale;
     use crate::weather::WeatherProvider;
     use gtk::prelude::*;
-    use std::rc::Rc;
+    use std::{cell::RefCell, rc::Rc};
 
     #[test]
     fn hover_geometry_is_forward_and_reversible() {
@@ -666,7 +666,18 @@ mod tests {
             .item(0)
             .and_downcast::<gtk::gdk::Monitor>()
             .expect("Broadway monitor");
+        fn motion_controller(widget: &gtk::Widget) -> gtk::EventControllerMotion {
+            let controllers = widget.observe_controllers();
+            for index in 0..controllers.n_items() {
+                let controller = controllers.item(index).expect("controller");
+                if let Ok(motion) = controller.downcast::<gtk::EventControllerMotion>() {
+                    return motion;
+                }
+            }
+            panic!("production motion controller missing");
+        }
         let calls = Rc::new(std::cell::Cell::new(0));
+        let services = Rc::new(RefCell::new(Vec::<String>::new()));
         let mut actions = IslandActions {
             switch_workspace: Rc::new(|_, _| {}),
             set_volume: Rc::new(|_| {}),
@@ -691,7 +702,11 @@ mod tests {
             tray_menu_event: Rc::new(|_, _, _| {}),
         };
         let callback_count = calls.clone();
-        actions.media_play_pause = Rc::new(move |_| callback_count.set(callback_count.get() + 1));
+        let callback_services = services.clone();
+        actions.media_play_pause = Rc::new(move |service| {
+            callback_count.set(callback_count.get() + 1);
+            callback_services.borrow_mut().push(service);
+        });
         let matrix_actions = actions.clone();
         let mut config = AppConfig::default();
         config.shell.animation_ms = 0;
@@ -869,8 +884,8 @@ mod tests {
         }
         assert_eq!(calls.get(), 1, "state updates do not duplicate callbacks");
 
-        // Real host page transitions use the production host event and the
-        // actual GTK stack page, not a mirrored state helper.
+        // Real host page transitions use the production GTK motion controller
+        // and actual GTK stack page, not a mirrored state helper.
         island.update_media(Some(&media));
         let media_host = island
             .circles
@@ -879,8 +894,12 @@ mod tests {
             .unwrap()
             .test_host(0)
             .unwrap();
-        media_host.dispatch(super::circle::Event::Pointer(true));
+        let media_motion = motion_controller(media_host.widget());
+        let _: () = media_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
         island.relayout_circles();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
         assert_eq!(
             media_host.presented_page(),
             Some(super::circle::Mode::HoverExpanded)
@@ -889,6 +908,45 @@ mod tests {
         let media_frame = media_host.frame().expect("rendered media frame");
         assert!(media_frame.radius > 0.0);
         assert!(!media_frame.contains(media_frame.rect.x - 1.0, media_frame.rect.y - 1.0));
+        let play_pause = island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_media_play_pause_button()
+            .expect("production media play/pause button");
+        assert!(play_pause.is_mapped());
+        assert!(play_pause.grab_focus());
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let focus_root = play_pause.root().expect("mapped media focus root");
+        assert_eq!(
+            focus_root.focus().map(|focused| focused == play_pause),
+            Some(true)
+        );
+        let services_before_click = services.borrow().len();
+        play_pause.emit_clicked();
+        assert_eq!(calls.get(), 2, "real media button callback route");
+        assert_eq!(services.borrow().len(), services_before_click + 1);
+        assert_eq!(
+            services.borrow().last().map(String::as_str),
+            Some("org.test.Player")
+        );
+        let _: () = media_motion.emit_by_name("leave", &[]);
+        island.relayout_circles();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert_eq!(media_host.mode(), super::circle::Mode::Compact);
+        assert_eq!(
+            media_host.presented_page(),
+            Some(super::circle::Mode::Compact)
+        );
+        assert_eq!(
+            focus_root.focus().map(|focused| focused == play_pause),
+            Some(true)
+        );
 
         island
             .circles
@@ -1157,9 +1215,23 @@ mod tests {
         // Exercise the real timer path. The GTK stack must retain the outgoing
         // page during CONTENT_OUT, switch exactly at the phase boundary, then
         // expose the incoming page at partial opacity.
+        island.update_media(Some(&media));
+        media_host.dispatch(super::circle::Event::Pointer(true));
+        let hover_revision = media_host.revision();
+        assert_eq!(media_host.mode(), super::circle::Mode::HoverExpanded);
+        assert!(media_host.commit_page(hover_revision));
+        island.relayout_circles();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert_eq!(
+            media_host.presented_page(),
+            Some(super::circle::Mode::HoverExpanded)
+        );
         island.animation_ms.set(100);
         island.animations_enabled.set(true);
-        media_host.dispatch(super::circle::Event::Pointer(false));
+        let media_motion = motion_controller(media_host.widget());
+        let _: () = media_motion.emit_by_name("leave", &[]);
         island.relayout_circles();
         assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
         assert!(media_host.test_opacity() > 0.9);
@@ -1253,6 +1325,16 @@ mod tests {
                 current = candidate.parent();
             }
             false
+        }
+        fn motion_controller(widget: &gtk::Widget) -> gtk::EventControllerMotion {
+            let controllers = widget.observe_controllers();
+            for index in 0..controllers.n_items() {
+                let controller = controllers.item(index).expect("controller");
+                if let Ok(motion) = controller.downcast::<gtk::EventControllerMotion>() {
+                    return motion;
+                }
+            }
+            panic!("production motion controller missing");
         }
         fn first_descendant<W: gtk::prelude::IsA<gtk::Widget> + Clone + 'static>(
             root: &gtk::Widget,
@@ -1376,7 +1458,6 @@ mod tests {
                 };
                 island.update_tray(std::slice::from_ref(&tray));
                 island.update_notification_history(&[]);
-                island.set_tray_hovered(true);
                 island.relayout_circles();
                 application.activate();
                 drain();
@@ -1406,6 +1487,39 @@ mod tests {
                 assert!(tray_widget.width() > 0 && tray_widget.height() > 0);
 
                 let root = island.fixed.clone().upcast::<gtk::Widget>();
+                let root_motion = motion_controller(&root);
+                let tray_motion = motion_controller(tray_widget);
+                let center_x = f64::from(island.metrics.window_width) / 2.0;
+                let center_y = f64::from(island.metrics.compact_height) / 2.0;
+                let _: () = root_motion.emit_by_name("enter", &[&center_x, &center_y]);
+                let _: () = tray_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
+                drain();
+                assert!(island.pointer_in_hover_region.get());
+                assert!(island.tray_hovered.get());
+                assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
+                assert_eq!(
+                    tray_host.target_page(),
+                    Some(super::circle::Mode::HoverExpanded)
+                );
+                assert!(
+                    tray_host
+                        .frame()
+                        .is_some_and(|frame| frame.rect.width > expected as f64)
+                );
+                let _: () = root_motion.emit_by_name("leave", &[]);
+                let _: () = tray_motion.emit_by_name("leave", &[]);
+                drain();
+                assert!(!island.pointer_in_hover_region.get());
+                assert!(!island.tray_hovered.get());
+                assert_eq!(tray_host.mode(), super::circle::Mode::Compact);
+                let _: () = root_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
+                drain();
+                assert!(!island.pointer_in_hover_region.get());
+                assert_eq!(tray_host.mode(), super::circle::Mode::Compact);
+                let _: () = root_motion.emit_by_name("enter", &[&center_x, &center_y]);
+                let _: () = tray_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
+                drain();
+                assert!(island.pointer_in_hover_region.get());
                 let tray_point = point_in(&root, tray_widget);
                 let picked_tray = root
                     .pick(
@@ -1419,14 +1533,6 @@ mod tests {
 
                 // Enter/leave are sent through the real mapped host controller;
                 // the signal synthesis is GTK-local (not a compositor/GDK event).
-                let motion = tray_widget
-                    .observe_controllers()
-                    .item(1)
-                    .and_then(|controller| {
-                        controller.downcast::<gtk::EventControllerMotion>().ok()
-                    });
-                let motion = motion.expect("CircleHost motion controller");
-                let _: () = motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
                 island.relayout_circles();
                 island.fixed.queue_allocate();
                 drain();
@@ -1451,9 +1557,46 @@ mod tests {
                     .expect("tray item pick");
                 assert!(ancestry_has(&picked_item, "tray-icon"));
                 assert!(ancestry_has(&picked_item, "circle-surface"));
-                let _: () = motion.emit_by_name("leave", &[]);
+                let _: () = root_motion.emit_by_name("leave", &[]);
+                let _: () = tray_motion.emit_by_name("leave", &[]);
                 island.relayout_circles();
                 drain();
+                assert_eq!(tray_host.mode(), super::circle::Mode::Compact);
+
+                // Open the existing tray full page through the production
+                // host event, then inspect the committed Stack/ScrolledWindow
+                // hierarchy rather than allocating the FlowBox directly.
+                tray_host.dispatch(super::circle::Event::OpenFull);
+                island.relayout_circles();
+                island.fixed.queue_allocate();
+                drain();
+                assert_eq!(tray_host.mode(), super::circle::Mode::FullExpanded);
+                assert_eq!(
+                    tray_host.presented_page(),
+                    Some(super::circle::Mode::FullExpanded)
+                );
+                assert_eq!(tray_host.test_visible_page().as_deref(), Some("full"));
+                let full_scroller = first_allocated::<gtk::ScrolledWindow>(tray_widget)
+                    .expect("production tray full scroller");
+                let full_page = first_allocated::<gtk::FlowBox>(tray_widget)
+                    .expect("production tray full FlowBox");
+                let full_button = first_descendant::<gtk::Button>(&full_page.clone().upcast())
+                    .expect("production tray full item button");
+                for widget in [
+                    full_scroller.clone().upcast::<gtk::Widget>(),
+                    full_page.clone().upcast::<gtk::Widget>(),
+                    full_button.clone().upcast::<gtk::Widget>(),
+                ] {
+                    assert!(widget.is_mapped());
+                    assert!(widget.width() > 0 && widget.height() > 0);
+                    let bounds = widget
+                        .compute_bounds(tray_widget)
+                        .expect("inside tray host");
+                    assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
+                    assert!(bounds.x() + bounds.width() <= tray_widget.width() as f32 + 1.0);
+                    assert!(bounds.y() + bounds.height() <= tray_widget.height() as f32 + 1.0);
+                }
+                assert!(ancestry_has(&full_button.clone().upcast(), "tray-icon"));
 
                 let workspace =
                     first_allocated::<gtk::Button>(&island.compact_workspaces.clone().upcast())
