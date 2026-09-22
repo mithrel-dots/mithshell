@@ -331,8 +331,7 @@ fn compact_page(
     area.set_content_height(metrics.spacing(48));
     area.add_css_class("media-circle-progress");
     let draw_progress = progress;
-    let draw_area = area.clone();
-    area.set_draw_func(move |_, cr, width, height| {
+    area.set_draw_func(move |area, cr, width, height| {
         let fraction = interpolated_progress(&draw_progress.borrow(), Instant::now());
         let radius = f64::from(width.min(height)) * 0.5 - 2.0;
         cr.set_line_width(2.5);
@@ -343,7 +342,7 @@ fn compact_page(
             -std::f64::consts::FRAC_PI_2,
             -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * fraction,
         );
-        let color = draw_area.color();
+        let color = area.color();
         cr.set_source_rgba(
             f64::from(color.red()),
             f64::from(color.green()),
@@ -404,6 +403,11 @@ fn hover_page(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gtk::prelude::*;
+
+    use crate::{config::IconStyle, state::MediaPlayer};
 
     use super::{PlaybackStatus, Progress, SelectorUpdate, progress_fraction, timer_needed};
     #[test]
@@ -445,5 +449,99 @@ mod tests {
             emitted.set(emitted.get() + 1);
         }
         assert_eq!(emitted.get(), 1);
+    }
+
+    /// Runs under a private Broadway display. This is intentionally ignored in
+    /// ordinary unit runs because GTK tests cannot share a display safely.
+    /// `target/run-media-circle-gtk.py` supplies the isolated display.
+    #[test]
+    #[ignore = "requires the project-local Broadway runner"]
+    fn gtk_update_selection_and_timer_lifecycle() {
+        gtk::init().expect("Broadway GTK display");
+        let display = gtk::gdk::Display::default().expect("Broadway display");
+        let monitor = display
+            .monitors()
+            .item(0)
+            .expect("Broadway monitor")
+            .downcast::<gtk::gdk::Monitor>()
+            .expect("monitor type");
+        let metrics = super::Metrics::new(&monitor, 1.0, 1.0, IconStyle::Symbolic);
+        let selected = Rc::new(Cell::new(0));
+        let select_count = selected.clone();
+        let actions = super::MediaCircleActions {
+            play_pause: Rc::new(|_| {}),
+            next: Rc::new(|_| {}),
+            previous: Rc::new(|_| {}),
+            select: Rc::new(move |_| select_count.set(select_count.get() + 1)),
+        };
+        let circle = super::MediaCircle::new(metrics, actions).expect("media circle");
+        let drawing_area = circle.progress_area.downgrade();
+        let state = test_media_state(PlaybackStatus::Playing, Some(10_000_000));
+        circle.update(Some(&state));
+        assert_eq!(
+            selected.get(),
+            0,
+            "snapshot selector update emitted an action"
+        );
+        assert!(
+            circle.tick.borrow().is_some(),
+            "known duration starts timer"
+        );
+
+        // This is the same signal path used by a user selecting a different
+        // row, unlike update()'s guarded programmatic selection.
+        circle.player_select.set_active_id(Some("org.test.other"));
+        assert_eq!(selected.get(), 1, "user selection emits exactly once");
+
+        circle.update(Some(&test_media_state(PlaybackStatus::Playing, None)));
+        assert!(
+            circle.tick.borrow().is_none(),
+            "unknown duration has no timer"
+        );
+        circle.update(Some(&state));
+        assert!(circle.tick.borrow().is_some());
+        drop(circle);
+        assert!(
+            drawing_area.upgrade().is_none(),
+            "draw callback retained DrawingArea"
+        );
+    }
+
+    #[cfg(test)]
+    fn test_media_state(
+        status: PlaybackStatus,
+        length_us: Option<i64>,
+    ) -> crate::state::MediaState {
+        let player = |service: &str| MediaPlayer {
+            player: service.to_owned(),
+            service: service.to_owned(),
+            title: "Track".to_owned(),
+            artist: Some("Artist".to_owned()),
+            album: None,
+            app_icon: None,
+            position_us: 1_000,
+            length_us,
+            can_play: true,
+            can_pause: true,
+            can_go_next: true,
+            can_go_previous: true,
+            status,
+        };
+        crate::state::MediaState {
+            player: "org.test.player".to_owned(),
+            service: "org.test.player".to_owned(),
+            title: "Track".to_owned(),
+            artist: Some("Artist".to_owned()),
+            album: None,
+            app_icon: None,
+            position_us: 1_000,
+            length_us,
+            can_play: true,
+            can_pause: true,
+            can_go_next: true,
+            can_go_previous: true,
+            status,
+            players: vec![player("org.test.player"), player("org.test.other")],
+        }
     }
 }
