@@ -31,6 +31,7 @@ pub(crate) struct NotificationCircleCallbacks {
 pub(crate) struct NotificationCircle {
     pub(crate) host: Rc<CircleHost>,
     compact: gtk::Box,
+    compact_style: gtk::CssProvider,
     compact_count: gtk::Label,
     hover: gtk::Box,
     hover_list: gtk::Box,
@@ -46,21 +47,25 @@ pub(crate) struct NotificationCircle {
 
 impl NotificationCircle {
     /// Builds three separate pages as required by `CircleHost`; no page is
-    /// reused or parented elsewhere.  The host starts absent.  Integration
+    /// reused or parented elsewhere.  `ui_scale` is the resolved output scale
+    /// used for the compact bell, independent of popup notification padding.
+    /// The host starts absent.  Integration
     /// must install `host.set_on_change(...)` before its first `update`, which
     /// dispatches `Content` and requests the initial layout.
     pub(crate) fn new(
         config: &NotificationConfig,
         style: IconStyle,
+        ui_scale: f64,
         callbacks: NotificationCircleCallbacks,
     ) -> Result<Rc<Self>, &'static str> {
         let compact = gtk::Box::new(Orientation::Horizontal, 6);
-        compact.add_css_class("notification-content");
+        compact.add_css_class("notification-circle-compact");
         compact.set_halign(Align::Center);
         compact.update_property(&[gtk::accessible::Property::Label(
             "Open notification history",
         )]);
         let bell = icon::icon_widget(Icon::Bell, style);
+        bell.add_css_class("notification-circle-bell");
         compact.append(&bell);
         let count = gtk::Label::new(Some("0"));
         count.add_css_class("notification-count");
@@ -121,9 +126,25 @@ impl NotificationCircle {
             full: Some(full.clone().upcast()),
         };
         let host = CircleHost::new(content)?;
+        let compact_style = gtk::CssProvider::new();
+        let icon_size = (16.0 * ui_scale.max(0.5)).round();
+        compact_style.load_from_string(&format!(
+            ".notification-circle-compact {{ padding: 0; min-height: 0; }}\
+             .notification-circle-compact .notification-circle-bell {{\
+                 font-size: {icon_size}px; -gtk-icon-size: {icon_size}px;\
+             }}\
+             .notification-circle-compact .notification-count {{\
+                 min-width: 0; min-height: 0; padding: 0; border-radius: 0;\
+             }}"
+        ));
+        #[allow(deprecated)]
+        compact
+            .style_context()
+            .add_provider(&compact_style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
         let circle = Rc::new(Self {
             host,
             compact,
+            compact_style,
             compact_count: count,
             hover,
             hover_list,
@@ -346,25 +367,227 @@ mod tests {
         assert!(!has_content(&[]));
     }
 
-    /// Requires an isolated GTK display.  This exercises the production host
-    /// ownership guard rather than a duplicate test-only widget model.
+    /// Full production-widget coverage. Run through the project-local
+    /// Broadway runner (`target/run-notification-circle-gtk.py`).
     #[test]
     #[ignore = "requires an isolated GTK display"]
-    fn pages_are_distinct_and_parented_once_by_the_host() {
+    fn gtk_notification_circle_integration() {
         gtk::init().expect("initialize GTK");
-        let callbacks = NotificationCircleCallbacks {
-            invoke: Rc::new(|_, _| {}),
-            dismiss: Rc::new(|_| {}),
-            clear: Rc::new(|| {}),
-            inhibit: Rc::new(|_| {}),
-            open_full: Rc::new(|| {}),
+        fn children(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+            let mut result = Vec::new();
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                result.push(current);
+            }
+            result
+        }
+        fn test_circle(
+            config: &NotificationConfig,
+            events: Rc<std::cell::RefCell<Vec<String>>>,
+        ) -> Rc<NotificationCircle> {
+            let callbacks = NotificationCircleCallbacks {
+                invoke: {
+                    let events = events.clone();
+                    Rc::new(move |id, key| events.borrow_mut().push(format!("invoke:{id}:{key}")))
+                },
+                dismiss: {
+                    let events = events.clone();
+                    Rc::new(move |id| events.borrow_mut().push(format!("dismiss:{id}")))
+                },
+                clear: {
+                    let events = events.clone();
+                    Rc::new(move || events.borrow_mut().push("clear".to_owned()))
+                },
+                inhibit: {
+                    let events = events.clone();
+                    Rc::new(move |active| events.borrow_mut().push(format!("inhibit:{active}")))
+                },
+                open_full: Rc::new(|| {}),
+            };
+            NotificationCircle::new(config, IconStyle::default(), 1.0, callbacks)
+                .expect("distinct unparented pages")
+        }
+
+        let config = NotificationConfig {
+            hover_preview_count: 1,
+            ..NotificationConfig::default()
         };
-        let circle = NotificationCircle::new(
-            &NotificationConfig::default(),
-            IconStyle::default(),
-            callbacks,
-        )
-        .expect("distinct unparented pages");
-        assert!(circle.host.widget().parent().is_none());
+        let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let circle = test_circle(&config, events.clone());
+        assert_eq!(circle.host.mode(), super::super::circle::Mode::Absent);
+        assert!(circle.host.frame().is_none());
+        assert!(circle.compact.parent().is_some());
+        assert!(circle.hover.parent().is_some());
+        assert!(circle.full.parent().is_some());
+        assert_ne!(circle.compact.as_ptr(), circle.hover.as_ptr());
+        assert_ne!(circle.hover.as_ptr(), circle.full.as_ptr());
+        assert!(!circle.compact.has_css_class("notification-content"));
+        assert!(
+            circle
+                .compact
+                .first_child()
+                .is_some_and(|widget| widget.has_css_class("notification-circle-bell"))
+        );
+        for (style, scale) in [
+            (IconStyle::Glyph, 0.75),
+            (IconStyle::Glyph, 1.5),
+            (IconStyle::Symbolic, 0.75),
+            (IconStyle::Symbolic, 1.5),
+        ] {
+            let variant = NotificationCircle::new(
+                &config,
+                style,
+                scale,
+                NotificationCircleCallbacks {
+                    invoke: Rc::new(|_, _| {}),
+                    dismiss: Rc::new(|_| {}),
+                    clear: Rc::new(|| {}),
+                    inhibit: Rc::new(|_| {}),
+                    open_full: Rc::new(|| {}),
+                },
+            )
+            .expect("scaled icon variant");
+            assert!(
+                variant
+                    .compact
+                    .first_child()
+                    .is_some_and(|widget| widget.has_css_class("notification-circle-bell"))
+            );
+            assert_eq!(children(&variant.compact.clone().upcast()).len(), 2);
+        }
+
+        let mut first = notification(10, "first body");
+        first.actions = vec![NotificationAction {
+            key: "default".to_owned(),
+            label: "Open first".to_owned(),
+        }];
+        let mut second = notification(20, "second body that remains complete in full history");
+        second.actions = vec![NotificationAction {
+            key: "default".to_owned(),
+            label: "Open second".to_owned(),
+        }];
+        circle.update(&[first.clone(), second.clone()]);
+        assert_eq!(circle.host.mode(), super::super::circle::Mode::Compact);
+        let compact_children = children(&circle.compact.clone().upcast());
+        assert_eq!(
+            compact_children[1]
+                .downcast_ref::<gtk::Label>()
+                .unwrap()
+                .label(),
+            "2"
+        );
+        let hover_rows = children(&circle.hover_list.clone().upcast());
+        assert_eq!(hover_rows.len(), 1);
+        let hover_text = children(&hover_rows[0])[1].clone();
+        assert!(
+            children(&hover_text)[0]
+                .downcast_ref::<gtk::Label>()
+                .unwrap()
+                .label()
+                .contains("summary-10")
+        );
+        let full_rows = children(&circle.full_list.clone().upcast());
+        assert_eq!(full_rows.len(), 2);
+        for (row, expected) in full_rows.iter().zip([
+            "first body",
+            "second body that remains complete in full history",
+        ]) {
+            let text = children(row)[1].clone();
+            let body = children(&text)
+                .into_iter()
+                .find(|widget| widget.has_css_class("notification-row-body"))
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            assert_eq!(body.label(), expected);
+            assert!(body.lines() <= 0, "full body unexpectedly has a line cap");
+        }
+
+        // Replace the snapshot, then activate the actual rebuilt row button.
+        circle.update(&[second]);
+        let row = children(&circle.full_list.clone().upcast())[0].clone();
+        let text = children(&row)[1].clone();
+        let action = children(&text)
+            .into_iter()
+            .last()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        action.emit_clicked();
+        let dismiss = children(&row)
+            .into_iter()
+            .last()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        dismiss.emit_clicked();
+        assert_eq!(&*events.borrow(), &["invoke:20:default", "dismiss:20"]);
+
+        let header = children(&circle.full.clone().upcast())[0].clone();
+        children(&header)[1]
+            .clone()
+            .downcast::<gtk::Button>()
+            .unwrap()
+            .emit_clicked();
+        children(&header)[2]
+            .clone()
+            .downcast::<gtk::ToggleButton>()
+            .unwrap()
+            .set_active(true);
+        assert_eq!(
+            &*events.borrow(),
+            &["invoke:20:default", "dismiss:20", "clear", "inhibit:true"]
+        );
+
+        // A zero-preview circle keeps only its header affordance and still
+        // exposes the full history page.
+        let zero_config = NotificationConfig {
+            hover_preview_count: 0,
+            ..NotificationConfig::default()
+        };
+        let zero = test_circle(&zero_config, Rc::new(std::cell::RefCell::new(Vec::new())));
+        zero.update(&[first]);
+        assert!(children(&zero.hover_list.clone().upcast()).is_empty());
+        assert_eq!(children(&zero.hover.clone().upcast()).len(), 2);
+        assert_eq!(children(&zero.full_list.clone().upcast()).len(), 1);
+
+        // Render a real frame, then ensure empty history removes content and
+        // clears the host geometry rather than leaving a stale surface.
+        use super::super::circle::{CircleRequest, CircleSpec, Rect, Size, layout};
+        let spec = CircleSpec {
+            diameter: 32.0,
+            hover: Size {
+                width: 160.0,
+                height: 80.0,
+            },
+            full: Some(Size {
+                width: 240.0,
+                height: 180.0,
+            }),
+        };
+        let visual = spec.visual(super::super::circle::Mode::Compact).unwrap();
+        let frame = layout(
+            Rect {
+                x: 100.0,
+                y: 10.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            1.0,
+            [Some(CircleRequest { spec, visual }), None],
+        )[0]
+        .unwrap();
+        assert!(circle.host.render(circle.host.revision(), Some(frame)));
+        assert!(circle.host.frame().is_some());
+        circle.update(&[]);
+        assert_eq!(circle.host.mode(), super::super::circle::Mode::Absent);
+        assert!(circle.host.frame().is_none());
     }
 }
