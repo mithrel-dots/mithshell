@@ -399,10 +399,7 @@ impl IslandWindow {
     /// Moves the modern launcher widget between its independent scroller and
     /// the shared island canvas. The layer window itself never changes size.
     pub(super) fn ensure_integrated_search_host(&self) {
-        let shared_canvas = self
-            .surface
-            .child()
-            .is_some_and(|child| child == self.content.clone().upcast::<gtk::Widget>());
+        let shared_canvas = scrolled_window_contains(&self.surface, &self.content);
         if !shared_canvas {
             return;
         }
@@ -452,7 +449,7 @@ impl IslandWindow {
                     return;
                 }
                 let content = island.content.clone();
-                let window = island.window.clone().upcast::<gtk::Widget>();
+                let window = island.focus_root.borrow().clone();
                 let _ = focus_integrated_search_entry(
                     &island.search_entry,
                     &island.search,
@@ -1214,6 +1211,21 @@ impl IslandWindow {
             }
         });
     }
+}
+
+fn scrolled_window_contains(surface: &gtk::ScrolledWindow, content: &gtk::Fixed) -> bool {
+    let content = content.clone().upcast::<gtk::Widget>();
+    let mut child = surface.child();
+    for _ in 0..3 {
+        let Some(candidate) = child else {
+            return false;
+        };
+        if candidate == content {
+            return true;
+        }
+        child = candidate.first_child();
+    }
+    false
 }
 
 /// Production ownership transition used by integrated `View::Search`.

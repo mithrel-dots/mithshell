@@ -29,6 +29,52 @@ impl IslandWindow {
         actions: IslandActions,
         animations_enabled: bool,
     ) -> Rc<Self> {
+        Self::new_with_layer_shell(
+            application,
+            monitor,
+            monitor_name,
+            config,
+            actions,
+            animations_enabled,
+            true,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_for_test(
+        application: &Application,
+        monitor: &gdk::Monitor,
+        monitor_name: String,
+        config: &AppConfig,
+        actions: IslandActions,
+        animations_enabled: bool,
+    ) -> Rc<Self> {
+        let island = Self::new_with_layer_shell(
+            application,
+            monitor,
+            monitor_name,
+            config,
+            actions,
+            animations_enabled,
+            false,
+        );
+        let focus_window = gtk::Window::new();
+        island.window.set_child(None::<&gtk::Widget>);
+        focus_window.set_child(Some(&island.fixed));
+        focus_window.present();
+        *island.focus_root.borrow_mut() = focus_window.upcast::<gtk::Widget>();
+        island
+    }
+
+    fn new_with_layer_shell(
+        application: &Application,
+        monitor: &gdk::Monitor,
+        monitor_name: String,
+        config: &AppConfig,
+        actions: IslandActions,
+        animations_enabled: bool,
+        layer_shell: bool,
+    ) -> Rc<Self> {
         let shell = &config.shell;
         let metrics = Metrics::new(
             monitor,
@@ -43,7 +89,9 @@ impl IslandWindow {
             .decorated(false)
             .build();
         dismiss_window.add_css_class("mithshell-dismiss");
-        dismiss_window.init_layer_shell();
+        if layer_shell {
+            dismiss_window.init_layer_shell();
+        }
         dismiss_window.set_namespace(Some("mithshell-dismiss"));
         dismiss_window.set_layer(Layer::Top);
         dismiss_window.set_keyboard_mode(KeyboardMode::None);
@@ -69,7 +117,9 @@ impl IslandWindow {
         if let Some(class) = metrics.css_class() {
             window.add_css_class(class);
         }
-        window.init_layer_shell();
+        if layer_shell {
+            window.init_layer_shell();
+        }
         window.set_namespace(Some("mithshell"));
         window.set_layer(Layer::Top);
         window.set_keyboard_mode(KeyboardMode::None);
@@ -144,7 +194,9 @@ impl IslandWindow {
         if let Some(class) = metrics.css_class() {
             search_window.add_css_class(class);
         }
-        search_window.init_layer_shell();
+        if layer_shell {
+            search_window.init_layer_shell();
+        }
         search_window.set_namespace(Some("mithshell-search"));
         search_window.set_layer(Layer::Top);
         search_window.set_keyboard_mode(KeyboardMode::None);
@@ -232,7 +284,8 @@ impl IslandWindow {
         let island = Rc::new(Self {
             monitor_name,
             metrics,
-            window,
+            window: window.clone(),
+            focus_root: RefCell::new(window.clone().upcast::<gtk::Widget>()),
             search_window,
             search_fixed,
             search_surface,

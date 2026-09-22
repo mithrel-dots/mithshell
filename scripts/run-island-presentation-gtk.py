@@ -55,6 +55,7 @@ with (runtime / "broadway.log").open("w") as log:
     try:
         time.sleep(0.3)
         tests = [
+            "ui::island::tests::integrated_search_return_uses_real_finish_and_scheduler_path",
             "ui::island::search::tests::integrated_search_host_is_idempotent_on_real_widgets",
             "ui::island::search::tests::integrated_return_focus_guard_handles_reparent_and_stale_close",
             "ui::island::view::tests::finished_integrated_search_is_visible_and_targetable",

@@ -168,6 +168,10 @@ pub struct IslandWindow {
     monitor_name: String,
     metrics: Metrics,
     window: ApplicationWindow,
+    /// Focus root; production aliases the layer window, while the GTK test
+    /// constructor supplies a normal window because Broadway has no layer
+    /// surface activation.
+    focus_root: RefCell<gtk::Widget>,
     search_window: ApplicationWindow,
     search_fixed: Fixed,
     search_surface: gtk::ScrolledWindow,
@@ -430,10 +434,16 @@ mod tests {
     use super::dashboard::battery_icon;
     use super::media::{format_media_time, media_state_for_player};
     use super::weather::weather_provider_label;
-    use super::{Geometry, Icon, hover_geometry, profile_timing};
+    use super::{
+        Geometry, Icon, IslandActions, IslandWindow, View, hover_geometry, profile_timing,
+    };
+    use crate::config::{AppConfig, LauncherPresentation};
     use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
+    use crate::tarragon::TarragonSelection;
     use crate::ui::resolved_scale;
     use crate::weather::WeatherProvider;
+    use gtk::prelude::*;
+    use std::rc::Rc;
 
     #[test]
     fn hover_geometry_is_forward_and_reversible() {
@@ -461,6 +471,132 @@ mod tests {
             override_profile.duration,
             std::time::Duration::from_millis(333)
         );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display; run scripts/run-island-presentation-gtk.py"]
+    fn integrated_search_return_uses_real_finish_and_scheduler_path() {
+        gtk::init().expect("GTK display");
+        let application = gtk::Application::new(
+            Some("org.mithshell.presentation-test"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        application.connect_activate(|_| {});
+        application
+            .register(None::<&gtk::gio::Cancellable>)
+            .expect("register GTK application");
+        let display = gtk::gdk::Display::default().expect("GTK display");
+        let monitor = display
+            .monitors()
+            .item(0)
+            .and_downcast::<gtk::gdk::Monitor>()
+            .expect("Broadway monitor");
+        let actions = IslandActions {
+            switch_workspace: Rc::new(|_, _| {}),
+            set_volume: Rc::new(|_| {}),
+            set_brightness: Rc::new(|_| {}),
+            search: Rc::new(|_| {}),
+            select: Rc::new(|_: TarragonSelection| {}),
+            tarragon_status: Rc::new(|| {}),
+            tarragon_reload: Rc::new(|| {}),
+            load_preview: Rc::new(|_, _| {}),
+            media_play_pause: Rc::new(|_| {}),
+            media_next: Rc::new(|_| {}),
+            media_previous: Rc::new(|_| {}),
+            notification_expired: Rc::new(|_, _| {}),
+            notification_dismiss: Rc::new(|_| {}),
+            notification_invoke: Rc::new(|_, _| {}),
+            notification_clear_all: Rc::new(|| {}),
+            notification_inhibit: Rc::new(|_| {}),
+            tray_activate: Rc::new(|_, _, _, _| {}),
+            tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+            tray_context_menu: Rc::new(|_, _, _, _| {}),
+            tray_scroll: Rc::new(|_, _, _, _| {}),
+            tray_menu_event: Rc::new(|_, _, _| {}),
+        };
+        let mut config = AppConfig::default();
+        config.launcher.presentation = LauncherPresentation::Integrated;
+        config.shell.animation_ms = 0;
+        let island = IslandWindow::new_for_test(
+            &application,
+            &monitor,
+            "broadway-test".to_owned(),
+            &config,
+            actions,
+            true,
+        );
+        application.activate();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        island.open_search();
+        // Seed the normal GTK focus before exercising the same production
+        // return scheduler below; Broadway cannot activate a layer surface.
+        island.search_entry.set_can_focus(true);
+        gtk::prelude::RootExt::set_focus(&island.window, Some(&island.search_entry));
+        island.search_entry.grab_focus();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert_eq!(island.current_view.get(), View::Search);
+        island.ensure_integrated_search_host();
+        island.ensure_integrated_search_host();
+        assert!(
+            island
+                .search
+                .parent()
+                .is_some_and(|parent| { parent == island.content.clone().upcast::<gtk::Widget>() })
+        );
+        let focus_window = island
+            .focus_root
+            .borrow()
+            .clone()
+            .downcast::<gtk::Window>()
+            .expect("test focus window");
+        let temporary_focus = gtk::Button::with_label("temporary focus");
+        island.content.put(&temporary_focus, 0.0, 0.0);
+        temporary_focus.set_can_focus(true);
+        temporary_focus.set_can_target(true);
+        focus_window.present();
+        temporary_focus.grab_focus();
+        gtk::prelude::RootExt::set_focus(&focus_window, Some(&temporary_focus));
+
+        island.osd_active.set(true);
+        island.reconcile_view();
+        assert_eq!(island.current_view.get(), View::Osd);
+        assert!(island.search_focus_pending.get());
+        island.osd_active.set(false);
+        island.reconcile_view();
+        assert_eq!(island.current_view.get(), View::Search);
+        // finish_view consumed the pending ownership handoff and queued the
+        // guarded production scheduler.
+        assert!(!island.search_focus_pending.get());
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert!(!island.search_focus_pending.get());
+        assert!(island.search_entry.has_focus());
+
+        island.schedule_search_entry_focus();
+        let queued_generation = island.search_focus_generation.get();
+        island.close();
+        assert!(island.search_focus_generation.get() > queued_generation);
+        // Make any direct refocus observable without relying on compositor
+        // focus activation: closing the launcher removes the entry's focus
+        // eligibility before the stale idle callback is drained.
+        island.search_entry.set_can_focus(false);
+        let button = gtk::Button::with_label("deliberate focus");
+        island.content.put(&button, 0.0, 0.0);
+        button.set_can_focus(true);
+        button.set_can_target(true);
+        focus_window.present();
+        button.grab_focus();
+        gtk::prelude::RootExt::set_focus(&focus_window, Some(&button));
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        assert!(button.has_focus());
+        island.destroy();
     }
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
