@@ -19,22 +19,25 @@ def free_port():
         return probe.getsockname()[1]
 
 
-with tempfile.TemporaryDirectory(
-    prefix="battery-wave-", dir=root / "target"
-) as runtime_name:
+def scoped_runtime(project_root):
+    """Create a disposable runtime below target, including fresh checkouts."""
+    target = project_root / "target"
+    target.mkdir(parents=True, exist_ok=True)
+    runtime = tempfile.TemporaryDirectory(prefix="battery-wave-", dir=target)
+    runtime_path = pathlib.Path(runtime.name)
+    assert runtime_path.parent == target
+    (runtime_path / "tmp").mkdir()
+    return runtime
+
+
+with scoped_runtime(root) as runtime_name:
     runtime = pathlib.Path(runtime_name)
-    # Keep every temporary, cache, profile, socket, and log path below target.
-    # TMPDIR is the target itself so Chromium's singleton socket remains short
-    # enough even when the checkout path is long.
     for name in ("home", "cache", "config", "data"):
         (runtime / name).mkdir()
     env = os.environ.copy()
     env.update(
-        # Chromium uses TMPDIR verbatim for its singleton socket.  A
-        # project-relative path keeps that socket below the UNIX limit while
-        # still resolving inside this worktree's target directory (all child
-        # processes use cwd=root).
-        TMPDIR="target",
+        # Every temporary path is scoped to this disposable runtime.
+        TMPDIR=str(runtime / "tmp"),
         # Keep the caller's HOME so rustup can find the selected toolchain;
         # all test-specific XDG/cache/profile paths remain project-local.
         HOME=os.environ.get("HOME", str(runtime / "home")),
@@ -95,8 +98,10 @@ with tempfile.TemporaryDirectory(
                     "--user-data-dir=" + str(runtime / "chromium"),
                     f"http://127.0.0.1:{port}",
                 ],
-                cwd=root,
-                env=env,
+                # A short relative TMPDIR keeps Chromium's singleton socket
+                # under the scoped runtime without exceeding UNIX limits.
+                cwd=runtime,
+                env={**env, "TMPDIR": "tmp"},
                 stdout=browser_log,
                 stderr=browser_log,
                 start_new_session=True,
