@@ -843,6 +843,9 @@ mod tests {
             Some(super::circle::Mode::HoverExpanded)
         );
         assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+        let media_frame = media_host.frame().expect("rendered media frame");
+        assert!(media_frame.radius > 0.0);
+        assert!(!media_frame.contains(media_frame.rect.x - 1.0, media_frame.rect.y - 1.0));
 
         island
             .circles

@@ -1,62 +1,59 @@
 #!/usr/bin/env python3
-"""Run the real circle/launcher GTK integration scenario on isolated Broadway.
-
-All runtime state is below this checkout's target directory.  The display and
-HTTP port are process-specific so two invocations can run back-to-back.
-"""
+"""Run the production circle GTK integration test under private Broadway."""
 
 import json
 import os
 import pathlib
 import socket
-import shutil
 import subprocess
-import sys
 import tempfile
 import time
 
 root = pathlib.Path(__file__).resolve().parents[1]
 target = root / "target"
 target.mkdir(mode=0o700, exist_ok=True)
-run_dir_handle = tempfile.TemporaryDirectory(
+
+
+def stop(process):
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+with tempfile.TemporaryDirectory(
     prefix=f"circle-integration-{os.getpid()}-", dir=target
-)
-run_dir = pathlib.Path(run_dir_handle.name)
-runtime = run_dir / "runtime"
-tmp = run_dir / "tmp"
-runtime.mkdir(mode=0o700)
-tmp.mkdir(mode=0o700)
-(run_dir / "cache").mkdir(mode=0o700)
-(run_dir / "config").mkdir(mode=0o700)
-(run_dir / "data").mkdir(mode=0o700)
+) as name:
+    runtime = pathlib.Path(name)
+    for directory in ("tmp", "cache", "config", "data", "chromium"):
+        (runtime / directory).mkdir(mode=0o700)
+    env = os.environ.copy()
+    env.update(
+        HOME=os.environ["HOME"],
+        TMPDIR=str(runtime / "tmp"),
+        XDG_CACHE_HOME=str(runtime / "cache"),
+        XDG_CONFIG_HOME=str(runtime / "config"),
+        XDG_DATA_HOME=str(runtime / "data"),
+        XDG_RUNTIME_DIR=str(runtime),
+        GDK_BACKEND="broadway",
+        BROADWAY_DISPLAY=f":{os.getpid()}",
+        GTK_A11Y="none",
+        GSETTINGS_BACKEND="memory",
+        GTK_USE_PORTAL="0",
+        CHROME_CONFIG_HOME=str(runtime / "config"),
+    )
+    env.pop("GSK_RENDERER", None)
 
-env = os.environ.copy()
-env.update(
-    TMPDIR=str(tmp),
-    XDG_RUNTIME_DIR=str(runtime),
-    XDG_CACHE_HOME=str(run_dir / "cache"),
-    XDG_CONFIG_HOME=str(run_dir / "config"),
-    XDG_DATA_HOME=str(run_dir / "data"),
-    GDK_BACKEND="broadway",
-    GTK_A11Y="none",
-    GSETTINGS_BACKEND="memory",
-    GTK_USE_PORTAL="0",
-)
-env.pop("GSK_RENDERER", None)
-
-# The runtime directory is private to this invocation; use a process-specific
-# display so the same runner can be launched concurrently.
-env["BROADWAY_DISPLAY"] = f":{os.getpid()}"
-
-server = None
-try:
     build = subprocess.run(
         ["cargo", "test", "--offline", "--no-run", "--message-format=json"],
         cwd=root,
         env=env,
-        text=True,
         stdout=subprocess.PIPE,
-        stderr=None,
+        text=True,
         check=True,
     )
     binary = next(
@@ -66,28 +63,39 @@ try:
         and item.get("executable")
         and "lib" in item["target"]["kind"]
     )
-    log_path = run_dir / "broadway.log"
-    for attempt in range(5):
-        env["BROADWAY_DISPLAY"] = f":{os.getpid() + attempt + 1}"
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        with log_path.open("w") as log:
-            server = subprocess.Popen(
-                ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
-                cwd=root,
-                env=env,
-                stdout=log,
-                stderr=log,
-            )
-        time.sleep(0.3)
-        if server.poll() is None:
-            break
-        server.terminate()
-        server.wait(timeout=5)
-        server = None
-    else:
-        raise RuntimeError(f"gtk4-broadwayd could not bind: {log_path.read_text()}")
+
+    server = None
+    log_path = runtime / "broadway.log"
+    try:
+        server_env = env.copy()
+        server_env.pop("BROADWAY_DISPLAY", None)
+        server_env.pop("GDK_BACKEND", None)
+        for _ in range(5):
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            with log_path.open("w") as log:
+                server = subprocess.Popen(
+                    [
+                        "gtk4-broadwayd",
+                        "-a",
+                        "127.0.0.1",
+                        "-p",
+                        str(port),
+                        env["BROADWAY_DISPLAY"],
+                    ],
+                    cwd=root,
+                    env=server_env,
+                    stdout=log,
+                    stderr=log,
+                )
+            time.sleep(0.3)
+            if server.poll() is None:
+                break
+            stop(server)
+            server = None
+        else:
+            raise RuntimeError(f"gtk4-broadwayd could not bind: {log_path.read_text()}")
 
         result = subprocess.run(
             [
@@ -101,13 +109,7 @@ try:
             cwd=root,
             env=env,
         )
-        raise SystemExit(result.returncode)
-finally:
-    if server is not None and server.poll() is None:
-        server.terminate()
-        try:
-            server.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait()
-    run_dir_handle.cleanup()
+    finally:
+        stop(server)
+
+raise SystemExit(result.returncode)

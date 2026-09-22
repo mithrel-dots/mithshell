@@ -225,6 +225,13 @@ The circle presentation contract is:
 surface with the island still present) or `"integrated"` (a launcher replacing the
 island, emerging from it and merging back when closed).
 
+The production GTK integration path is covered by the project-local Broadway
+test runner (`scripts/run-circle-integration-gtk.py`), including page commits,
+snapshot invalidation, media selection, notification inhibition, and legacy
+visibility. Broadway does not implement the compositor's layer-shell protocol;
+final monitor placement, shell input-region forwarding, and multi-monitor
+compositor behavior still require a real compositor session.
+
 ### Automatic OSD and media
 
 Volume and mute changes are detected through PipeWire's PulseAudio-compatible
