@@ -316,6 +316,10 @@ pub struct IslandWindow {
     weather_open: Cell<bool>,
     search_connected: Cell<bool>,
     search_generation: Cell<u64>,
+    /// Invalidates queued focus requests when a temporary page or close wins
+    /// before the GTK idle callback runs.
+    search_focus_generation: Cell<u64>,
+    search_focus_pending: Cell<bool>,
     preview_generation: Cell<u64>,
     search_action_generation: Cell<u64>,
     search_selection_pending: Cell<bool>,

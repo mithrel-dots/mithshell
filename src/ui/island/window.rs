@@ -349,6 +349,8 @@ impl IslandWindow {
             weather_open: Cell::new(false),
             search_connected: Cell::new(false),
             search_generation: Cell::new(0),
+            search_focus_generation: Cell::new(0),
+            search_focus_pending: Cell::new(false),
             preview_generation: Cell::new(0),
             search_action_generation: Cell::new(0),
             search_selection_pending: Cell::new(false),

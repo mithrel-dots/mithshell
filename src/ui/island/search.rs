@@ -424,7 +424,45 @@ impl IslandWindow {
             .is_some_and(|parent| parent == self.content.clone().upcast::<gtk::Widget>())
         {
             restore_independent_search(&self.search_surface, &self.content, &self.search);
+            if self.search_open.get()
+                && self.launcher_presentation == crate::config::LauncherPresentation::Integrated
+            {
+                self.search_focus_pending.set(true);
+            }
         }
+    }
+
+    pub(super) fn schedule_integrated_search_focus(self: &Rc<Self>) {
+        self.schedule_search_entry_focus();
+    }
+
+    pub(super) fn schedule_search_entry_focus(self: &Rc<Self>) {
+        let generation = self.search_focus_generation.get().wrapping_add(1);
+        self.search_focus_generation.set(generation);
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(island) = weak.upgrade() else {
+                return;
+            };
+            if island.search_focus_generation.get() != generation || !island.search_open.get() {
+                return;
+            }
+            if island.launcher_presentation == crate::config::LauncherPresentation::Integrated {
+                if island.current_view.get() != View::Search {
+                    return;
+                }
+                let content = island.content.clone();
+                let window = island.window.clone().upcast::<gtk::Widget>();
+                let _ = focus_integrated_search_entry(
+                    &island.search_entry,
+                    &island.search,
+                    &content,
+                    &window,
+                );
+            } else if island.search_window.is_visible() {
+                island.search_entry.grab_focus();
+            }
+        });
     }
 
     pub fn update_tarragon_connection(&self, connected: bool, message: Option<&str>) {
@@ -816,10 +854,7 @@ impl IslandWindow {
                 self.window.present();
             }
             self.window.present();
-            let entry = self.search_entry.clone();
-            glib::idle_add_local_once(move || {
-                entry.grab_focus();
-            });
+            self.schedule_search_entry_focus();
             return;
         }
 
@@ -850,10 +885,7 @@ impl IslandWindow {
         if self.launcher_presentation == crate::config::LauncherPresentation::Independent {
             self.present_search_window(start);
         }
-        let entry = self.search_entry.clone();
-        glib::idle_add_local_once(move || {
-            entry.grab_focus();
-        });
+        self.schedule_search_entry_focus();
     }
 
     fn search_target_geometry(&self) -> Geometry {
@@ -1026,7 +1058,7 @@ impl IslandWindow {
         }
     }
 
-    pub(super) fn hide_search_window(&self) {
+    pub(super) fn hide_search_window(self: &Rc<Self>) {
         self.search_animation_generation
             .set(self.search_animation_generation.get().wrapping_add(1));
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
@@ -1232,6 +1264,27 @@ fn restore_independent_search(
     }
 }
 
+/// Production focus guard used after an integrated host return. The parent and
+/// root checks make a queued callback harmless after close, interruption, or a
+/// reparent that has not yet completed.
+fn focus_integrated_search_entry(
+    entry: &gtk::SearchEntry,
+    search: &gtk::Box,
+    content: &gtk::Fixed,
+    window: &gtk::Widget,
+) -> bool {
+    let content_widget = content.clone().upcast::<gtk::Widget>();
+    if !window.is_visible()
+        || search
+            .parent()
+            .is_none_or(|parent| parent != content_widget)
+        || search.root().is_none_or(|root| root != *window)
+    {
+        return false;
+    }
+    entry.grab_focus()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1261,5 +1314,38 @@ mod tests {
 
         restore_independent_search(&search_surface, &content, &search);
         assert!(search_surface.child().is_some());
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display; run scripts/run-island-presentation-gtk.py"]
+    fn integrated_return_focus_guard_handles_reparent_and_stale_close() {
+        gtk::init().expect("GTK display");
+        let window = gtk::Window::new();
+        let content = gtk::Fixed::new();
+        let search = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let entry = gtk::SearchEntry::new();
+        search.append(&entry);
+        content.put(&search, 0.0, 0.0);
+        window.set_child(Some(&content));
+        window.present();
+
+        let host = window.clone().upcast::<gtk::Widget>();
+        assert!(focus_integrated_search_entry(
+            &entry, &search, &content, &host
+        ));
+
+        let temporary = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.remove(&search);
+        temporary.append(&search);
+        temporary.remove(&search);
+        content.put(&search, 0.0, 0.0);
+        assert!(focus_integrated_search_entry(
+            &entry, &search, &content, &host
+        ));
+
+        window.set_visible(false);
+        assert!(!focus_integrated_search_entry(
+            &entry, &search, &content, &host
+        ));
     }
 }

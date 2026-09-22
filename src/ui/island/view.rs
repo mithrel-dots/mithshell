@@ -96,6 +96,10 @@ impl IslandWindow {
     }
 
     pub(super) fn set_view(self: &Rc<Self>, view: View) {
+        if view != View::Search {
+            self.search_focus_generation
+                .set(self.search_focus_generation.get().wrapping_add(1));
+        }
         let pill_view = matches!(view, View::Compact | View::Media);
         let desired_hover = pill_view && self.pointer_in_hover_region.get();
         let hover_changed = self.tray_hovered.get() != desired_hover;
@@ -296,7 +300,7 @@ impl IslandWindow {
         }
     }
 
-    pub(super) fn finish_view(&self, view: View) {
+    pub(super) fn finish_view(self: &Rc<Self>, view: View) {
         self.apply_geometry(self.presentation_target_geometry(view));
         for (widget, widget_view) in self.view_widgets() {
             let active = widget_view == view;
@@ -306,6 +310,9 @@ impl IslandWindow {
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {
             if view == View::Search {
                 finalize_integrated_search(&self.search, true);
+                if self.search_focus_pending.take() {
+                    self.schedule_integrated_search_focus();
+                }
             } else {
                 finalize_integrated_search(&self.search, false);
                 self.restore_integrated_search_host();
