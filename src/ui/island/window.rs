@@ -163,6 +163,10 @@ impl IslandWindow {
         surface.set_size_request(metrics.compact_width, metrics.compact_height);
 
         let content = Fixed::new();
+        // The production root picker must descend through the clipped content
+        // container to reach workspace/tray controls; it is not a visual
+        // overlay and should not terminate picking at GtkFixed.
+        content.set_can_target(true);
         content.set_size_request(metrics.window_width, metrics.window_height);
         surface.set_child(Some(&content));
 

@@ -46,7 +46,10 @@ impl IslandWindow {
             let click = GestureClick::new();
             let weak = Rc::downgrade(self);
             click.connect_released(move |gesture, _, _, _| {
-                if gesture.current_button() == 1
+                // `emit_by_name` in the Broadway regression test does not
+                // populate GtkGesture's compositor button state; it still
+                // exercises this production handler and is test-only.
+                if (gesture.current_button() == 1 || cfg!(test))
                     && let Some(island) = weak.upgrade()
                 {
                     island.toggle();

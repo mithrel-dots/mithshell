@@ -452,6 +452,18 @@ impl CircleIntegration {
                     island
                         .fixed
                         .move_(slot.host.widget(), frame.rect.x, frame.rect.y);
+                    // Fixed normally picks this up from the size request on
+                    // its next resize pass.  A mapped custom widget can still
+                    // retain the previous page allocation for one pass,
+                    // though; publish the committed frame to the actual GTK
+                    // child now so Stack/ScrolledWindow descendants cannot
+                    // observe a stale compact allocation during a rebuild.
+                    slot.host.widget().allocate(
+                        frame.rect.width.round().max(1.0) as i32,
+                        frame.rect.height.round().max(1.0) as i32,
+                        -1,
+                        None,
+                    );
                 }
             }
         }
@@ -459,6 +471,10 @@ impl CircleIntegration {
         // vfunc.  Force the outer Fixed to consume that request immediately;
         // otherwise a host first mapped while its ScrolledWindow page is
         // empty can remain allocated at 0x0 until an unrelated resize.
+        // A custom CircleSurface publishes a new size request when a page
+        // commits.  Queue the parent resize as well as allocation; allocation
+        // alone can retain the compact page's old request on a mapped Fixed.
+        island.fixed.queue_resize();
         island.fixed.queue_allocate();
         island.update_circle_input_region();
         drop(animations);

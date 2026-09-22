@@ -24,10 +24,12 @@ pub(crate) fn scaled(value: i32, scale: f64) -> i32 {
 }
 
 /// Resolves `shell.scale`: a positive configured value wins, otherwise the
-/// scale derived from the monitor's logical width is used.
+/// scale derived from the monitor's logical width is used.  Explicit values
+/// are intentionally not raised to a desktop-density floor: compact circles
+/// and the rest of the shell must honor fractional values such as 0.75.
 pub(crate) fn resolved_scale(configured: f64, automatic: f64) -> f64 {
     if configured.is_finite() && configured > 0.0 {
-        configured.max(0.8)
+        configured
     } else {
         automatic
     }
