@@ -287,11 +287,26 @@ impl CircleHost {
             }
             self.surface.imp().radius.set(frame.radius);
             self.surface
+                .imp()
+                .requested_width
+                .set(frame.rect.width.round().max(1.0) as i32);
+            self.surface
+                .imp()
+                .requested_height
+                .set(frame.rect.height.round().max(1.0) as i32);
+            self.surface
                 .set_size_request(frame.rect.width as i32, frame.rect.height as i32);
+            // The frame is supplied by Fixed after the host may already have
+            // been allocated once at 0x0 (notably on a freshly mapped
+            // ScrolledWindow page). Explicitly invalidate the parent layout
+            // so the new frame request is allocated in the same frame.
+            self.surface.queue_resize();
             self.surface.queue_draw();
             self.surface
                 .set_visible(self.presented_page.get().is_some());
         } else {
+            self.surface.imp().requested_width.set(0);
+            self.surface.imp().requested_height.set(0);
             self.surface.set_visible(false);
         }
         // GTK visibility/focus changes can synchronously dispatch new intent.
@@ -301,8 +316,14 @@ impl CircleHost {
 }
 
 fn scroll_page(child: &gtk::Widget) -> gtk::ScrolledWindow {
+    child.set_hexpand(true);
+    child.set_vexpand(true);
+    child.set_halign(gtk::Align::Fill);
+    child.set_valign(gtk::Align::Fill);
     gtk::ScrolledWindow::builder()
         .child(child)
+        .hexpand(true)
+        .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_width(false)
@@ -318,6 +339,12 @@ mod imp {
     pub struct CircleSurface {
         pub child: RefCell<Option<gtk::Widget>>,
         pub radius: Cell<f64>,
+        // CircleSurface has a custom measure vfunc, so GTK does not
+        // automatically fold set_size_request into its measured minimum.
+        // Keep the current integration frame as the only host constraint;
+        // page natural sizes must never determine the compact allocation.
+        pub requested_width: Cell<i32>,
+        pub requested_height: Cell<i32>,
     }
 
     #[glib::object_subclass]
@@ -336,9 +363,16 @@ mod imp {
     }
 
     impl WidgetImpl for CircleSurface {
-        fn measure(&self, _: gtk::Orientation, _: i32) -> (i32, i32, i32, i32) {
-            // Child minimum sizes never enlarge the host beyond the layout lane.
-            (0, 0, -1, -1)
+        fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
+            let requested = match orientation {
+                gtk::Orientation::Horizontal => self.requested_width.get(),
+                gtk::Orientation::Vertical => self.requested_height.get(),
+                _ => 0,
+            };
+            // The current frame, not Stack/ScrolledWindow natural sizes, owns
+            // allocation.  Returning it as min and natural also makes Fixed
+            // allocate real pages instead of a 0x0 host.
+            (requested, requested, -1, -1)
         }
 
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {

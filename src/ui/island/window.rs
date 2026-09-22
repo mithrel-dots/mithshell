@@ -61,6 +61,7 @@ impl IslandWindow {
         let focus_window = gtk::Window::new();
         island.window.set_child(None::<&gtk::Widget>);
         focus_window.set_child(Some(&island.fixed));
+        focus_window.set_default_size(island.metrics.window_width, island.metrics.window_height);
         focus_window.present();
         *island.focus_root.borrow_mut() = focus_window.upcast::<gtk::Widget>();
         island

@@ -788,6 +788,9 @@ mod tests {
         island.update_notification_history(std::slice::from_ref(&notification));
         island.update_notification_inhibition(true, Some(std::time::Duration::from_secs(65)));
         island.relayout_circles();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
         island
             .circles
             .borrow()
@@ -807,7 +810,6 @@ mod tests {
             state["circles"]["slots"][1]["present"].as_bool(),
             Some(true)
         );
-
         // Actual CircleHost state transitions exercise target/presented page,
         // synchronous no-animation commits, invalidation, and disappearance.
         let media_host = {

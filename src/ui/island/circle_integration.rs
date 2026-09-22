@@ -455,6 +455,11 @@ impl CircleIntegration {
                 }
             }
         }
+        // CircleSurface publishes its current frame through a custom measure
+        // vfunc.  Force the outer Fixed to consume that request immediately;
+        // otherwise a host first mapped while its ScrolledWindow page is
+        // empty can remain allocated at 0x0 until an unrelated resize.
+        island.fixed.queue_allocate();
         island.update_circle_input_region();
         drop(animations);
         if self.animations.borrow().iter().any(Option::is_some) {
