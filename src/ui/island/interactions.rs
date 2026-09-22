@@ -10,6 +10,17 @@ use gtk::{GestureClick, gdk, glib};
 use super::{IslandWindow, OverlayButtons, dominant_scroll_direction};
 
 impl IslandWindow {
+    fn update_pointer_from_root(self: &Rc<Self>, x: f64, y: f64) {
+        let left = f64::from(self.metrics.window_width - self.metrics.media_max_width) / 2.0
+            - f64::from(self.metrics.spacing(8));
+        let right = left + f64::from(self.metrics.media_max_width + self.metrics.spacing(16));
+        let inside = x >= left
+            && x < right
+            && y >= 0.0
+            && y < f64::from(self.metrics.compact_height + self.metrics.spacing(16));
+        self.set_pointer_in_hover_region(inside);
+    }
+
     #[cfg(test)]
     pub(crate) fn test_emit_dismiss_click(&self) {
         if let Some(click) = self.dismiss_click.borrow().as_ref() {
@@ -51,18 +62,15 @@ impl IslandWindow {
         let surface_motion = gtk::EventControllerMotion::new();
         surface_motion.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
+        surface_motion.connect_enter(move |_, x, y| {
+            if let Some(island) = weak.upgrade() {
+                island.update_pointer_from_root(x, y);
+            }
+        });
+        let weak = Rc::downgrade(self);
         surface_motion.connect_motion(move |_, x, y| {
             if let Some(island) = weak.upgrade() {
-                let left = f64::from(island.metrics.window_width - island.metrics.media_max_width)
-                    / 2.0
-                    - f64::from(island.metrics.spacing(8));
-                let right =
-                    left + f64::from(island.metrics.media_max_width + island.metrics.spacing(16));
-                let inside = x >= left
-                    && x < right
-                    && y >= 0.0
-                    && y < f64::from(island.metrics.compact_height + island.metrics.spacing(16));
-                island.set_pointer_in_hover_region(inside);
+                island.update_pointer_from_root(x, y);
             }
         });
         let weak = Rc::downgrade(self);
