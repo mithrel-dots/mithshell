@@ -334,9 +334,26 @@ mod tests {
                     assert!(!media.root.has_css_class("media-content"));
                     let foreground = waves.media.next_sibling().unwrap();
                     assert!(foreground.has_css_class("media-content"));
+                    // GTK reports a widget's allocation including its CSS
+                    // padding.  The actual foreground allocation is the
+                    // content child inside that padded box; measuring the
+                    // box itself incorrectly makes this equal to the wave.
+                    let foreground_child = foreground.first_child().unwrap();
+                    let child_bounds = foreground_child.compute_bounds(&waves.media).unwrap();
+                    let left_inset = child_bounds.x();
+                    let right_inset =
+                        waves.media.width() as f32 - (child_bounds.x() + child_bounds.width());
                     assert!(
-                        foreground.width() < waves.media.width(),
-                        "CSS padding must inset only the foreground"
+                        left_inset > 0.0 && right_inset > 0.0,
+                        "CSS padding must inset the foreground child: wave={} child x={} width={} right inset={}",
+                        waves.media.width(),
+                        child_bounds.x(),
+                        child_bounds.width(),
+                        right_inset
+                    );
+                    assert!(
+                        child_bounds.width() < waves.media.width() as f32,
+                        "CSS padding must inset only the foreground child"
                     );
 
                     let quarter = widget_pixels(&waves.media);
