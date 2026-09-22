@@ -23,6 +23,7 @@ mod media;
 pub(crate) mod media_circle;
 mod metrics;
 mod notification;
+pub(crate) mod notification_circle;
 mod osd;
 mod search;
 mod tray;
