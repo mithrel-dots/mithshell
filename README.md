@@ -130,6 +130,39 @@ The feature is disabled by default and hidden when battery data is unavailable.
 `daemon --no-animations` keeps the divider static. Run `mithshell reload` after
 changing these settings.
 
+### Test battery indication on a desktop
+
+Start a test daemon with a fixed simulated battery, even without a physical one:
+
+```sh
+mithshell daemon --test-battery 50
+```
+
+`--test-battery <PERCENT>` is a **daemon launch option** accepting whole numbers
+from **0 through 100**, inclusive. It reports a present battery with status
+`Discharging` below 100%, or `Full` at 100%; it does not simulate charging.
+The percentage stays fixed for that process, including across hardware polls,
+`mithshell reload`, and monitor additions or recreation. All normal system-state
+consumers receive it (including `mithshell status --json`); no device state or
+configuration is written. Launch without the flag to use real battery readings.
+
+Enable `[battery] wave = true` in the configuration to see the background wave.
+Use an intermediate value such as `50` with animations enabled for a moving
+divider, `0` for no fill, or `100` for a full fill with no moving divider. The same
+state feeds the compact and playing-media presentations. Existing `--config`,
+`--no-animations`, and global `--socket` options work as usual; for example:
+
+```sh
+mithshell daemon --config ./test.toml --test-battery 50
+```
+
+This launches a shell; it is not an IPC command to change an existing daemon.
+A daemon already using the selected socket causes the usual "another mithshell
+daemon is already running" error. Use the option on your next manual/test-session
+launch when that daemon is not running, or add it to your chosen startup command
+for a test session. Remove it afterward. `mithshell reload` cannot enable,
+disable, or change the simulated percentage; launch a new test run to change it.
+
 ### Circle and launcher configuration
 
 The following options are parsed and validated now; their UI integration is

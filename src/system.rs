@@ -14,6 +14,47 @@ use log::{debug, warn};
 
 use crate::state::{AudioState, BatteryState, BrightnessState, SystemInfoState, SystemSnapshot};
 
+/// Controller-owned cache replayed to new windows and IPC status readers.
+/// The launch-only override survives hardware samples and UI/config rebuilds.
+pub(crate) struct SystemState {
+    snapshot: SystemSnapshot,
+    test_battery: Option<u8>,
+}
+
+impl SystemState {
+    pub(crate) fn new(test_battery: Option<u8>) -> Self {
+        let mut state = Self {
+            snapshot: SystemSnapshot::default(),
+            test_battery,
+        };
+        state.update(SystemSnapshot::default());
+        state
+    }
+
+    pub(crate) fn update(&mut self, mut snapshot: SystemSnapshot) {
+        if let Some(percent) = self.test_battery {
+            snapshot.battery = Some(BatteryState {
+                percent,
+                status: if percent == 100 {
+                    "Full"
+                } else {
+                    "Discharging"
+                }
+                .into(),
+            });
+        }
+        self.snapshot = snapshot;
+    }
+
+    pub(crate) fn update_audio(&mut self, audio: AudioState) {
+        self.snapshot.audio = Some(audio);
+    }
+
+    pub(crate) fn snapshot(&self) -> &SystemSnapshot {
+        &self.snapshot
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAction {
     PowerOff,
@@ -309,6 +350,111 @@ fn read_u64(path: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device_sample(battery: Option<BatteryState>) -> SystemSnapshot {
+        SystemSnapshot {
+            battery,
+            audio: Some(AudioState {
+                percent: 23,
+                muted: true,
+            }),
+            brightness: Some(BrightnessState {
+                percent: 81,
+                device: "test-backlight".into(),
+            }),
+            info: Some(SystemInfoState {
+                hostname: "test-desktop".into(),
+                os_name: "Test Linux".into(),
+                uptime_seconds: 120,
+            }),
+        }
+    }
+
+    #[test]
+    fn simulated_battery_survives_device_samples_and_cached_replay() {
+        for percent in [0, 1, 50, 99, 100] {
+            let status = if percent == 100 {
+                "Full"
+            } else {
+                "Discharging"
+            };
+            let mut state = SystemState::new(Some(percent));
+            // The first monitor can be created before any poll has completed.
+            let initial = state.snapshot().battery.as_ref().unwrap();
+            assert_eq!(initial.percent, percent);
+            assert_eq!(initial.status, status);
+
+            for battery in [
+                None,
+                Some(BatteryState {
+                    percent: 72,
+                    status: "Charging".into(),
+                }),
+                Some(BatteryState {
+                    percent: 100,
+                    status: "Full".into(),
+                }),
+                None,
+            ] {
+                let sample = device_sample(battery);
+                let mut expected = serde_json::to_value(&sample).unwrap();
+                expected["battery"] = serde_json::json!({ "percent": percent, "status": status });
+                state.update(sample);
+                // Existing windows consume this cache after a poll. Reloads,
+                // new monitors, and the lock screen replay the same snapshot.
+                for _ in 0..3 {
+                    let replay = state.snapshot().clone();
+                    assert_eq!(serde_json::to_value(replay).unwrap(), expected);
+                }
+                assert_eq!(
+                    state.snapshot().brightness.as_ref().unwrap().device,
+                    "test-backlight"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn audio_events_preserve_simulated_battery_and_other_cached_state() {
+        let mut state = SystemState::new(Some(42));
+        state.update(device_sample(None));
+        let mut expected = serde_json::to_value(state.snapshot()).unwrap();
+        let audio = AudioState {
+            percent: 65,
+            muted: false,
+        };
+        expected["audio"] = serde_json::to_value(audio).unwrap();
+        state.update_audio(audio);
+        assert_eq!(serde_json::to_value(state.snapshot()).unwrap(), expected);
+    }
+
+    #[test]
+    fn ordinary_system_state_preserves_hardware_and_does_not_inherit_simulation() {
+        let simulated = SystemState::new(Some(42));
+        assert!(simulated.snapshot().battery.is_some());
+        let mut state = SystemState::new(None);
+        assert_eq!(
+            serde_json::to_value(state.snapshot()).unwrap(),
+            serde_json::to_value(SystemSnapshot::default()).unwrap()
+        );
+        for battery in [
+            None,
+            Some(BatteryState {
+                percent: 72,
+                status: "Charging".into(),
+            }),
+            Some(BatteryState {
+                percent: 100,
+                status: "Full".into(),
+            }),
+            None,
+        ] {
+            let sample = device_sample(battery);
+            let expected = serde_json::to_value(&sample).unwrap();
+            state.update(sample);
+            assert_eq!(serde_json::to_value(state.snapshot()).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn parses_wpctl_volume_and_mute() {

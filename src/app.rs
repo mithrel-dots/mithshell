@@ -61,7 +61,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Daemon {
             config,
             no_animations,
-        } => run_daemon(socket_path, config, !no_animations),
+            test_battery,
+        } => run_daemon(socket_path, config, !no_animations, test_battery),
         command => run_client(socket_path, command),
     }
 }
@@ -330,6 +331,7 @@ fn run_daemon(
     socket_path: PathBuf,
     config_override: Option<PathBuf>,
     animations: bool,
+    test_battery: Option<u8>,
 ) -> Result<()> {
     let config_path = config::config_path(config_override)?;
     let config = AppConfig::load(&config_path)?;
@@ -354,6 +356,7 @@ fn run_daemon(
             config.clone(),
             socket_path.clone(),
             animations,
+            test_battery,
         ) {
             Ok(controller) => {
                 controller.clone().start();
@@ -385,7 +388,7 @@ struct Controller {
     css_provider: CssProvider,
     user_css_provider: CssProvider,
     hyprland: RefCell<HyprlandSnapshot>,
-    system: RefCell<SystemSnapshot>,
+    system: RefCell<system::SystemState>,
     media: RefCell<Option<MediaState>>,
     weather: RefCell<Option<WeatherState>>,
     tray: RefCell<Vec<TrayItem>>,
@@ -490,6 +493,7 @@ impl Controller {
         config: AppConfig,
         socket_path: PathBuf,
         animations: bool,
+        test_battery: Option<u8>,
     ) -> Result<Rc<Self>> {
         let mut initial_theme = config.theme.clone();
         if let Some(theme_override) = theme::load_override()? {
@@ -547,7 +551,7 @@ impl Controller {
             css_provider,
             user_css_provider,
             hyprland: RefCell::new(HyprlandSnapshot::default()),
-            system: RefCell::new(SystemSnapshot::default()),
+            system: RefCell::new(system::SystemState::new(test_battery)),
             media: RefCell::new(None),
             weather: RefCell::new(None),
             tray: RefCell::new(Vec::new()),
@@ -675,13 +679,17 @@ impl Controller {
                 let Some(controller) = weak.upgrade() else {
                     break;
                 };
+                let snapshot = {
+                    let mut system = controller.system.borrow_mut();
+                    system.update(snapshot);
+                    system.snapshot().clone()
+                };
                 for island in controller.islands.borrow().values() {
                     island.update_system(&snapshot);
                 }
                 if let Some(session) = controller.lock.borrow().as_ref() {
                     session.update_system(&snapshot);
                 }
-                *controller.system.borrow_mut() = snapshot;
             }
         });
     }
@@ -699,8 +707,8 @@ impl Controller {
                 }
                 let snapshot = {
                     let mut system = controller.system.borrow_mut();
-                    system.audio = Some(audio);
-                    system.clone()
+                    system.update_audio(audio);
+                    system.snapshot().clone()
                 };
                 for island in controller.islands.borrow().values() {
                     island.update_system(&snapshot);
@@ -1390,7 +1398,12 @@ impl Controller {
             } => {
                 let value = value.unwrap_or_else(|| self.current_osd_value(kind));
                 let muted = kind == OsdKind::Volume
-                    && self.system.borrow().audio.is_some_and(|audio| audio.muted);
+                    && self
+                        .system
+                        .borrow()
+                        .snapshot()
+                        .audio
+                        .is_some_and(|audio| audio.muted);
                 for island in self.target_islands(&monitor)? {
                     island.show_osd(OsdState {
                         kind,
@@ -1459,7 +1472,7 @@ impl Controller {
                     "config": self.config_path,
                     "windows": windows,
                     "hyprland": &*self.hyprland.borrow(),
-                    "system": &*self.system.borrow(),
+                    "system": self.system.borrow().snapshot(),
                     "media": &*self.media.borrow(),
                     "weather": &*self.weather.borrow(),
                     "notifications": &*self.notifications.borrow(),
@@ -1600,7 +1613,7 @@ impl Controller {
         });
 
         let config = self.config.borrow();
-        let system = self.system.borrow().clone();
+        let system = self.system.borrow().snapshot().clone();
         let weather = self.weather.borrow().clone();
         let session = LockSession::new(
             &self.application,
@@ -1631,10 +1644,16 @@ impl Controller {
 
     fn current_osd_value(&self, kind: OsdKind) -> u8 {
         match kind {
-            OsdKind::Volume => self.system.borrow().audio.map_or(0, |audio| audio.percent),
+            OsdKind::Volume => self
+                .system
+                .borrow()
+                .snapshot()
+                .audio
+                .map_or(0, |audio| audio.percent),
             OsdKind::Brightness => self
                 .system
                 .borrow()
+                .snapshot()
                 .brightness
                 .as_ref()
                 .map_or(0, |brightness| brightness.percent),
@@ -2015,7 +2034,7 @@ impl Controller {
                 self.animations,
             );
             island.update_hyprland(&self.hyprland.borrow());
-            island.update_system(&self.system.borrow());
+            island.update_system(self.system.borrow().snapshot());
             island.update_media(self.media.borrow().as_ref());
             island.update_weather(self.weather.borrow().as_ref());
             island.update_tray(self.tray.borrow().as_slice());

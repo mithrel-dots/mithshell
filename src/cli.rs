@@ -25,6 +25,11 @@ pub enum Command {
         /// Disable geometry and content animations.
         #[arg(long)]
         no_animations: bool,
+
+        /// Simulate a fixed battery percentage for this daemon run (0..=100).
+        /// Reports Discharging below 100%, or Full at 100%.
+        #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..=100))]
+        test_battery: Option<u8>,
     },
 
     /// Toggle the dashboard.
@@ -254,6 +259,74 @@ pub struct SetupTarragonArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_test_battery_range_with_existing_daemon_options() {
+        for percent in 0..=100 {
+            let cli = Cli::try_parse_from([
+                "mithshell",
+                "daemon",
+                "--test-battery",
+                &percent.to_string(),
+                "--no-animations",
+                "--config",
+                "test.toml",
+                "--socket",
+                "test.sock",
+            ])
+            .unwrap();
+            assert_eq!(cli.socket, Some(PathBuf::from("test.sock")));
+            assert!(matches!(cli.command, Command::Daemon {
+                config: Some(config), no_animations: true, test_battery: Some(actual),
+            } if config == std::path::Path::new("test.toml") && actual == percent));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_test_battery_values() {
+        for value in [
+            "-1",
+            "101",
+            "255",
+            "256",
+            "99999999999999999999",
+            "50.5",
+            "NaN",
+            "full",
+            "",
+        ] {
+            // Equals syntax ensures negative inputs reach the value parser.
+            let error =
+                Cli::try_parse_from(["mithshell", "daemon", &format!("--test-battery={value}")])
+                    .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{value}"
+            );
+        }
+        assert!(Cli::try_parse_from(["mithshell", "daemon", "--test-battery"]).is_err());
+        assert!(Cli::try_parse_from(["mithshell", "daemon", "--test-battery", "-1"]).is_err());
+    }
+
+    #[test]
+    fn test_battery_is_opt_in_and_daemon_only() {
+        let cli = Cli::try_parse_from(["mithshell", "daemon"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                test_battery: None,
+                ..
+            }
+        ));
+        for args in [
+            vec!["mithshell", "--test-battery", "50"],
+            vec!["mithshell", "status", "--test-battery", "50"],
+            vec!["mithshell", "reload", "--test-battery", "50"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 
     #[test]
     fn parses_notification_inhibit_durations() {
