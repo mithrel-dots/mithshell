@@ -5,12 +5,10 @@ launcher, and circle integration. All durations below are milliseconds.
 
 ## Tokens and provenance
 
-The definitions below are well-established Material Design 3 tokens recalled
-from model knowledge, with high confidence in their numerical values. External
-documentation was **not accessed or authoritatively verified** during this work
-because research is restricted to local project files. No authoritative local
-token source was found. These URLs are references for later verification, not
-citations to pages consulted in this change:
+The definitions below are legacy Material Design 3 duration/easing tokens for
+these transitions, not the newer Material Expressive physics system. Numerical
+values were verified against the first-party M3 documentation (content version
+`2026-09-16_06-10-03`) on 2026-09-22:
 
 - https://m3.material.io/styles/motion/easing-and-duration/tokens-specs
 - https://m3.material.io/styles/motion/easing-and-duration/applying-easing-and-duration
@@ -33,13 +31,18 @@ are cubic-beziers. These profiles introduce no springs or overshoot.
 ## Chosen shell profiles
 
 These use-case assignments are project design choices using the tokens above;
-they are **not claimed to be Google's prescribed component mappings**.
+they are **not Google's prescribed component mappings**. Persistent container
+expansion and collapse are undirected movement, so they use `standard`, the
+documented fallback when an emphasized direction cannot be selected. The 500 ms
+and 200 ms container durations are explicit shell choices. Likewise, 300 ms
+enter timing is a shell choice rather than the 250 ms suggestion, and 150 ms
+hover timing is a shell choice rather than a universal Google rule.
 
 | `Profile` constant | Duration token | Duration | Easing |
 | --- | --- | ---: | --- |
 | `HOVER_ENTER` / `HOVER_EXIT` | short3 | 150 | standard |
-| `CONTAINER_EXPAND` | long2 | 500 | emphasized-decelerate |
-| `CONTAINER_COLLAPSE` | short4 | 200 | emphasized-accelerate |
+| `CONTAINER_EXPAND` | long2 | 500 | standard (undirected emphasized fallback) |
+| `CONTAINER_COLLAPSE` | short4 | 200 | standard (undirected emphasized fallback) |
 | `ENTER` | medium2 | 300 | standard-decelerate |
 | `EXIT` | short4 | 200 | standard-accelerate |
 | `CONTENT_IN` | short3 | 150 | standard-decelerate |
@@ -47,10 +50,12 @@ they are **not claimed to be Google's prescribed component mappings**.
 
 Hover is a small, quickly reversible depth change. Container profiles give a
 larger expansion room to settle while making collapse quicker. Enter/exit are
-for smaller elements arriving/leaving. Content profiles are for opacity tracks;
-the caller chooses overlap or sequencing and owns visibility/hit testing. The
-profile API does not infer which direction a scalar is moving: a collapse uses
-the collapse profile even when a particular coordinate increases.
+for smaller elements arriving/leaving. Content profiles are for opacity tracks.
+Replacement content fades out before the replacement fades in by default; use a
+brief intentional crossfade only when the transition calls for it. The caller
+owns sequencing, overlap, visibility, and hit testing. The profile API does not
+infer which direction a scalar is moving: a collapse uses the collapse profile
+even when a particular coordinate increases.
 
 ## Integration and compatibility
 
@@ -112,3 +117,5 @@ large durations/scalar ranges, and position-continuous reversal. This contract
 is staged without call-site changes. UI choreography, hover stability, clipping,
 focus, and input regions need integration review and compositor-level testing.
 Continuous battery-wave motion is not transition easing; it is outside this API.
+
+Transition choreography guidance: https://m3.material.io/styles/motion/transitions/applying-transitions

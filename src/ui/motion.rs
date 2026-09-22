@@ -1,8 +1,9 @@
 //! Material 3 transition tokens and shell-specific profiles.
 //!
-//! Token definitions are recalled from Material 3; their external documentation
-//! has not been verified in this change. Profile assignments are shell design
-//! choices, not prescribed Google component timings. See `docs/motion.md`.
+//! Token definitions are from the legacy Material 3 motion guidance, verified
+//! against the first-party documentation cited in `docs/motion.md`. Profile
+//! assignments are shell design choices, not prescribed Google component
+//! timings.
 
 use std::time::Duration;
 
@@ -94,11 +95,14 @@ impl Profile {
     pub const HOVER_EXIT: Self = Self::HOVER_ENTER;
     pub const CONTAINER_EXPAND: Self = Self {
         duration: duration::LONG2,
-        easing: Easing::EmphasizedDecelerate,
+        // Persistent container movement is undirected; Standard is Google's
+        // documented fallback when the emphasized direction cannot be chosen.
+        easing: Easing::Standard,
     };
     pub const CONTAINER_COLLAPSE: Self = Self {
         duration: duration::SHORT4,
-        easing: Easing::EmphasizedAccelerate,
+        // See CONTAINER_EXPAND: this is not an enter/exit direction.
+        easing: Easing::Standard,
     };
     pub const ENTER: Self = Self {
         duration: duration::MEDIUM2,
@@ -263,6 +267,14 @@ mod tests {
             assert_eq!(maximum.duration.as_millis(), u128::from(u32::MAX));
             assert_eq!(maximum.progress(Duration::MAX), 1.0);
         }
+    }
+
+    #[test]
+    fn persistent_container_profiles_use_undirected_standard_fallback() {
+        assert_eq!(Profile::CONTAINER_EXPAND.easing, Easing::Standard);
+        assert_eq!(Profile::CONTAINER_COLLAPSE.easing, Easing::Standard);
+        assert_eq!(Profile::CONTAINER_EXPAND.duration, duration::LONG2);
+        assert_eq!(Profile::CONTAINER_COLLAPSE.duration, duration::SHORT4);
     }
 
     #[test]
