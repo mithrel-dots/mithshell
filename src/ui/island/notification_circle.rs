@@ -66,6 +66,10 @@ impl NotificationCircle {
         )]);
         let bell = icon::icon_widget(Icon::Bell, style);
         bell.add_css_class("notification-circle-bell");
+        let icon_size = (16.0 * ui_scale.max(0.5)).round() as i32;
+        if let Some(image) = bell.downcast_ref::<gtk::Image>() {
+            image.set_pixel_size(icon_size);
+        }
         compact.append(&bell);
         let count = gtk::Label::new(Some("0"));
         count.add_css_class("notification-count");
@@ -127,12 +131,13 @@ impl NotificationCircle {
         };
         let host = CircleHost::new(content)?;
         let compact_style = gtk::CssProvider::new();
-        let icon_size = (16.0 * ui_scale.max(0.5)).round();
         compact_style.load_from_string(&format!(
             ".notification-circle-compact {{ padding: 0; min-height: 0; }}\
              .notification-circle-compact .notification-circle-bell {{\
-                 font-size: {icon_size}px; -gtk-icon-size: {icon_size}px;\
+                 color: @ms_primary; font-size: {icon_size}px;\
+                 -gtk-icon-size: {icon_size}px;\
              }}\
+             .notification-circle-bell {{ color: @ms_primary; }}\
              .notification-circle-compact .notification-count {{\
                  min-width: 0; min-height: 0; padding: 0; border-radius: 0;\
              }}"
@@ -140,6 +145,9 @@ impl NotificationCircle {
         #[allow(deprecated)]
         compact
             .style_context()
+            .add_provider(&compact_style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+        #[allow(deprecated)]
+        bell.style_context()
             .add_provider(&compact_style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
         let circle = Rc::new(Self {
             host,
@@ -371,6 +379,7 @@ mod tests {
     /// Broadway runner (`target/run-notification-circle-gtk.py`).
     #[test]
     #[ignore = "requires an isolated GTK display"]
+    #[allow(deprecated)]
     fn gtk_notification_circle_integration() {
         gtk::init().expect("initialize GTK");
         fn children(widget: &gtk::Widget) -> Vec<gtk::Widget> {
@@ -385,7 +394,7 @@ mod tests {
         fn test_circle(
             config: &NotificationConfig,
             events: Rc<std::cell::RefCell<Vec<String>>>,
-        ) -> Rc<NotificationCircle> {
+        ) -> (Rc<NotificationCircle>, Rc<Cell<u32>>) {
             let callbacks = NotificationCircleCallbacks {
                 invoke: {
                     let events = events.clone();
@@ -405,8 +414,14 @@ mod tests {
                 },
                 open_full: Rc::new(|| {}),
             };
-            NotificationCircle::new(config, IconStyle::default(), 1.0, callbacks)
-                .expect("distinct unparented pages")
+            let circle = NotificationCircle::new(config, IconStyle::default(), 1.0, callbacks)
+                .expect("distinct unparented pages");
+            let hook_calls = Rc::new(Cell::new(0));
+            let hook_counter = hook_calls.clone();
+            circle.host.set_on_change(move |_| {
+                hook_counter.set(hook_counter.get() + 1);
+            });
+            (circle, hook_calls)
         }
 
         let config = NotificationConfig {
@@ -414,7 +429,7 @@ mod tests {
             ..NotificationConfig::default()
         };
         let events = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let circle = test_circle(&config, events.clone());
+        let (circle, hook_calls) = test_circle(&config, events.clone());
         assert_eq!(circle.host.mode(), super::super::circle::Mode::Absent);
         assert!(circle.host.frame().is_none());
         assert!(circle.compact.parent().is_some());
@@ -448,6 +463,17 @@ mod tests {
                 },
             )
             .expect("scaled icon variant");
+            let palette = gtk::CssProvider::new();
+            palette.load_from_string("@define-color ms_primary rgb(17, 34, 51);");
+            #[allow(deprecated)]
+            variant
+                .compact
+                .style_context()
+                .add_provider(&palette, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+            let bell = variant.compact.first_child().unwrap();
+            #[allow(deprecated)]
+            bell.style_context()
+                .add_provider(&palette, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
             assert!(
                 variant
                     .compact
@@ -455,6 +481,28 @@ mod tests {
                     .is_some_and(|widget| widget.has_css_class("notification-circle-bell"))
             );
             assert_eq!(children(&variant.compact.clone().upcast()).len(), 2);
+            assert_eq!(
+                bell.style_context().color(),
+                gtk::gdk::RGBA::new(17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, 1.0)
+            );
+            let expected_size = (16.0 * scale.max(0.5)).round() as i32;
+            match style {
+                IconStyle::Glyph => {
+                    if let Ok(label) = bell.clone().downcast::<gtk::Label>() {
+                        assert_eq!(
+                            label.pango_context().font_description().unwrap().size(),
+                            expected_size * gtk::pango::SCALE
+                        );
+                    } else {
+                        let image = bell.downcast::<gtk::Image>().expect("glyph fallback image");
+                        assert_eq!(image.pixel_size(), expected_size);
+                    }
+                }
+                IconStyle::Symbolic => {
+                    let image = bell.downcast::<gtk::Image>().expect("symbolic bell");
+                    assert_eq!(image.pixel_size(), expected_size);
+                }
+            }
         }
 
         let mut first = notification(10, "first body");
@@ -468,6 +516,11 @@ mod tests {
             label: "Open second".to_owned(),
         }];
         circle.update(&[first.clone(), second.clone()]);
+        assert_eq!(
+            hook_calls.get(),
+            1,
+            "first update must request initial layout"
+        );
         assert_eq!(circle.host.mode(), super::super::circle::Mode::Compact);
         let compact_children = children(&circle.compact.clone().upcast());
         assert_eq!(
@@ -546,8 +599,14 @@ mod tests {
             hover_preview_count: 0,
             ..NotificationConfig::default()
         };
-        let zero = test_circle(&zero_config, Rc::new(std::cell::RefCell::new(Vec::new())));
+        let (zero, zero_hook_calls) =
+            test_circle(&zero_config, Rc::new(std::cell::RefCell::new(Vec::new())));
         zero.update(&[first]);
+        assert_eq!(
+            zero_hook_calls.get(),
+            1,
+            "zero-preview content still binds host layout"
+        );
         assert!(children(&zero.hover_list.clone().upcast()).is_empty());
         assert_eq!(children(&zero.hover.clone().upcast()).len(), 2);
         assert_eq!(children(&zero.full_list.clone().upcast()).len(), 1);
@@ -587,6 +646,11 @@ mod tests {
         assert!(circle.host.render(circle.host.revision(), Some(frame)));
         assert!(circle.host.frame().is_some());
         circle.update(&[]);
+        assert_eq!(
+            hook_calls.get(),
+            2,
+            "empty update must notify host disappearance"
+        );
         assert_eq!(circle.host.mode(), super::super::circle::Mode::Absent);
         assert!(circle.host.frame().is_none());
     }
