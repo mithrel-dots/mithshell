@@ -191,8 +191,26 @@ pub(super) fn media_state_for_player(state: &MediaState, service: Option<&str>) 
 }
 
 impl IslandWindow {
+    pub(crate) fn select_media_service(self: &Rc<Self>, service: String) {
+        self.selected_media_service.replace(Some(service));
+        let state = self.latest_media.borrow().clone();
+        self.update_media(state.as_ref());
+    }
+
     pub fn update_media(self: &Rc<Self>, state: Option<&MediaState>) {
-        let compact_state = state.filter(|state| state.status == PlaybackStatus::Playing);
+        let in_circle = self
+            .circles
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| c.owns(crate::config::CircleModule::Media));
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.update_media(state);
+        }
+        self.player_card.set_visible(!in_circle);
+        let compact_state = (!in_circle)
+            .then_some(state)
+            .flatten()
+            .filter(|state| state.status == PlaybackStatus::Playing);
         if let Some(state) = compact_state {
             self.media_title.set_label(&state.title);
             self.media_title
@@ -232,7 +250,7 @@ impl IslandWindow {
             *self.selected_media_service.borrow_mut() = Some(selected.service.clone());
             selected
         });
-        self.update_player_card(selected.as_ref());
+        self.update_player_card((!in_circle).then_some(selected.as_ref()).flatten());
         *self.latest_media.borrow_mut() = selected;
     }
 

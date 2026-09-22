@@ -373,6 +373,7 @@ impl IslandWindow {
             ));
             surface.set_input_region(Some(&region));
         }
+        self.relayout_circles();
     }
 }
 

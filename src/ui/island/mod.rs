@@ -16,6 +16,7 @@ use gtk4_layer_shell::LayerShell;
 mod actions;
 mod battery_wave;
 pub(crate) mod circle;
+mod circle_integration;
 mod compact;
 mod dashboard;
 mod interactions;
@@ -367,6 +368,8 @@ pub struct IslandWindow {
     notification_toasts: Option<NotificationToasts>,
     pill_overlay: Option<PillOverlay>,
     actions: IslandActions,
+    /// Optional circles share this window and the normal snapshot/action owners.
+    pub(crate) circles: RefCell<Option<circle_integration::CircleIntegration>>,
 }
 
 /// `280` is the historical default.  Treating that value as the compatibility

@@ -199,6 +199,14 @@ impl IslandWindow {
     /// dots -- tray churn is rare enough that reusing widgets isn't worth
     /// the bookkeeping.
     pub fn update_tray(self: &Rc<Self>, items: &[TrayItem]) {
+        let in_circle = self
+            .circles
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| c.owns(crate::config::CircleModule::Tray));
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.update_tray(items);
+        }
         self.tray_menu_tracker.invalidate();
         clear_box(&self.compact_tray);
         clear_box(&self.media_tray);
@@ -214,6 +222,10 @@ impl IslandWindow {
             );
         }
         self.tray_item_count.set(items.len());
+        if in_circle {
+            self.compact_tray.set_visible(false);
+            self.media_tray.set_visible(false);
+        }
         self.resize_compact();
         self.resize_media();
         self.reconcile_pill_geometry();

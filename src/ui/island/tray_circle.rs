@@ -4,7 +4,7 @@
 //! tray listener and action closures remain owned by `IslandWindow`; buttons
 //! are made by the same builder used by the legacy pill.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use gtk::{Align, Overflow, Overlay, prelude::*};
 
@@ -24,11 +24,12 @@ pub(crate) struct TrayCircle {
     compact: gtk::Overlay,
     hover: gtk::FlowBox,
     full: gtk::FlowBox,
-    island: Rc<IslandWindow>,
+    island: Weak<IslandWindow>,
     enabled: bool,
     style: TrayCompactStyle,
     max_compact_icons: usize,
     menu_tracker: Rc<TrayMenuTracker>,
+    scale: f64,
 }
 
 impl TrayCircle {
@@ -65,11 +66,12 @@ impl TrayCircle {
             compact,
             hover,
             full,
-            island: island.clone(),
+            island: Rc::downgrade(island),
             enabled: config.enabled,
             style: config.compact_style,
             max_compact_icons: config.max_compact_icons,
             menu_tracker,
+            scale: island.metrics.scale,
         })
     }
 
@@ -96,7 +98,7 @@ impl TrayCircle {
                     .enumerate()
                 {
                     let Some((x, y, size)) = compact_preview_layout(
-                        self.island.metrics.scale,
+                        self.scale,
                         preview_count(items.len(), self.max_compact_icons),
                     )
                     .get(index)
@@ -132,7 +134,10 @@ impl TrayCircle {
 
     fn button(&self, item: &TrayItem) -> gtk::Button {
         self.island
-            .build_tray_icon_with_tracker(item, Some(self.menu_tracker.clone()))
+            .upgrade()
+            .map_or_else(gtk::Button::new, |island| {
+                island.build_tray_icon_with_tracker(item, Some(self.menu_tracker.clone()))
+            })
     }
 }
 

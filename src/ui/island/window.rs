@@ -446,7 +446,18 @@ impl IslandWindow {
             notification_toasts,
             pill_overlay,
             actions,
+            circles: RefCell::new(None),
         });
+
+        let circles = circle_integration::CircleIntegration::new(
+            &island,
+            config.circles.left,
+            config.circles.right,
+            &config.tray,
+            &config.notifications,
+        )
+        .expect("valid circle configuration");
+        island.circles.replace(Some(circles));
 
         let weak = Rc::downgrade(&island);
         island.tray_menu_manager.set_on_change(move |open| {
@@ -471,6 +482,7 @@ impl IslandWindow {
         );
         island.resize_compact();
         island.reconcile_pill_geometry();
+        island.relayout_circles();
         island.start_clock();
         island.start_player_progress_timer();
         let weak = Rc::downgrade(&island);
@@ -532,6 +544,7 @@ impl IslandWindow {
             "tray_menu_open": self.tray_menu_open.get(),
             "tray_visible": self.compact_tray.is_visible(),
             "tray_visible_media": self.media_tray.is_visible(),
+            "circles": self.circle_debug_state(),
         })
     }
 
@@ -604,6 +617,9 @@ impl IslandWindow {
         self.battery_waves.queue_draw();
         for icon in self.weather_icons.borrow().iter() {
             icon.queue_draw();
+        }
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.redraw_theme();
         }
     }
 

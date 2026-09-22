@@ -280,6 +280,17 @@ impl IslandWindow {
     /// Rebuilds the dashboard's notification history list and count badge
     /// from the controller's bounded history, most recent first.
     pub fn update_notification_history(&self, history: &[Notification]) {
+        let in_circle = self
+            .circles
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| c.owns(crate::config::CircleModule::Notifications));
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.update_notifications(history);
+        }
+        if in_circle {
+            self.notification_list.set_visible(false);
+        }
         self.notification_count
             .set_label(&history.len().to_string());
         self.notification_clear_button
