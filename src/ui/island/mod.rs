@@ -15,6 +15,7 @@ use gtk4_layer_shell::LayerShell;
 
 mod actions;
 mod battery_wave;
+pub(crate) mod circle;
 mod compact;
 mod dashboard;
 mod interactions;
