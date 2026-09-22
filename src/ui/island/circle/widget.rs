@@ -28,6 +28,7 @@ pub(crate) struct CircleHost {
     /// these intentionally differ while the integration fades between them.
     presented_page: Cell<Option<Mode>>,
     on_change: RefCell<Option<OnChange>>,
+    key_controller: gtk::EventControllerKey,
 }
 
 impl CircleHost {
@@ -52,6 +53,7 @@ impl CircleHost {
         stack.add_named(&content.compact, Some("compact"));
         stack.add_named(&scroll_page(&content.hover), Some("hover"));
         if let Some(full) = content.full {
+            full.set_focusable(true);
             stack.add_named(&scroll_page(&full), Some("full"));
         }
         let background = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -69,6 +71,7 @@ impl CircleHost {
         background.append(&stack);
         let surface: CircleSurface = glib::Object::new();
         surface.set_overflow(gtk::Overflow::Hidden);
+        surface.set_focusable(false);
         background.set_parent(&surface);
         surface.imp().child.replace(Some(background.upcast()));
         surface.set_visible(false);
@@ -80,7 +83,21 @@ impl CircleHost {
             frame: Cell::new(None),
             presented_page: Cell::new(None),
             on_change: RefCell::new(None),
+            key_controller: gtk::EventControllerKey::new(),
         });
+        let weak = Rc::downgrade(&host);
+        host.key_controller
+            .connect_key_pressed(move |_, key, _, _| {
+                if key == gtk::gdk::Key::Escape {
+                    if let Some(host) = weak.upgrade() {
+                        host.dispatch(Event::Focus(false));
+                        host.dispatch(Event::Dismiss);
+                    }
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+        host.surface.add_controller(host.key_controller.clone());
         let motion = gtk::EventControllerMotion::new();
         let weak = Rc::downgrade(&host);
         motion.connect_enter(move |_, _, _| {
@@ -174,6 +191,11 @@ impl CircleHost {
         self.stack.visible_child_name().map(|name| name.to_string())
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_opacity(&self) -> f64 {
+        self.widget().opacity()
+    }
+
     /// Commit the page captured for `revision` after the caller's outgoing
     /// transition.  Stale callbacks cannot reveal an old page.  A caller that
     /// has no animation can call this immediately after dispatch; a valid
@@ -191,10 +213,53 @@ impl CircleHost {
         };
         self.stack.set_visible_child_name(name);
         self.presented_page.set(Some(mode));
+        self.surface.set_focusable(mode == Mode::FullExpanded);
         if self.frame.get().is_some() {
             self.surface.set_visible(true);
         }
         true
+    }
+
+    pub(crate) fn focus_full_page(&self, revision: Revision) -> bool {
+        if !self.state.get().accepts(revision)
+            || self.mode() != Mode::FullExpanded
+            || self.presented_page() != Some(Mode::FullExpanded)
+            || !self.surface.is_visible()
+        {
+            return false;
+        }
+        self.surface.set_focusable(true);
+        self.surface.set_can_target(true);
+        self.stack.set_focusable(true);
+        self.stack.set_can_target(true);
+        if self.stack.grab_focus() {
+            return true;
+        }
+        if let Some(page) = self.stack.visible_child() {
+            page.set_focusable(true);
+            page.set_can_target(true);
+            if page.grab_focus() {
+                return true;
+            }
+        }
+        self.surface.grab_focus()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_escape_key(&self) -> glib::Propagation {
+        let stopped: bool = self.key_controller.emit_by_name(
+            "key-pressed",
+            &[
+                &gtk::gdk::Key::Escape,
+                &0_u32,
+                &gtk::gdk::ModifierType::empty(),
+            ],
+        );
+        if stopped {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
     }
 
     /// Apply only current work. `None` suppresses a present slot that cannot fit.

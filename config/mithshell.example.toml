@@ -7,8 +7,8 @@ animation_ms = 280
 # 0 selects an automatic scale from each monitor's logical width.
 scale = 0
 
-# Circle/launcher options below define the configuration contract; their UI
-# integration is pending. See README's "Circle and launcher configuration".
+# Circle/launcher options below configure the optional production UI surfaces.
+# See README's "Circle and launcher configuration".
 [circles]
 # Each side accepts "none", "tray", "media", or "notifications".
 # A non-none module may appear on only one side. Empty circles are absent.
@@ -64,7 +64,7 @@ max_visible = 5
 # Notifications kept in history (dashboard, or circle when assigned).
 # The circle count is retained history, including expired popups, not unread.
 max_history = 50
-# Latest retained entries requested for circle hover (pending UI integration).
+# Latest retained entries requested for circle hover.
 # Zero requests only a minimal header and access to the full history view.
 hover_preview_count = 3
 # Spacing between stacked toasts, and between the island and the popup in
@@ -78,7 +78,7 @@ margin = 12
 # org.kde.StatusNotifierItem tray icons, and the pill never grows a tray
 # section. Without a circle assignment, icons appear while hovering the pill.
 enabled = true
-# Compact circle contract (pending UI integration): "count" or "count-with-icons".
+# Compact circle presentation: "count" or "count-with-icons".
 compact_style = "count"
 # Maximum tiny preview icons in "count-with-icons" mode. Zero is count-only;
 # neither the total count nor access to every expanded tray item is limited.

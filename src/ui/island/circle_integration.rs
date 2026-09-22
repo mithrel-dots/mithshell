@@ -29,6 +29,16 @@ struct CircleAnimation {
     geometry: crate::ui::motion::Profile,
     out: crate::ui::motion::Profile,
     incoming: crate::ui::motion::Profile,
+    phase: AnimationPhase,
+    page_committed: bool,
+    opacity_start: f64,
+    total: Duration,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnimationPhase {
+    Outgoing,
+    Incoming,
 }
 
 fn sample_visual(animation: &CircleAnimation, now: Instant) -> Visual {
@@ -110,6 +120,7 @@ impl CircleIntegration {
                     glib::idle_add_local_once(move || {
                         if let Some(island) = weak.upgrade() {
                             island.relayout_circles();
+                            island.schedule_circle_full_focus();
                         }
                     });
                 }
@@ -161,20 +172,6 @@ impl CircleIntegration {
                         }
                     });
                 });
-                let key = gtk::EventControllerKey::new();
-                let weak = Rc::downgrade(island);
-                let host_for_key = host.clone();
-                key.connect_key_pressed(move |_, key, _, _| {
-                    if key == gtk::gdk::Key::Escape {
-                        host_for_key.dispatch(Event::Dismiss);
-                        if let Some(island) = weak.upgrade() {
-                            island.relayout_circles();
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    glib::Propagation::Proceed
-                });
-                host.widget().add_controller(key);
                 result.slots[index] = Some(Slot { module, host, spec });
             }
         }
@@ -208,11 +205,16 @@ impl CircleIntegration {
     }
 
     pub(crate) fn full_host(&self) -> Option<Rc<CircleHost>> {
-        self.slots
-            .iter()
-            .flatten()
-            .find(|slot| slot.host.mode() == circle::Mode::FullExpanded)
-            .map(|slot| slot.host.clone())
+        self.slots.iter().enumerate().find_map(|(index, slot)| {
+            let slot = slot.as_ref()?;
+            let pending_full = self.animations.borrow()[index]
+                .as_ref()
+                .is_some_and(|animation| animation.mode == circle::Mode::FullExpanded);
+            (slot.host.mode() == circle::Mode::FullExpanded
+                || slot.host.presented_page() == Some(circle::Mode::FullExpanded)
+                || pending_full)
+                .then(|| slot.host.clone())
+        })
     }
 
     #[cfg(test)]
@@ -281,10 +283,12 @@ impl CircleIntegration {
                     }
                     let target = slot.spec.visual(mode)?;
                     let presented = slot.host.presented_page();
-                    if presented == Some(mode) {
+                    let has_animation = animations[index].is_some();
+                    if presented == Some(mode) && !has_animation {
                         // A same-page snapshot revision invalidates stale
                         // callbacks but must not flicker or restart motion.
                         animations[index] = None;
+                        slot.host.widget().set_opacity(1.0);
                         return Some(CircleRequest {
                             spec: slot.spec,
                             visual: target,
@@ -307,6 +311,9 @@ impl CircleIntegration {
                             .map(|animation| sample_visual(animation, now))
                             .or_else(|| presented.and_then(|old| slot.spec.visual(old)))
                             .unwrap_or(target);
+                        let from_mode = presented.unwrap_or(circle::Mode::Compact);
+                        let geometry_only = presented == Some(mode);
+                        let opacity_start = slot.host.widget().opacity();
                         let animation_ms = island.animation_ms.get();
                         if !island.animations_enabled.get() || animation_ms == 0 {
                             animations[index] = None;
@@ -318,7 +325,13 @@ impl CircleIntegration {
                             });
                         }
                         let geometry = profile_timing(
-                            if mode == circle::Mode::Compact {
+                            if matches!(
+                                (from_mode, mode),
+                                (
+                                    circle::Mode::FullExpanded,
+                                    circle::Mode::HoverExpanded | circle::Mode::Compact
+                                )
+                            ) {
                                 crate::ui::motion::Profile::CONTAINER_COLLAPSE
                             } else {
                                 crate::ui::motion::Profile::CONTAINER_EXPAND
@@ -336,6 +349,11 @@ impl CircleIntegration {
                             true,
                             animation_ms,
                         );
+                        let total = geometry.duration.max(if geometry_only {
+                            incoming.duration
+                        } else {
+                            out.duration.saturating_add(incoming.duration)
+                        });
                         animations[index] = Some(CircleAnimation {
                             revision: slot.host.revision(),
                             mode,
@@ -345,27 +363,46 @@ impl CircleIntegration {
                             geometry,
                             out,
                             incoming,
+                            phase: if geometry_only {
+                                AnimationPhase::Incoming
+                            } else {
+                                AnimationPhase::Outgoing
+                            },
+                            page_committed: geometry_only,
+                            opacity_start: if geometry_only { opacity_start } else { 1.0 },
+                            total,
                         });
                     }
-                    let animation = animations[index].as_ref().expect("animation installed");
+                    let animation = animations[index].as_mut().expect("animation installed");
                     let elapsed = now.saturating_duration_since(animation.started);
                     let visual = sample_visual(animation, now);
-                    let total = animation.geometry.duration.max(
-                        animation
-                            .out
-                            .duration
-                            .saturating_add(animation.incoming.duration),
-                    );
-                    let opacity = if elapsed < animation.out.duration {
-                        1.0 - animation.out.progress(elapsed)
+                    let mut committed_now = false;
+                    if !animation.page_committed && elapsed >= animation.out.duration {
+                        animation.phase = AnimationPhase::Incoming;
+                        animation.page_committed = slot.host.commit_page(animation.revision);
+                        animation.opacity_start = 0.0;
+                        committed_now = true;
+                        slot.host.widget().set_opacity(0.0);
+                    }
+                    let opacity = if committed_now {
+                        0.0
                     } else {
-                        animation
-                            .incoming
-                            .progress(elapsed.saturating_sub(animation.out.duration))
+                        match animation.phase {
+                            AnimationPhase::Outgoing => 1.0 - animation.out.progress(elapsed),
+                            AnimationPhase::Incoming => {
+                                animation.opacity_start
+                                    + (1.0 - animation.opacity_start)
+                                        * animation.incoming.progress(
+                                            elapsed.saturating_sub(animation.out.duration),
+                                        )
+                            }
+                        }
                     };
                     slot.host.widget().set_opacity(opacity);
-                    if elapsed >= total {
-                        commit[index] = true;
+                    if elapsed >= animation.total {
+                        if !animation.page_committed {
+                            commit[index] = true;
+                        }
                         slot.host.widget().set_opacity(1.0);
                         animations[index] = None;
                     }
@@ -441,6 +478,50 @@ impl IslandWindow {
         }
     }
 
+    pub(crate) fn schedule_circle_full_focus(&self) {
+        if self.search_open.get() && self.search_entry.has_focus() {
+            return;
+        }
+        let Some((host, revision)) = self
+            .circles
+            .borrow()
+            .as_ref()
+            .and_then(CircleIntegration::full_host)
+            .map(|host| {
+                let revision = host.revision();
+                (host, revision)
+            })
+        else {
+            return;
+        };
+        let weak = self.owner_weak();
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            let Some(island) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if island.search_open.get() && island.search_entry.has_focus() {
+                return glib::ControlFlow::Break;
+            }
+            if host.focus_full_page(revision) {
+                if let Some(root) = host.widget().root() {
+                    root.set_focus(Some(host.widget()));
+                }
+                glib::ControlFlow::Break
+            } else if host.mode() == circle::Mode::FullExpanded && host.revision() == revision {
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
+            }
+        });
+    }
+
+    fn owner_weak(&self) -> Weak<IslandWindow> {
+        self.circles
+            .borrow()
+            .as_ref()
+            .map_or_else(Weak::new, |circles| circles.owner.clone())
+    }
+
     pub(crate) fn dismiss_full_circle(&self) -> bool {
         let host = self
             .circles
@@ -448,6 +529,7 @@ impl IslandWindow {
             .as_ref()
             .and_then(CircleIntegration::full_host);
         if let Some(host) = host {
+            host.dispatch(Event::Focus(false));
             host.dispatch(Event::Dismiss);
             self.relayout_circles();
             true

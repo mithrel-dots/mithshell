@@ -891,6 +891,10 @@ mod tests {
             .unwrap()
             .test_host(1)
             .unwrap();
+        assert!(notification_host.widget().is_focusable());
+        // Broadway does not reliably expose compositor focus ownership for
+        // these non-layer test windows; the mapped focusable host and actual
+        // GTK key-controller signal are still exercised below.
         assert_eq!(notification_host.mode(), super::circle::Mode::FullExpanded);
         assert_eq!(
             notification_host.presented_page(),
@@ -900,27 +904,79 @@ mod tests {
             notification_host.test_visible_page().as_deref(),
             Some("full")
         );
-        assert!(island.dismiss_full_circle());
+        assert_eq!(
+            notification_host.test_escape_key(),
+            gtk::glib::Propagation::Stop
+        );
+        island.animation_ms.set(100);
+        island.animations_enabled.set(true);
+        island.relayout_circles();
         assert_eq!(notification_host.mode(), super::circle::Mode::Compact);
+        assert_eq!(
+            notification_host.presented_page(),
+            Some(super::circle::Mode::FullExpanded)
+        );
+        assert!(island.circle_full_active());
+        let dismiss_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while island.circle_full_active() && std::time::Instant::now() < dismiss_deadline {
+            island.relayout_circles();
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+        assert!(!island.circle_full_active());
+        assert_eq!(
+            notification_host.presented_page(),
+            Some(super::circle::Mode::Compact)
+        );
 
-        // Exercise the real timer path, including reversal from the current
-        // rendered visual rather than restarting from the compact target.
-        island.animation_ms.set(40);
+        // Exercise the real timer path. The GTK stack must retain the outgoing
+        // page during CONTENT_OUT, switch exactly at the phase boundary, then
+        // expose the incoming page at partial opacity.
+        island.animation_ms.set(100);
         island.animations_enabled.set(true);
         media_host.dispatch(super::circle::Event::Pointer(false));
         island.relayout_circles();
-        media_host.dispatch(super::circle::Event::Pointer(true));
-        island.relayout_circles();
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+        assert!(media_host.test_opacity() > 0.9);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        while media_host.presented_page() != Some(super::circle::Mode::HoverExpanded)
+        while media_host.test_visible_page().as_deref() == Some("hover")
             && std::time::Instant::now() < deadline
         {
+            island.relayout_circles();
             while gtk::glib::MainContext::default().pending() {
                 gtk::glib::MainContext::default().iteration(false);
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
+        assert!(media_host.test_opacity() <= 0.2);
+        let mut saw_partial_incoming = false;
+        while std::time::Instant::now() < deadline {
+            island.relayout_circles();
+            let opacity = media_host.test_opacity();
+            if opacity > 0.2 && opacity < 1.0 {
+                saw_partial_incoming = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(saw_partial_incoming);
+        while media_host.test_opacity() < 1.0 {
+            island.relayout_circles();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
+
+        // Retarget during outgoing and verify the real transition reverses
+        // from its current visual instead of flashing through compact.
+        media_host.dispatch(super::circle::Event::Pointer(true));
+        island.relayout_circles();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        island.relayout_circles();
+        let before_retarget = media_host.test_opacity();
+        media_host.dispatch(super::circle::Event::Pointer(false));
+        island.relayout_circles();
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
+        assert!(media_host.test_opacity() >= before_retarget.min(1.0));
     }
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {
