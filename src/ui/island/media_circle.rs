@@ -103,6 +103,10 @@ pub(crate) struct MediaCircle {
 }
 
 impl MediaCircle {
+    #[cfg(test)]
+    pub(crate) fn test_click_play_pause(&self) {
+        self.play_pause.emit_clicked();
+    }
     pub(super) fn new(
         metrics: Metrics,
         actions: MediaCircleActions,

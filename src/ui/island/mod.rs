@@ -441,8 +441,11 @@ mod tests {
     use super::{
         Geometry, Icon, IslandActions, IslandWindow, View, hover_geometry, profile_timing,
     };
-    use crate::config::{AppConfig, LauncherPresentation};
-    use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
+    use crate::config::{AppConfig, CircleModule, LauncherPresentation};
+    use crate::state::{
+        MediaPlayer, MediaState, Notification, NotificationAction, NotificationTimeout,
+        PlaybackStatus, TrayIcon, TrayItem, TrayStatus,
+    };
     use crate::tarragon::TarragonSelection;
     use crate::ui::resolved_scale;
     use crate::weather::WeatherProvider;
@@ -601,6 +604,202 @@ mod tests {
         }
         assert!(button.has_focus());
         island.destroy();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display; run scripts/run-circle-integration-gtk.py"]
+    fn circle_integration_real_widgets_and_callbacks() {
+        gtk::init().expect("GTK display");
+        let application = gtk::Application::new(
+            Some("org.mithshell.circle-integration-test"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        application.connect_activate(|_| {});
+        application
+            .register(None::<&gtk::gio::Cancellable>)
+            .expect("register GTK application");
+        let display = gtk::gdk::Display::default().expect("Broadway display");
+        let monitor = display
+            .monitors()
+            .item(0)
+            .and_downcast::<gtk::gdk::Monitor>()
+            .expect("Broadway monitor");
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let mut actions = IslandActions {
+            switch_workspace: Rc::new(|_, _| {}),
+            set_volume: Rc::new(|_| {}),
+            set_brightness: Rc::new(|_| {}),
+            search: Rc::new(|_| {}),
+            select: Rc::new(|_| {}),
+            tarragon_status: Rc::new(|| {}),
+            tarragon_reload: Rc::new(|| {}),
+            load_preview: Rc::new(|_, _| {}),
+            media_play_pause: Rc::new(|_| {}),
+            media_next: Rc::new(|_| {}),
+            media_previous: Rc::new(|_| {}),
+            notification_expired: Rc::new(|_, _| {}),
+            notification_dismiss: Rc::new(|_| {}),
+            notification_invoke: Rc::new(|_, _| {}),
+            notification_clear_all: Rc::new(|| {}),
+            notification_inhibit: Rc::new(|_| {}),
+            tray_activate: Rc::new(|_, _, _, _| {}),
+            tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+            tray_context_menu: Rc::new(|_, _, _, _| {}),
+            tray_scroll: Rc::new(|_, _, _, _| {}),
+            tray_menu_event: Rc::new(|_, _, _| {}),
+        };
+        let callback_count = calls.clone();
+        actions.media_play_pause = Rc::new(move |_| callback_count.set(callback_count.get() + 1));
+        let matrix_actions = actions.clone();
+        let mut config = AppConfig::default();
+        config.shell.animation_ms = 0;
+        config.shell.scale = 1.0;
+        config.circles.left = CircleModule::Media;
+        config.circles.right = CircleModule::Notifications;
+        let island = IslandWindow::new_for_test(
+            &application,
+            &monitor,
+            "broadway-test".into(),
+            &config,
+            actions,
+            false,
+        );
+        application.activate();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+
+        let media = MediaState {
+            player: "Test Player".into(),
+            service: "org.test.Player".into(),
+            title: "Track".into(),
+            artist: Some("Artist".into()),
+            album: None,
+            app_icon: Some("audio-x-generic".into()),
+            position_us: 25,
+            length_us: Some(100),
+            can_play: true,
+            can_pause: true,
+            can_go_next: true,
+            can_go_previous: true,
+            status: PlaybackStatus::Playing,
+            players: vec![MediaPlayer {
+                player: "Test Player".into(),
+                service: "org.test.Player".into(),
+                title: "Track".into(),
+                artist: Some("Artist".into()),
+                album: None,
+                app_icon: Some("audio-x-generic".into()),
+                position_us: 25,
+                length_us: Some(100),
+                can_play: true,
+                can_pause: true,
+                can_go_next: true,
+                can_go_previous: true,
+                status: PlaybackStatus::Playing,
+            }],
+        };
+        let tray = TrayItem {
+            key: "test/item".into(),
+            service: "org.test".into(),
+            object_path: "/StatusNotifierItem".into(),
+            id: "item".into(),
+            title: "Item".into(),
+            tooltip: Some("Item".into()),
+            icon: TrayIcon::Name("application-x-executable".into()),
+            status: TrayStatus::Active,
+            item_is_menu: false,
+            menu_path: None,
+        };
+        let notification = Notification {
+            id: 1,
+            app_name: "Test".into(),
+            app_icon: None,
+            summary: "Hello".into(),
+            body: "Body".into(),
+            urgency: crate::state::Urgency::Normal,
+            actions: vec![NotificationAction {
+                key: "default".into(),
+                label: "Open".into(),
+            }],
+            timeout: NotificationTimeout::Never,
+        };
+        island.update_media(Some(&media));
+        island.update_tray(&[tray]);
+        island.update_notification_history(&[notification]);
+        island.relayout_circles();
+        island
+            .circles
+            .borrow()
+            .as_ref()
+            .expect("circle integration")
+            .test_click_media_play_pause();
+        assert_eq!(calls.get(), 1, "real media button callback route");
+        let state = island.debug_state();
+        assert_eq!(state["scale"], 1.0);
+        assert_eq!(state["circles"]["slots"][0]["module"], "media");
+        assert_eq!(state["circles"]["slots"][1]["module"], "notifications");
+        assert_eq!(
+            state["circles"]["slots"][0]["present"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            state["circles"]["slots"][1]["present"].as_bool(),
+            Some(true)
+        );
+
+        // Actual CircleHost state transitions exercise target/presented page,
+        // synchronous no-animation commits, invalidation, and disappearance.
+        let media_host = {
+            let circles = island.circles.borrow();
+            circles
+                .as_ref()
+                .expect("circle integration")
+                .test_host(0)
+                .expect("media slot")
+        };
+        assert_eq!(media_host.target_page(), Some(super::circle::Mode::Compact));
+        assert_eq!(
+            media_host.presented_page(),
+            Some(super::circle::Mode::Compact)
+        );
+        let revision = media_host.revision();
+        media_host.dispatch(super::circle::Event::Pointer(true));
+        assert!(media_host.target_page().is_some());
+        assert!(!media_host.commit_page(revision));
+        media_host.dispatch(super::circle::Event::Content(false));
+        assert_eq!(media_host.target_page(), None);
+        assert!(media_host.frame().is_none());
+        island.relayout_circles();
+        assert_eq!(
+            island.debug_state()["circles"]["slots"][0]["present"].as_bool(),
+            Some(false)
+        );
+
+        // Legacy content is suppressed by assignment; moving assignment back
+        // to no circles is covered by constructing all three valid matrices.
+        for (left, right) in [
+            (CircleModule::None, CircleModule::None),
+            (CircleModule::Tray, CircleModule::None),
+            (CircleModule::None, CircleModule::Media),
+        ] {
+            let mut matrix = AppConfig::default();
+            matrix.shell.animation_ms = 0;
+            matrix.shell.scale = 1.0;
+            matrix.circles.left = left;
+            matrix.circles.right = right;
+            let test = IslandWindow::new_for_test(
+                &application,
+                &monitor,
+                "broadway-test".into(),
+                &matrix,
+                matrix_actions.clone(),
+                false,
+            );
+            test.relayout_circles();
+            assert!(test.debug_state()["circles"]["slots"].is_array());
+        }
+        assert_eq!(calls.get(), 1, "state updates do not duplicate callbacks");
     }
 
     fn player(service: &str, status: PlaybackStatus) -> MediaPlayer {

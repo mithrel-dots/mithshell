@@ -149,6 +149,21 @@ impl CircleIntegration {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_host(&self, index: usize) -> Option<Rc<CircleHost>> {
+        self.slots
+            .get(index)
+            .and_then(Option::as_ref)
+            .map(|slot| slot.host.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_click_media_play_pause(&self) {
+        if let Some(media) = &self.media {
+            media.test_click_play_pause();
+        }
+    }
+
     pub(crate) fn relayout(&self, island: &IslandWindow) {
         let central = island.central_circle_rect();
         let monitor = Rect {
