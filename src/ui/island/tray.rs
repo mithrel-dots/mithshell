@@ -3,7 +3,10 @@
 
 use super::*;
 
-use std::rc::Rc;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gtk::{
     Align, EventControllerScroll, EventControllerScrollFlags, GestureClick, Orientation, gdk, glib,
@@ -12,9 +15,96 @@ use gtk::{
 use super::IslandWindow;
 use crate::state::{TrayIcon, TrayItem, TrayMenuItem, TrayStatus};
 
+/// Aggregate pin state for all DBusMenu popovers belonging to one snapshot.
+/// The epoch also invalidates fetches whose buttons were removed meanwhile.
+pub(crate) struct TrayMenuTracker {
+    open: Cell<usize>,
+    epoch: Cell<u64>,
+    on_change: Rc<dyn Fn(bool)>,
+    popovers: RefCell<Vec<glib::WeakRef<gtk::Popover>>>,
+}
+
+pub(crate) struct TrayMenuLease {
+    tracker: Rc<TrayMenuTracker>,
+    epoch: u64,
+    key: String,
+    ended: Cell<bool>,
+}
+
+impl TrayMenuTracker {
+    pub(crate) fn new(on_change: impl Fn(bool) + 'static) -> Rc<Self> {
+        Rc::new(Self {
+            open: Cell::new(0),
+            epoch: Cell::new(0),
+            on_change: Rc::new(on_change),
+            popovers: RefCell::new(Vec::new()),
+        })
+    }
+    pub(crate) fn invalidate(&self) {
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        if self.open.replace(0) != 0 {
+            (self.on_change)(false);
+        }
+        for popover in self
+            .popovers
+            .borrow_mut()
+            .drain(..)
+            .filter_map(|popover| popover.upgrade())
+        {
+            popover.popdown();
+        }
+    }
+    fn register(&self, popover: &gtk::Popover) {
+        self.popovers.borrow_mut().push(popover.downgrade());
+    }
+    fn begin(self: &Rc<Self>, key: &str) -> TrayMenuLease {
+        if self.open.get() == 0 {
+            (self.on_change)(true);
+        }
+        self.open.set(self.open.get() + 1);
+        TrayMenuLease {
+            tracker: self.clone(),
+            epoch: self.epoch.get(),
+            key: key.to_owned(),
+            ended: Cell::new(false),
+        }
+    }
+}
+
+impl TrayMenuLease {
+    fn valid(&self, anchor: &gtk::Button, key: &str) -> bool {
+        !self.ended.get()
+            && self.epoch == self.tracker.epoch.get()
+            && self.key == key
+            && anchor.parent().is_some()
+    }
+    fn close(&self) {
+        if self.ended.replace(true) {
+            return;
+        }
+        // invalidate() already accounted for every lease in the generation.
+        if self.epoch != self.tracker.epoch.get() {
+            return;
+        }
+        let open = self.tracker.open.get().saturating_sub(1);
+        self.tracker.open.set(open);
+        if open == 0 {
+            (self.tracker.on_change)(false);
+        }
+    }
+}
+
 pub(crate) fn apply_tray_icon(image: &gtk::Image, icon: &TrayIcon) {
     match icon {
-        TrayIcon::Name(name) => icon::set_foreign_image(image, Some(name), Icon::Executable),
+        TrayIcon::Name(name) => {
+            let valid = if name.starts_with('/') {
+                std::path::Path::new(name).is_file()
+            } else {
+                gdk::Display::default()
+                    .is_some_and(|display| gtk::IconTheme::for_display(&display).has_icon(name))
+            };
+            icon::set_foreign_image(image, valid.then_some(name.as_str()), Icon::Executable);
+        }
         TrayIcon::Pixmap {
             width,
             height,
@@ -54,31 +144,36 @@ impl IslandWindow {
     /// dots -- tray churn is rare enough that reusing widgets isn't worth
     /// the bookkeeping.
     pub fn update_tray(self: &Rc<Self>, items: &[TrayItem]) {
+        let weak = Rc::downgrade(self);
+        let tracker = TrayMenuTracker::new(move |open| {
+            if let Some(island) = weak.upgrade() {
+                island.tray_menu_open.set(open);
+                island.refresh_keyboard_mode();
+                island.resize_compact();
+                island.resize_media();
+            }
+        });
+        tracker.invalidate();
         clear_box(&self.compact_tray);
         clear_box(&self.media_tray);
         for item in items {
             // A widget can only have one parent, so each pill gets its own
             // freshly built icon -- the same duplication `update_hyprland`
             // already does for `compact_workspaces`/`media_workspaces`.
-            self.compact_tray.append(&self.build_tray_icon(item));
-            self.media_tray.append(&self.build_tray_icon(item));
+            self.compact_tray
+                .append(&self.build_tray_icon_with_tracker(item, Some(tracker.clone())));
+            self.media_tray
+                .append(&self.build_tray_icon_with_tracker(item, Some(tracker.clone())));
         }
         self.tray_item_count.set(items.len());
         self.resize_compact();
         self.resize_media();
     }
 
-    fn build_tray_icon(self: &Rc<Self>, item: &TrayItem) -> gtk::Button {
-        self.build_tray_icon_with_menu(item, None)
-    }
-
-    /// Builds a tray button for another presentation (the circle).  The
-    /// optional hook is deliberately local to the button so circle ownership
-    /// can pin its host without adding state to `IslandWindow`.
-    pub(crate) fn build_tray_icon_with_menu(
+    pub(crate) fn build_tray_icon_with_tracker(
         self: &Rc<Self>,
         item: &TrayItem,
-        menu_state: Option<Rc<dyn Fn(bool)>>,
+        tracker: Option<Rc<TrayMenuTracker>>,
     ) -> gtk::Button {
         let button = gtk::Button::new();
         button.add_css_class("tray-icon");
@@ -111,7 +206,7 @@ impl IslandWindow {
         // Items advertising `ItemIsMenu` declare they have no meaningful
         // activation at all and expect their menu on a plain left click.
         let item_is_menu = item.item_is_menu;
-        let click_menu_state = menu_state.clone();
+        let click_tracker = tracker.clone();
         button.connect_clicked(move |button| {
             let Some(island) = weak.upgrade() else {
                 return;
@@ -122,7 +217,7 @@ impl IslandWindow {
                         button.clone(),
                         service.clone(),
                         menu_path,
-                        click_menu_state.clone(),
+                        click_tracker.clone(),
                     );
                 }
                 None => {
@@ -159,7 +254,7 @@ impl IslandWindow {
         let object_path = item.object_path.clone();
         let menu_path = item.menu_path.clone();
         let button_weak = button.downgrade();
-        let context_menu_state = menu_state;
+        let context_tracker = tracker;
         context_click.connect_pressed(move |gesture, _, _, _| {
             let Some(island) = weak.upgrade() else {
                 return;
@@ -173,7 +268,7 @@ impl IslandWindow {
                         button,
                         service.clone(),
                         menu_path,
-                        context_menu_state.clone(),
+                        context_tracker.clone(),
                     );
                 }
                 _ => {
@@ -217,7 +312,7 @@ impl IslandWindow {
         anchor: gtk::Button,
         service: String,
         menu_path: String,
-        menu_state: Option<Rc<dyn Fn(bool)>>,
+        tracker: Option<Rc<TrayMenuTracker>>,
     ) {
         let (sender, receiver) = async_channel::bounded(1);
         let fetch_service = service.clone();
@@ -226,10 +321,29 @@ impl IslandWindow {
             let result = crate::tray::menu_layout(&fetch_service, &fetch_menu_path);
             let _ = sender.send_blocking(result.map_err(|error| error.to_string()));
         });
+        let lease = tracker
+            .as_ref()
+            .map(|tracker| tracker.begin(&anchor_key(&anchor, &service, &menu_path)));
         let island = self.clone();
+        let key = anchor_key(&anchor, &service, &menu_path);
         glib::MainContext::default().spawn_local(async move {
-            if let Ok(Ok(menu)) = receiver.recv().await {
-                island.show_tray_menu(&anchor, &service, &menu_path, &menu, menu_state);
+            match receiver.recv().await {
+                Ok(Ok(menu)) => {
+                    if let Some(lease) = lease.as_ref() {
+                        if !lease.valid(&anchor, &key) {
+                            lease.close();
+                            return;
+                        }
+                    } else if anchor.parent().is_none() {
+                        return;
+                    }
+                    island.show_tray_menu(&anchor, &service, &menu_path, &menu, lease);
+                }
+                _ => {
+                    if let Some(lease) = lease.as_ref() {
+                        lease.close();
+                    }
+                }
             }
         });
     }
@@ -240,7 +354,7 @@ impl IslandWindow {
         service: &str,
         menu_path: &str,
         menu: &TrayMenuItem,
-        menu_state: Option<Rc<dyn Fn(bool)>>,
+        lease: Option<TrayMenuLease>,
     ) {
         let popover = gtk::Popover::new();
         popover.set_parent(anchor);
@@ -249,14 +363,14 @@ impl IslandWindow {
         popover.set_has_arrow(false);
         let content = self.build_tray_menu_box(&popover, service, menu_path, &menu.children);
         popover.set_child(Some(&content));
+        if let Some(lease) = lease.as_ref() {
+            lease.tracker.register(&popover);
+        }
 
         // Pin the tray open for as long as the menu is: popping up takes a
         // pointer grab, so the pill immediately sees a `leave` and would
         // otherwise collapse the row this popover is anchored to.
         self.tray_menu_open.set(true);
-        if let Some(callback) = menu_state.as_ref() {
-            callback(true);
-        }
         // An autohide popover needs to be able to take focus to grab, which
         // a `KeyboardMode::None` layer surface never can; without this the
         // menu is dismissed the moment it appears.
@@ -267,11 +381,13 @@ impl IslandWindow {
         let weak = Rc::downgrade(self);
         popover.connect_closed(move |popover| {
             popover.unparent();
-            if let Some(callback) = menu_state.as_ref() {
-                callback(false);
+            if let Some(lease) = lease.as_ref() {
+                lease.close();
             }
             if let Some(island) = weak.upgrade() {
-                island.tray_menu_open.set(false);
+                if lease.is_none() {
+                    island.tray_menu_open.set(false);
+                }
                 island.refresh_keyboard_mode();
                 island.resize_compact();
                 island.resize_media();
@@ -334,5 +450,39 @@ impl IslandWindow {
             }
         }
         list
+    }
+}
+
+fn anchor_key(_anchor: &gtk::Button, service: &str, menu_path: &str) -> String {
+    format!("{service}\0{menu_path}")
+}
+
+#[cfg(test)]
+mod tracker_tests {
+    use super::TrayMenuTracker;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn aggregate_tracker_only_releases_after_last_menu() {
+        let transitions = Rc::new(RefCell::new(Vec::new()));
+        let observed = transitions.clone();
+        let tracker = TrayMenuTracker::new(move |open| observed.borrow_mut().push(open));
+        let first = tracker.begin("one");
+        let second = tracker.begin("two");
+        first.close();
+        assert_eq!(*transitions.borrow(), vec![true]);
+        second.close();
+        assert_eq!(*transitions.borrow(), vec![true, false]);
+    }
+
+    #[test]
+    fn invalidation_makes_old_lease_harmless() {
+        let transitions = Rc::new(RefCell::new(Vec::new()));
+        let observed = transitions.clone();
+        let tracker = TrayMenuTracker::new(move |open| observed.borrow_mut().push(open));
+        let old = tracker.begin("old");
+        tracker.invalidate();
+        old.close();
+        assert_eq!(*transitions.borrow(), vec![true, false]);
     }
 }

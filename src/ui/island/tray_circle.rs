@@ -6,10 +6,13 @@
 
 use std::rc::Rc;
 
-use gtk::{Align, Orientation, Overflow, prelude::*};
+use gtk::{Align, Overflow, Overlay, prelude::*};
 
 use super::circle::{CircleContent, CircleHost, Event};
-use super::{IslandWindow, tray::apply_tray_icon};
+use super::{
+    IslandWindow,
+    tray::{TrayMenuTracker, apply_tray_icon},
+};
 use crate::config::{TrayCompactStyle, TrayConfig};
 use crate::state::TrayItem;
 
@@ -18,13 +21,14 @@ use crate::state::TrayItem;
 /// each fresh tray snapshot.
 pub(crate) struct TrayCircle {
     host: Rc<CircleHost>,
-    compact: gtk::Box,
+    compact: gtk::Overlay,
     hover: gtk::FlowBox,
     full: gtk::FlowBox,
     island: Rc<IslandWindow>,
     enabled: bool,
     style: TrayCompactStyle,
     max_compact_icons: usize,
+    menu_tracker: Rc<TrayMenuTracker>,
 }
 
 impl TrayCircle {
@@ -32,12 +36,12 @@ impl TrayCircle {
         island: &Rc<IslandWindow>,
         config: &TrayConfig,
     ) -> Result<Self, &'static str> {
-        let compact = gtk::Box::new(Orientation::Horizontal, 2);
+        let compact = Overlay::new();
         compact.set_halign(Align::Center);
         compact.set_valign(Align::Center);
         let count = gtk::Label::new(Some("0"));
         count.add_css_class("circle-tray-count");
-        compact.append(&count);
+        compact.set_child(Some(&count));
 
         let hover = tray_grid();
         let full = tray_grid();
@@ -46,6 +50,16 @@ impl TrayCircle {
             hover: hover.clone().upcast(),
             full: Some(full.clone().upcast()),
         })?;
+        let weak_host = Rc::downgrade(&host);
+        let weak_island = Rc::downgrade(island);
+        let menu_tracker = TrayMenuTracker::new(move |open| {
+            if let Some(host) = weak_host.upgrade() {
+                host.dispatch(Event::Menu(open));
+            }
+            if let Some(island) = weak_island.upgrade() {
+                island.refresh_keyboard_mode();
+            }
+        });
         Ok(Self {
             host,
             compact,
@@ -55,6 +69,7 @@ impl TrayCircle {
             enabled: config.enabled,
             style: config.compact_style,
             max_compact_icons: config.max_compact_icons,
+            menu_tracker,
         })
     }
 
@@ -65,6 +80,7 @@ impl TrayCircle {
     /// Replace all three pages from one effective snapshot.  Compact preview
     /// is intentionally capped independently of the hover/full pages.
     pub(crate) fn update(&self, items: &[TrayItem]) {
+        self.menu_tracker.invalidate();
         clear_children(&self.compact);
         clear_children(&self.hover);
         clear_children(&self.full);
@@ -72,10 +88,22 @@ impl TrayCircle {
         if present {
             let count = gtk::Label::new(Some(&items.len().to_string()));
             count.add_css_class("circle-tray-count");
-            self.compact.append(&count);
+            self.compact.set_child(Some(&count));
             if self.style == TrayCompactStyle::CountWithIcons {
-                for item in items.iter().take(self.max_compact_icons) {
-                    self.compact.append(&self.small_preview(item));
+                for (index, item) in items
+                    .iter()
+                    .take(preview_count(items.len(), self.max_compact_icons))
+                    .enumerate()
+                {
+                    let image = self.small_preview(item);
+                    let (x, y) = radial_offset(index, self.max_compact_icons.max(1));
+                    image.set_halign(Align::Center);
+                    image.set_valign(Align::Center);
+                    image.set_margin_start(x.unsigned_abs() as i32);
+                    image.set_margin_end((-x).unsigned_abs() as i32);
+                    image.set_margin_top(y.unsigned_abs() as i32);
+                    image.set_margin_bottom((-y).unsigned_abs() as i32);
+                    self.compact.add_overlay(&image);
                 }
             }
             for item in items {
@@ -96,9 +124,8 @@ impl TrayCircle {
     }
 
     fn button(&self, item: &TrayItem) -> gtk::Button {
-        let hook_host = self.host.clone();
-        let hook: Rc<dyn Fn(bool)> = Rc::new(move |open| hook_host.dispatch(Event::Menu(open)));
-        self.island.build_tray_icon_with_menu(item, Some(hook))
+        self.island
+            .build_tray_icon_with_tracker(item, Some(self.menu_tracker.clone()))
     }
 }
 
@@ -126,18 +153,35 @@ fn clear_children<W: IsA<gtk::Widget>>(widget: &W) {
     }
 }
 
+fn radial_offset(index: usize, total: usize) -> (i32, i32) {
+    let angle = std::f64::consts::TAU * (index as f64) / total as f64;
+    (
+        (angle.cos() * 11.0).round() as i32,
+        (angle.sin() * 11.0).round() as i32,
+    )
+}
+
 fn preview_count(total: usize, limit: usize) -> usize {
     total.min(limit)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::preview_count;
+    use super::{preview_count, radial_offset};
 
     #[test]
-    fn preview_limit_does_not_change_effective_count() {
-        assert_eq!(preview_count(7, 0), 0);
-        assert_eq!(preview_count(7, 4), 4);
-        assert_eq!(preview_count(2, 4), 2);
+    fn radial_preview_stays_bounded() {
+        for index in 0..8 {
+            let (x, y) = radial_offset(index, 8);
+            assert!(x.abs() <= 11 && y.abs() <= 11);
+        }
+    }
+
+    #[test]
+    fn preview_limit_never_truncates_expanded_snapshot() {
+        let total = 17;
+        assert_eq!(preview_count(total, 0), 0);
+        assert_eq!(preview_count(total, 4), 4);
+        assert_eq!(total, 17);
     }
 }
