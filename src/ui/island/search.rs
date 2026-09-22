@@ -1081,9 +1081,7 @@ impl IslandWindow {
             } else {
                 Layer::Top
             });
-        if !self.dashboard_open.get() && !self.weather_open.get() && !self.search_open.get() {
-            self.dismiss_window.set_visible(false);
-        }
+        self.refresh_keyboard_mode();
     }
 
     pub(super) fn schedule_search(self: &Rc<Self>, text: String) {

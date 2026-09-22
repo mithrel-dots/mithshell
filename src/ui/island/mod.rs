@@ -786,7 +786,7 @@ mod tests {
         };
         island.update_media(Some(&media));
         island.update_tray(std::slice::from_ref(&tray));
-        island.update_notification_history(&[notification]);
+        island.update_notification_history(std::slice::from_ref(&notification));
         island.update_notification_inhibition(true, Some(std::time::Duration::from_secs(65)));
         island.relayout_circles();
         island
@@ -1028,6 +1028,130 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(3));
         }
         assert!(!island.dismiss_window.is_visible());
+
+        // Exercise a nonzero full-page collapse through the production clock.
+        // The outgoing full page and catcher must remain present until the
+        // circle animation commits its incoming page.
+        island.animation_ms.set(100);
+        island.animations_enabled.set(true);
+        island
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_notification_compact_click();
+        let full_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while notification_host.presented_page() != Some(super::circle::Mode::FullExpanded)
+            && std::time::Instant::now() < full_deadline
+        {
+            island.relayout_circles();
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            notification_host.presented_page(),
+            Some(super::circle::Mode::FullExpanded)
+        );
+        assert!(island.dismiss_window.is_visible());
+        island.test_emit_dismiss_click();
+        island.relayout_circles();
+        assert_eq!(
+            notification_host.presented_page(),
+            Some(super::circle::Mode::FullExpanded),
+            "outgoing full page remains committed during collapse"
+        );
+        assert!(island.dismiss_window.is_visible());
+        let full_out_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while island.circle_full_active() && std::time::Instant::now() < full_out_deadline {
+            island.relayout_circles();
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!island.circle_full_active());
+        assert_eq!(
+            notification_host.presented_page(),
+            Some(super::circle::Mode::Compact)
+        );
+        assert!(!island.dismiss_window.is_visible());
+
+        // Independent search is another owner of the catcher.  Dismissing a
+        // full circle must preserve it while the independent search remains
+        // mapped, then the second real outside gesture closes search and the
+        // final search animation removes the catcher.
+        let mut independent_config = config.clone();
+        independent_config.launcher.presentation = LauncherPresentation::Independent;
+        independent_config.shell.animation_ms = 100;
+        independent_config.circles.left = CircleModule::Notifications;
+        independent_config.circles.right = CircleModule::None;
+        let independent = IslandWindow::new_for_test(
+            &application,
+            &monitor,
+            "broadway-independent-test".into(),
+            &independent_config,
+            matrix_actions.clone(),
+            true,
+        );
+        independent.update_notification_history(&[notification]);
+        independent.relayout_circles();
+        let independent_host = independent
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_host(0)
+            .unwrap();
+        independent
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_notification_compact_click();
+        let independent_full_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while independent_host.presented_page() != Some(super::circle::Mode::FullExpanded)
+            && std::time::Instant::now() < independent_full_deadline
+        {
+            independent.relayout_circles();
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            independent_host.presented_page(),
+            Some(super::circle::Mode::FullExpanded)
+        );
+        independent.open_search();
+        assert!(independent.search_window.is_visible());
+        assert!(independent.dismiss_window.is_visible());
+        independent.test_emit_dismiss_click();
+        assert!(independent.search_window.is_visible());
+        assert!(independent.dismiss_window.is_visible());
+        let independent_circle_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while independent.circle_full_active()
+            && std::time::Instant::now() < independent_circle_deadline
+        {
+            independent.relayout_circles();
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!independent.circle_full_active());
+        assert!(independent.search_window.is_visible());
+        assert!(independent.dismiss_window.is_visible());
+        // Keep the circle's real nonzero collapse above; use the production
+        // immediate search-close branch so this assertion is about the final
+        // catcher-needed reconciliation, not a second animation clock.
+        independent.animation_ms.set(0);
+        independent.test_emit_dismiss_click();
+        assert!(!independent.search_window.is_visible());
+        assert!(!independent.dismiss_window.is_visible());
 
         // Exercise the real timer path. The GTK stack must retain the outgoing
         // page during CONTENT_OUT, switch exactly at the phase boundary, then

@@ -53,6 +53,16 @@ impl IslandWindow {
         }
     }
 
+    fn dismiss_catcher_needed(&self) -> bool {
+        self.circle_full_active()
+            || matches!(
+                self.current_view.get(),
+                View::Dashboard | View::Weather | View::Search
+            )
+            || (self.launcher_presentation == crate::config::LauncherPresentation::Independent
+                && self.search_window.is_visible())
+    }
+
     /// Re-applies the keyboard mode the current state wants. Split out of
     /// `set_view` so showing/dismissing a tray menu can borrow the surface's
     /// focus without having to know what the active view expects.
@@ -74,12 +84,9 @@ impl IslandWindow {
                 KeyboardMode::None
             },
         );
-        if self.circle_full_active() {
+        if self.dismiss_catcher_needed() {
             self.present_dismiss_catcher_behind_main();
-        } else if !matches!(
-            self.current_view.get(),
-            View::Dashboard | View::Weather | View::Search
-        ) {
+        } else {
             self.dismiss_window.set_visible(false);
         }
     }
@@ -151,7 +158,7 @@ impl IslandWindow {
             // Search promotes the island to Overlay while mapped, keeping its
             // animated origin behind the persistent pill.
             self.window.present();
-        } else {
+        } else if !self.dismiss_catcher_needed() {
             self.window.set_layer(gtk4_layer_shell::Layer::Top);
             self.dismiss_window.set_visible(false);
         }
