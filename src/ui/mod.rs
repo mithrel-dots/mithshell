@@ -1,6 +1,9 @@
 pub(crate) mod icon;
 mod island;
 mod lock;
+// Staged motion contract; remove this allowance when call sites are integrated.
+#[allow(dead_code)]
+pub(crate) mod motion;
 
 use std::{fs, path::Path};
 
