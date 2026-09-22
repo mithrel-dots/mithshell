@@ -15,13 +15,54 @@ use gtk::{
 use super::IslandWindow;
 use crate::state::{TrayIcon, TrayItem, TrayMenuItem, TrayStatus};
 
+type MenuCallback = Rc<dyn Fn(bool)>;
+
 /// Aggregate pin state for all DBusMenu popovers belonging to one snapshot.
 /// The epoch also invalidates fetches whose buttons were removed meanwhile.
 pub(crate) struct TrayMenuTracker {
+    manager: Rc<TrayMenuManager>,
     open: Cell<usize>,
     epoch: Cell<u64>,
     on_change: Rc<dyn Fn(bool)>,
     popovers: RefCell<Vec<glib::WeakRef<gtk::Popover>>>,
+}
+
+pub(crate) struct TrayMenuManager {
+    open: Cell<usize>,
+    on_change: RefCell<Option<MenuCallback>>,
+}
+
+impl TrayMenuManager {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self {
+            open: Cell::new(0),
+            on_change: RefCell::new(None),
+        })
+    }
+    pub(crate) fn set_on_change(&self, callback: impl Fn(bool) + 'static) {
+        self.on_change.replace(Some(Rc::new(callback)));
+    }
+    fn acquire(&self) {
+        let was_empty = self.open.get() == 0;
+        self.open.set(self.open.get() + 1);
+        if was_empty && let Some(callback) = self.on_change.borrow().as_ref() {
+            callback(true);
+        }
+    }
+    fn release(&self) {
+        let open = self.open.get().saturating_sub(1);
+        self.open.set(open);
+        if open == 0
+            && let Some(callback) = self.on_change.borrow().as_ref()
+        {
+            callback(false);
+        }
+    }
+    fn release_many(&self, count: usize) {
+        for _ in 0..count {
+            self.release();
+        }
+    }
 }
 
 pub(crate) struct TrayMenuLease {
@@ -32,8 +73,12 @@ pub(crate) struct TrayMenuLease {
 }
 
 impl TrayMenuTracker {
-    pub(crate) fn new(on_change: impl Fn(bool) + 'static) -> Rc<Self> {
+    pub(crate) fn new(
+        manager: Rc<TrayMenuManager>,
+        on_change: impl Fn(bool) + 'static,
+    ) -> Rc<Self> {
         Rc::new(Self {
+            manager,
             open: Cell::new(0),
             epoch: Cell::new(0),
             on_change: Rc::new(on_change),
@@ -42,15 +87,18 @@ impl TrayMenuTracker {
     }
     pub(crate) fn invalidate(&self) {
         self.epoch.set(self.epoch.get().wrapping_add(1));
-        if self.open.replace(0) != 0 {
+        let open = self.open.replace(0);
+        if open != 0 {
             (self.on_change)(false);
+            self.manager.release_many(open);
         }
-        for popover in self
+        let popovers: Vec<_> = self
             .popovers
             .borrow_mut()
             .drain(..)
             .filter_map(|popover| popover.upgrade())
-        {
+            .collect();
+        for popover in popovers {
             popover.popdown();
         }
     }
@@ -58,16 +106,22 @@ impl TrayMenuTracker {
         self.popovers.borrow_mut().push(popover.downgrade());
     }
     fn begin(self: &Rc<Self>, key: &str) -> TrayMenuLease {
-        if self.open.get() == 0 {
-            (self.on_change)(true);
-        }
+        let was_empty = self.open.get() == 0;
         self.open.set(self.open.get() + 1);
-        TrayMenuLease {
+        self.manager.acquire();
+        let lease = TrayMenuLease {
             tracker: self.clone(),
             epoch: self.epoch.get(),
             key: key.to_owned(),
             ended: Cell::new(false),
+        };
+        if was_empty {
+            (self.on_change)(true);
         }
+        if lease.epoch != self.epoch.get() {
+            lease.ended.set(true);
+        }
+        lease
     }
 }
 
@@ -88,6 +142,7 @@ impl TrayMenuLease {
         }
         let open = self.tracker.open.get().saturating_sub(1);
         self.tracker.open.set(open);
+        self.tracker.manager.release();
         if open == 0 {
             (self.tracker.on_change)(false);
         }
@@ -144,26 +199,19 @@ impl IslandWindow {
     /// dots -- tray churn is rare enough that reusing widgets isn't worth
     /// the bookkeeping.
     pub fn update_tray(self: &Rc<Self>, items: &[TrayItem]) {
-        let weak = Rc::downgrade(self);
-        let tracker = TrayMenuTracker::new(move |open| {
-            if let Some(island) = weak.upgrade() {
-                island.tray_menu_open.set(open);
-                island.refresh_keyboard_mode();
-                island.resize_compact();
-                island.resize_media();
-            }
-        });
-        tracker.invalidate();
+        self.tray_menu_tracker.invalidate();
         clear_box(&self.compact_tray);
         clear_box(&self.media_tray);
         for item in items {
             // A widget can only have one parent, so each pill gets its own
             // freshly built icon -- the same duplication `update_hyprland`
             // already does for `compact_workspaces`/`media_workspaces`.
-            self.compact_tray
-                .append(&self.build_tray_icon_with_tracker(item, Some(tracker.clone())));
-            self.media_tray
-                .append(&self.build_tray_icon_with_tracker(item, Some(tracker.clone())));
+            self.compact_tray.append(
+                &self.build_tray_icon_with_tracker(item, Some(self.tray_menu_tracker.clone())),
+            );
+            self.media_tray.append(
+                &self.build_tray_icon_with_tracker(item, Some(self.tray_menu_tracker.clone())),
+            );
         }
         self.tray_item_count.set(items.len());
         self.resize_compact();
@@ -370,7 +418,6 @@ impl IslandWindow {
         // Pin the tray open for as long as the menu is: popping up takes a
         // pointer grab, so the pill immediately sees a `leave` and would
         // otherwise collapse the row this popover is anchored to.
-        self.tray_menu_open.set(true);
         // An autohide popover needs to be able to take focus to grab, which
         // a `KeyboardMode::None` layer surface never can; without this the
         // menu is dismissed the moment it appears.
@@ -385,9 +432,6 @@ impl IslandWindow {
                 lease.close();
             }
             if let Some(island) = weak.upgrade() {
-                if lease.is_none() {
-                    island.tray_menu_open.set(false);
-                }
                 island.refresh_keyboard_mode();
                 island.resize_compact();
                 island.resize_media();
@@ -459,14 +503,15 @@ fn anchor_key(_anchor: &gtk::Button, service: &str, menu_path: &str) -> String {
 
 #[cfg(test)]
 mod tracker_tests {
-    use super::TrayMenuTracker;
+    use super::{TrayMenuManager, TrayMenuTracker};
     use std::{cell::RefCell, rc::Rc};
 
     #[test]
     fn aggregate_tracker_only_releases_after_last_menu() {
         let transitions = Rc::new(RefCell::new(Vec::new()));
         let observed = transitions.clone();
-        let tracker = TrayMenuTracker::new(move |open| observed.borrow_mut().push(open));
+        let manager = TrayMenuManager::new();
+        let tracker = TrayMenuTracker::new(manager, move |open| observed.borrow_mut().push(open));
         let first = tracker.begin("one");
         let second = tracker.begin("two");
         first.close();
@@ -479,10 +524,43 @@ mod tracker_tests {
     fn invalidation_makes_old_lease_harmless() {
         let transitions = Rc::new(RefCell::new(Vec::new()));
         let observed = transitions.clone();
-        let tracker = TrayMenuTracker::new(move |open| observed.borrow_mut().push(open));
+        let manager = TrayMenuManager::new();
+        let tracker = TrayMenuTracker::new(manager, move |open| observed.borrow_mut().push(open));
         let old = tracker.begin("old");
         tracker.invalidate();
         old.close();
         assert_eq!(*transitions.borrow(), vec![true, false]);
+    }
+
+    #[test]
+    fn separate_presentations_share_one_window_pin() {
+        let transitions = Rc::new(RefCell::new(Vec::new()));
+        let observed = transitions.clone();
+        let manager = TrayMenuManager::new();
+        manager.set_on_change(move |open| observed.borrow_mut().push(open));
+        let first = TrayMenuTracker::new(manager.clone(), |_| {});
+        let second = TrayMenuTracker::new(manager, |_| {});
+        let one = first.begin("one");
+        let two = second.begin("two");
+        one.close();
+        assert_eq!(*transitions.borrow(), vec![true]);
+        two.close();
+        assert_eq!(*transitions.borrow(), vec![true, false]);
+    }
+
+    #[test]
+    fn reentrant_invalidation_cannot_return_live_lease() {
+        let manager = TrayMenuManager::new();
+        let slot: Rc<RefCell<Option<Rc<TrayMenuTracker>>>> = Rc::new(RefCell::new(None));
+        let callback_slot = slot.clone();
+        let tracker = TrayMenuTracker::new(manager, move |open| {
+            if open && let Some(tracker) = callback_slot.borrow().as_ref() {
+                tracker.invalidate();
+            }
+        });
+        slot.borrow_mut().replace(tracker.clone());
+        let lease = tracker.begin("reentrant");
+        assert!(lease.ended.get());
+        lease.close();
     }
 }

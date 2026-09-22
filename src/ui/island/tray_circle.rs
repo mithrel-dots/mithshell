@@ -52,7 +52,7 @@ impl TrayCircle {
         })?;
         let weak_host = Rc::downgrade(&host);
         let weak_island = Rc::downgrade(island);
-        let menu_tracker = TrayMenuTracker::new(move |open| {
+        let menu_tracker = TrayMenuTracker::new(island.tray_menu_manager.clone(), move |open| {
             if let Some(host) = weak_host.upgrade() {
                 host.dispatch(Event::Menu(open));
             }
@@ -95,8 +95,15 @@ impl TrayCircle {
                     .take(preview_count(items.len(), self.max_compact_icons))
                     .enumerate()
                 {
-                    let image = self.small_preview(item);
-                    let (x, y) = radial_offset(index, self.max_compact_icons.max(1));
+                    let Some((x, y, size)) = compact_preview_layout(
+                        self.island.metrics.scale,
+                        preview_count(items.len(), self.max_compact_icons),
+                    )
+                    .get(index)
+                    .copied() else {
+                        continue;
+                    };
+                    let image = self.small_preview(item, size);
                     image.set_halign(Align::Center);
                     image.set_valign(Align::Center);
                     image.set_margin_start(x.unsigned_abs() as i32);
@@ -116,9 +123,9 @@ impl TrayCircle {
         self.host.dispatch(Event::Content(present));
     }
 
-    fn small_preview(&self, item: &TrayItem) -> gtk::Image {
+    fn small_preview(&self, item: &TrayItem, size: i32) -> gtk::Image {
         let image = gtk::Image::new();
-        image.set_pixel_size((self.island.metrics.tray_icon_size / 2).max(8));
+        image.set_pixel_size(size);
         apply_tray_icon(&image, &item.icon);
         image
     }
@@ -153,12 +160,33 @@ fn clear_children<W: IsA<gtk::Widget>>(widget: &W) {
     }
 }
 
-fn radial_offset(index: usize, total: usize) -> (i32, i32) {
-    let angle = std::f64::consts::TAU * (index as f64) / total as f64;
-    (
-        (angle.cos() * 11.0).round() as i32,
-        (angle.sin() * 11.0).round() as i32,
-    )
+fn compact_preview_layout(scale: f64, total: usize) -> Vec<(i32, i32, i32)> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let diameter = (32.0 * scale).round().max(16.0);
+    let mut size = (6.0 * scale).round().clamp(4.0, 8.0);
+    let diagonal = size * std::f64::consts::SQRT_2 / 2.0;
+    let outer = diameter / 2.0 - diagonal - 1.0;
+    let inner = (10.0 * scale) / 2.0 + diagonal + 1.0;
+    if inner > outer {
+        size = 4.0;
+    }
+    let diagonal = size * std::f64::consts::SQRT_2 / 2.0;
+    let radius = (diameter / 2.0 - diagonal - 1.0).max(0.0);
+    if radius < (10.0 * scale) / 2.0 + diagonal + 1.0 {
+        return Vec::new();
+    }
+    (0..total)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * index as f64 / total as f64;
+            (
+                (angle.cos() * radius).round() as i32,
+                (angle.sin() * radius).round() as i32,
+                size.round() as i32,
+            )
+        })
+        .collect()
 }
 
 fn preview_count(total: usize, limit: usize) -> usize {
@@ -167,13 +195,17 @@ fn preview_count(total: usize, limit: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{preview_count, radial_offset};
+    use super::{compact_preview_layout, preview_count};
 
     #[test]
-    fn radial_preview_stays_bounded() {
-        for index in 0..8 {
-            let (x, y) = radial_offset(index, 8);
-            assert!(x.abs() <= 11 && y.abs() <= 11);
+    fn radial_preview_stays_inside_scaled_circle() {
+        for scale in [0.75, 1.0, 1.5, 2.0] {
+            let diameter = (32.0_f64 * scale).round().max(16.0);
+            for (x, y, size) in compact_preview_layout(scale, 4) {
+                let distance = f64::from(x * x + y * y).sqrt();
+                let diagonal = f64::from(size) * std::f64::consts::SQRT_2 / 2.0;
+                assert!(distance + diagonal <= diameter / 2.0 + 1.0);
+            }
         }
     }
 

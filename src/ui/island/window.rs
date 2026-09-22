@@ -216,6 +216,8 @@ impl IslandWindow {
         draw_weather_condition(&weather_widgets.hero_icon, WeatherCondition::Unknown);
         let weather_icons = RefCell::new(vec![weather_widgets.hero_icon.clone()]);
 
+        let tray_menu_manager = tray::TrayMenuManager::new();
+        let tray_menu_tracker = tray::TrayMenuTracker::new(tray_menu_manager.clone(), |_| {});
         let island = Rc::new(Self {
             monitor_name,
             metrics,
@@ -243,6 +245,8 @@ impl IslandWindow {
             tray_hovered: Cell::new(false),
             tray_item_count: Cell::new(0),
             tray_menu_open: Cell::new(false),
+            tray_menu_manager,
+            tray_menu_tracker,
             media_workspaces: media_widgets.workspaces,
             media_clock: media_widgets.clock,
             media_center: media_widgets.center,
@@ -373,6 +377,16 @@ impl IslandWindow {
             notification_toasts,
             pill_overlay,
             actions,
+        });
+
+        let weak = Rc::downgrade(&island);
+        island.tray_menu_manager.set_on_change(move |open| {
+            if let Some(island) = weak.upgrade() {
+                island.tray_menu_open.set(open);
+                island.refresh_keyboard_mode();
+                island.resize_compact();
+                island.resize_media();
+            }
         });
 
         island.connect_interactions(

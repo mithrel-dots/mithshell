@@ -193,6 +193,10 @@ pub struct IslandWindow {
     /// the row (and the popover's own anchor widget with it) would collapse
     /// out from under the menu the instant it appeared.
     tray_menu_open: Cell<bool>,
+    /// Persistent menu lifetime manager shared by legacy and circle tray
+    /// presentations; it is the sole source of truth for window pinning.
+    tray_menu_manager: Rc<tray::TrayMenuManager>,
+    tray_menu_tracker: Rc<tray::TrayMenuTracker>,
     media_workspaces: gtk::Box,
     media_clock: gtk::Label,
     media_center: gtk::Box,
