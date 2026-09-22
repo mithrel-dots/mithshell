@@ -20,6 +20,7 @@ mod compact;
 mod dashboard;
 mod interactions;
 mod media;
+pub(crate) mod media_circle;
 mod metrics;
 mod notification;
 mod osd;
