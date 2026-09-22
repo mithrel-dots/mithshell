@@ -12,7 +12,7 @@ use gtk::{
 use super::IslandWindow;
 use crate::state::{TrayIcon, TrayItem, TrayMenuItem, TrayStatus};
 
-fn apply_tray_icon(image: &gtk::Image, icon: &TrayIcon) {
+pub(crate) fn apply_tray_icon(image: &gtk::Image, icon: &TrayIcon) {
     match icon {
         TrayIcon::Name(name) => icon::set_foreign_image(image, Some(name), Icon::Executable),
         TrayIcon::Pixmap {
@@ -69,6 +69,17 @@ impl IslandWindow {
     }
 
     fn build_tray_icon(self: &Rc<Self>, item: &TrayItem) -> gtk::Button {
+        self.build_tray_icon_with_menu(item, None)
+    }
+
+    /// Builds a tray button for another presentation (the circle).  The
+    /// optional hook is deliberately local to the button so circle ownership
+    /// can pin its host without adding state to `IslandWindow`.
+    pub(crate) fn build_tray_icon_with_menu(
+        self: &Rc<Self>,
+        item: &TrayItem,
+        menu_state: Option<Rc<dyn Fn(bool)>>,
+    ) -> gtk::Button {
         let button = gtk::Button::new();
         button.add_css_class("tray-icon");
         button.set_has_frame(false);
@@ -100,13 +111,19 @@ impl IslandWindow {
         // Items advertising `ItemIsMenu` declare they have no meaningful
         // activation at all and expect their menu on a plain left click.
         let item_is_menu = item.item_is_menu;
+        let click_menu_state = menu_state.clone();
         button.connect_clicked(move |button| {
             let Some(island) = weak.upgrade() else {
                 return;
             };
             match primary_menu_path.clone().filter(|_| item_is_menu) {
                 Some(menu_path) => {
-                    island.open_tray_menu(button.clone(), service.clone(), menu_path);
+                    island.open_tray_menu(
+                        button.clone(),
+                        service.clone(),
+                        menu_path,
+                        click_menu_state.clone(),
+                    );
                 }
                 None => {
                     // The spec's x/y are screen coordinates used by items
@@ -142,6 +159,7 @@ impl IslandWindow {
         let object_path = item.object_path.clone();
         let menu_path = item.menu_path.clone();
         let button_weak = button.downgrade();
+        let context_menu_state = menu_state;
         context_click.connect_pressed(move |gesture, _, _, _| {
             let Some(island) = weak.upgrade() else {
                 return;
@@ -151,7 +169,12 @@ impl IslandWindow {
             gesture.set_state(gtk::EventSequenceState::Claimed);
             match (menu_path.clone(), button_weak.upgrade()) {
                 (Some(menu_path), Some(button)) => {
-                    island.open_tray_menu(button, service.clone(), menu_path);
+                    island.open_tray_menu(
+                        button,
+                        service.clone(),
+                        menu_path,
+                        context_menu_state.clone(),
+                    );
                 }
                 _ => {
                     (island.actions.tray_context_menu)(service.clone(), object_path.clone(), 0, 0);
@@ -189,7 +212,13 @@ impl IslandWindow {
     /// thread (mirroring how `preview`/`theme` results are round-tripped
     /// back onto the GTK thread elsewhere) and shows it as a popover
     /// anchored to the icon that was clicked.
-    fn open_tray_menu(self: &Rc<Self>, anchor: gtk::Button, service: String, menu_path: String) {
+    fn open_tray_menu(
+        self: &Rc<Self>,
+        anchor: gtk::Button,
+        service: String,
+        menu_path: String,
+        menu_state: Option<Rc<dyn Fn(bool)>>,
+    ) {
         let (sender, receiver) = async_channel::bounded(1);
         let fetch_service = service.clone();
         let fetch_menu_path = menu_path.clone();
@@ -200,7 +229,7 @@ impl IslandWindow {
         let island = self.clone();
         glib::MainContext::default().spawn_local(async move {
             if let Ok(Ok(menu)) = receiver.recv().await {
-                island.show_tray_menu(&anchor, &service, &menu_path, &menu);
+                island.show_tray_menu(&anchor, &service, &menu_path, &menu, menu_state);
             }
         });
     }
@@ -211,6 +240,7 @@ impl IslandWindow {
         service: &str,
         menu_path: &str,
         menu: &TrayMenuItem,
+        menu_state: Option<Rc<dyn Fn(bool)>>,
     ) {
         let popover = gtk::Popover::new();
         popover.set_parent(anchor);
@@ -224,6 +254,9 @@ impl IslandWindow {
         // pointer grab, so the pill immediately sees a `leave` and would
         // otherwise collapse the row this popover is anchored to.
         self.tray_menu_open.set(true);
+        if let Some(callback) = menu_state.as_ref() {
+            callback(true);
+        }
         // An autohide popover needs to be able to take focus to grab, which
         // a `KeyboardMode::None` layer surface never can; without this the
         // menu is dismissed the moment it appears.
@@ -234,6 +267,9 @@ impl IslandWindow {
         let weak = Rc::downgrade(self);
         popover.connect_closed(move |popover| {
             popover.unparent();
+            if let Some(callback) = menu_state.as_ref() {
+                callback(false);
+            }
             if let Some(island) = weak.upgrade() {
                 island.tray_menu_open.set(false);
                 island.refresh_keyboard_mode();

@@ -26,6 +26,8 @@ mod notification;
 mod osd;
 mod search;
 mod tray;
+#[allow(dead_code)] // consumed by central circle integration
+pub(crate) mod tray_circle;
 mod view;
 mod weather;
 mod window;
