@@ -15,7 +15,7 @@ use crate::media::{VISUALIZER_BARS, VisualizerLevels};
 use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
 
 pub(super) struct MediaWidgets {
-    pub(super) root: gtk::Box,
+    pub(super) root: gtk::Overlay,
     pub(super) workspaces: gtk::Box,
     pub(super) clock: gtk::Label,
     pub(super) center: gtk::Box,
@@ -31,11 +31,17 @@ pub(super) struct MediaWidgets {
     pub(super) tray: gtk::Box,
 }
 
-pub(super) fn media_view(metrics: Metrics) -> MediaWidgets {
-    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+pub(super) fn media_view(metrics: Metrics, wave: &gtk::DrawingArea) -> MediaWidgets {
+    let root = gtk::Overlay::new();
     root.set_size_request(metrics.compact_width, metrics.media_height);
-    root.add_css_class("media-content");
+    root.add_css_class("media-pill");
     root.set_valign(Align::Start);
+    // Only the foreground is padded; the battery background reaches the
+    // enclosing island surface's rounded clip at every density tier.
+    let content = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    content.add_css_class("media-content");
+    content.set_hexpand(true);
+    content.set_vexpand(true);
 
     let center_box = gtk::CenterBox::new();
     center_box.set_hexpand(true);
@@ -114,8 +120,10 @@ pub(super) fn media_view(metrics: Metrics) -> MediaWidgets {
     center_box.set_center_widget(Some(&media));
     center_box.set_end_widget(Some(&clock));
 
-    root.append(&center_box);
-    root.append(&tray);
+    content.append(&center_box);
+    content.append(&tray);
+    root.set_child(Some(wave));
+    root.add_overlay(&content);
     MediaWidgets {
         root,
         workspaces,

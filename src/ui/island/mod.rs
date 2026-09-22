@@ -14,6 +14,7 @@ use gtk::{ApplicationWindow, Fixed, Orientation, Overflow, gdk::prelude::*, glib
 use gtk4_layer_shell::LayerShell;
 
 mod actions;
+mod battery_wave;
 mod compact;
 mod dashboard;
 mod interactions;
@@ -160,7 +161,7 @@ pub struct IslandWindow {
     content: Fixed,
     surface: gtk::ScrolledWindow,
     compact: gtk::Widget,
-    media: gtk::Box,
+    media: gtk::Overlay,
     dashboard: gtk::Box,
     search: gtk::Box,
     weather: gtk::Box,
@@ -171,9 +172,7 @@ pub struct IslandWindow {
     compact_workspaces: gtk::Box,
     compact_clock: gtk::Label,
     compact_battery: gtk::Label,
-    compact_battery_wave: gtk::DrawingArea,
-    compact_battery_percent: Rc<Cell<u8>>,
-    compact_battery_wave_enabled: bool,
+    battery_waves: battery_wave::BatteryWaves,
     compact_tray: gtk::Box,
     /// Current animated/target width of the compact pill, recomputed by
     /// `resize_compact` from the combined width of its (individually

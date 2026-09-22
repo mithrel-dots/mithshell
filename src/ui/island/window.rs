@@ -8,6 +8,7 @@ use std::rc::Rc;
 use gtk::{Application, ApplicationWindow, Fixed, Orientation, Overflow, gdk, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
+use super::battery_wave::BatteryWaves;
 use super::compact::compact_view;
 use super::dashboard::dashboard_view;
 use super::media::media_view;
@@ -100,15 +101,10 @@ impl IslandWindow {
         content.set_size_request(metrics.window_width, metrics.window_height);
         surface.set_child(Some(&content));
 
-        let (
-            compact,
-            compact_workspaces,
-            compact_clock,
-            compact_battery,
-            compact_tray,
-            compact_battery_wave,
-            compact_battery_percent,
-        ) = compact_view(metrics, animations_enabled, config.battery);
+        let battery_waves =
+            BatteryWaves::new(config.battery, animations_enabled, shell.animation_ms);
+        let (compact, compact_workspaces, compact_clock, compact_battery, compact_tray) =
+            compact_view(metrics, &battery_waves.compact);
         content.put(
             &compact,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -163,7 +159,7 @@ impl IslandWindow {
         search_surface.set_child(Some(&search_widgets.root));
         search_fixed.put(&search_surface, 0.0, 0.0);
 
-        let media_widgets = media_view(metrics);
+        let media_widgets = media_view(metrics, &battery_waves.media);
         content.put(
             &media_widgets.root,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -241,9 +237,7 @@ impl IslandWindow {
             compact_workspaces,
             compact_clock,
             compact_battery,
-            compact_battery_wave,
-            compact_battery_percent,
-            compact_battery_wave_enabled: config.battery.wave,
+            battery_waves,
             compact_tray,
             compact_width: Cell::new(metrics.compact_width),
             tray_hovered: Cell::new(false),
@@ -502,7 +496,7 @@ impl IslandWindow {
     /// Redraws any active custom Cairo drawing after a theme change --
     /// swapping the CSS provider doesn't trigger that on its own.
     pub fn update_palette(&self) {
-        self.compact_battery_wave.queue_draw();
+        self.battery_waves.queue_draw();
         for icon in self.weather_icons.borrow().iter() {
             icon.queue_draw();
         }
@@ -529,6 +523,8 @@ impl IslandWindow {
             .set_exclusive_zone(self.metrics.spacing(config.exclusive_zone));
         self.animation_ms.set(config.animation_ms);
         self.animations_enabled.set(animations_enabled);
+        self.battery_waves
+            .set_motion(animations_enabled, config.animation_ms);
     }
 
     pub fn destroy(&self) {
