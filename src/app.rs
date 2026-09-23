@@ -62,7 +62,14 @@ pub fn run(cli: Cli) -> Result<()> {
             config,
             no_animations,
             test_battery,
-        } => run_daemon(socket_path, config, !no_animations, test_battery),
+            no_global_services,
+        } => run_daemon(
+            socket_path,
+            config,
+            !no_animations,
+            test_battery,
+            no_global_services,
+        ),
         command => run_client(socket_path, command),
     }
 }
@@ -332,6 +339,7 @@ fn run_daemon(
     config_override: Option<PathBuf>,
     animations: bool,
     test_battery: Option<u8>,
+    no_global_services: bool,
 ) -> Result<()> {
     let config_path = config::config_path(config_override)?;
     let config = AppConfig::load(&config_path)?;
@@ -357,6 +365,7 @@ fn run_daemon(
             socket_path.clone(),
             animations,
             test_battery,
+            no_global_services,
         ) {
             Ok(controller) => {
                 controller.clone().start();
@@ -401,6 +410,10 @@ struct Controller {
     /// `Some` exactly while the session is locked.
     lock: RefCell<Option<Rc<LockSession>>>,
     animations: bool,
+    /// Test-only isolation mode. This is intentionally process-local and is
+    /// never inferred from configuration, so ordinary daemon behavior stays
+    /// unchanged.
+    no_global_services: bool,
     theme_sender: Sender<Result<Palette, String>>,
     auth_sender: Sender<AuthRequest>,
     logind_sender: Sender<LogindCommand>,
@@ -420,12 +433,43 @@ struct Controller {
     _visualizer_listener: thread::JoinHandle<()>,
     _weather_listener: thread::JoinHandle<()>,
     _tray_listener: Option<thread::JoinHandle<()>>,
-    _notification_listener: thread::JoinHandle<()>,
+    _notification_listener: Option<thread::JoinHandle<()>>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
     auth_listener: Option<thread::JoinHandle<()>>,
     logind_listener: Option<thread::JoinHandle<()>>,
     _gtk_css_watcher: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupServices {
+    notifications: bool,
+    logind: bool,
+    tarragon: bool,
+    tray: bool,
+}
+
+impl StartupServices {
+    fn for_daemon(no_global_services: bool) -> Self {
+        if no_global_services {
+            // Do not resolve or connect to any shared service. In particular,
+            // TarraGon's normal resolver may select TARRAGON_UI_SOCKET,
+            // XDG_RUNTIME_DIR, or its /tmp fallback.
+            Self {
+                notifications: false,
+                logind: false,
+                tarragon: false,
+                tray: false,
+            }
+        } else {
+            Self {
+                notifications: true,
+                logind: true,
+                tarragon: true,
+                tray: true,
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -494,7 +538,9 @@ impl Controller {
         socket_path: PathBuf,
         animations: bool,
         test_battery: Option<u8>,
+        no_global_services: bool,
     ) -> Result<Rc<Self>> {
+        let startup_services = StartupServices::for_daemon(no_global_services);
         let mut initial_theme = config.theme.clone();
         if let Some(theme_override) = theme::load_override()? {
             theme::apply_override(&mut initial_theme, theme_override);
@@ -519,19 +565,35 @@ impl Controller {
             weather_sender,
         );
         let (tray_sender, tray_receiver) = async_channel::unbounded();
-        let tray_listener = config
-            .tray
-            .enabled
+        let tray_listener = (startup_services.tray && config.tray.enabled)
             .then(|| tray::start_listener(tray_sender));
         let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
-        let (tarragon_sender, tarragon_listener) = tarragon::start_listener(tarragon_event_sender);
+        let (tarragon_sender, tarragon_listener) = if startup_services.tarragon {
+            let (sender, listener) = tarragon::start_listener(tarragon_event_sender);
+            (sender, Some(listener))
+        } else {
+            // No listener, retry loop, socket resolution, or Detach request.
+            let (sender, receiver) = async_channel::unbounded();
+            drop(receiver);
+            drop(tarragon_event_sender);
+            (sender, None)
+        };
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
         let (preview_sender, preview_listener) = preview::start_loader(preview_event_sender);
         let (gtk_css_sender, gtk_css_receiver) = async_channel::unbounded();
         let gtk_css_watcher = theme::watch_gtk_css(gtk_css_sender);
         let (notification_event_sender, notification_event_receiver) = async_channel::unbounded();
-        let (notification_command_sender, notification_listener) =
-            notifications::start_server(notification_event_sender);
+        let (notification_command_sender, notification_listener) = if startup_services.notifications
+        {
+            let (sender, listener) = notifications::start_server(notification_event_sender);
+            (sender, Some(listener))
+        } else {
+            // No worker means no session bus connection or well-known name.
+            let (sender, receiver) = async_channel::unbounded();
+            drop(receiver);
+            drop(notification_event_sender);
+            (sender, None)
+        };
         // Resolved once here rather than at lock time so a broken PAM
         // configuration shows up in the log at startup, while the user can
         // still do something about it.
@@ -540,7 +602,17 @@ impl Controller {
         let (auth_sender, auth_listener) =
             lock::start_authenticator(pam_service, auth_event_sender);
         let (logind_event_sender, logind_event_receiver) = async_channel::unbounded();
-        let (logind_sender, logind_listener) = lock::logind::start_listener(logind_event_sender);
+        let (logind_sender, logind_listener) = if startup_services.logind {
+            let (sender, listener) = lock::logind::start_listener(logind_event_sender);
+            (sender, Some(listener))
+        } else {
+            // Do not call start_listener: it connects to the system bus and
+            // retries in the background. This also prevents SetLockedHint.
+            let (sender, receiver) = async_channel::unbounded();
+            drop(receiver);
+            drop(logind_event_sender);
+            (sender, None)
+        };
 
         let controller = Rc::new(Self {
             application: application.clone(),
@@ -563,6 +635,7 @@ impl Controller {
             islands: RefCell::new(HashMap::new()),
             lock: RefCell::new(None),
             animations,
+            no_global_services,
             theme_sender,
             auth_sender,
             logind_sender,
@@ -580,10 +653,10 @@ impl Controller {
             _weather_listener: weather_listener,
             _tray_listener: tray_listener,
             _notification_listener: notification_listener,
-            tarragon_listener: Some(tarragon_listener),
+            tarragon_listener,
             preview_listener: Some(preview_listener),
             auth_listener: Some(auth_listener),
-            logind_listener: Some(logind_listener),
+            logind_listener,
             _gtk_css_watcher: gtk_css_watcher,
         });
 
@@ -605,11 +678,15 @@ impl Controller {
         controller.attach_weather(weather_receiver);
         controller.attach_tray(tray_receiver);
         controller.attach_visualizer(visualizer_receiver);
-        controller.attach_tarragon(tarragon_event_receiver);
+        if startup_services.tarragon {
+            controller.attach_tarragon(tarragon_event_receiver);
+        }
         controller.attach_preview(preview_event_receiver);
         controller.attach_theme(theme_receiver);
         controller.attach_auth(auth_event_receiver);
-        controller.attach_logind(logind_event_receiver);
+        if startup_services.logind {
+            controller.attach_logind(logind_event_receiver);
+        }
         controller.attach_notifications(notification_event_receiver);
         controller.attach_gtk_theme_watch();
         controller.attach_gtk_css_watch(gtk_css_receiver);
@@ -1415,6 +1492,9 @@ impl Controller {
                 Ok(Response::ok(format!("{kind:?} OSD shown")))
             }
             IpcCommand::Lock => {
+                if self.no_global_services {
+                    bail!("session locking is disabled by --no-global-services");
+                }
                 if self.lock.borrow().is_some() {
                     return Ok(Response::ok("session is already locked"));
                 }
@@ -1561,6 +1641,9 @@ impl Controller {
     /// does not undo that if this process dies. That guarantee comes
     /// entirely from the protocol; nothing in this function provides it.
     fn lock(self: &Rc<Self>) -> Result<()> {
+        if self.no_global_services {
+            bail!("session locking is disabled by --no-global-services");
+        }
         for island in self.islands.borrow().values() {
             island.close();
         }
@@ -2112,6 +2195,32 @@ impl Drop for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_global_services_disables_all_shared_startup_workers() {
+        assert_eq!(
+            StartupServices::for_daemon(true),
+            StartupServices {
+                notifications: false,
+                logind: false,
+                tarragon: false,
+                tray: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ordinary_daemon_keeps_shared_startup_workers_enabled() {
+        assert_eq!(
+            StartupServices::for_daemon(false),
+            StartupServices {
+                notifications: true,
+                logind: true,
+                tarragon: true,
+                tray: true,
+            }
+        );
+    }
 
     #[test]
     fn notification_epochs_reject_replaced_and_duplicate_expiry() {

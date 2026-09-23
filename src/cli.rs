@@ -30,6 +30,14 @@ pub enum Command {
         /// Reports Discharging below 100%, or Full at 100%.
         #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..=100))]
         test_battery: Option<u8>,
+
+        /// Disable session-wide D-Bus services and session locking.
+        ///
+        /// Test-only isolation mode: no notification bus name is registered,
+        /// no systemd-logind listener is started, and the Lock IPC command is
+        /// refused. Pair with an isolated --socket and DP-2-only config.
+        #[arg(long)]
+        no_global_services: bool,
     },
 
     /// Toggle the dashboard.
@@ -278,6 +286,7 @@ mod tests {
             assert_eq!(cli.socket, Some(PathBuf::from("test.sock")));
             assert!(matches!(cli.command, Command::Daemon {
                 config: Some(config), no_animations: true, test_battery: Some(actual),
+                no_global_services: false,
             } if config == std::path::Path::new("test.toml") && actual == percent));
         }
     }
@@ -326,6 +335,26 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn parses_no_global_services_only_for_daemon() {
+        let cli = Cli::try_parse_from([
+            "mithshell",
+            "--socket",
+            "/tmp/mithshell-test.sock",
+            "daemon",
+            "--no-global-services",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                no_global_services: true,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["mithshell", "status", "--no-global-services"]).is_err());
     }
 
     #[test]

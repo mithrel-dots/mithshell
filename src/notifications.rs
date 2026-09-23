@@ -96,6 +96,11 @@ pub enum NotificationCommand {
 /// Starts the notification server thread and returns a sender for
 /// [`NotificationCommand`]s the UI can use to talk back to it.
 ///
+/// Test isolation deliberately does not call this function. That is stronger
+/// than merely disabling notification rendering: this function connects to
+/// the session bus and registers the shared
+/// `org.freedesktop.Notifications` name.
+///
 /// Failures (no session bus, malformed introspection XML, the name already
 /// being owned) are logged from the worker thread rather than surfaced here,
 /// matching `media::start_listener`/`weather::start_poller`: a daemon that
