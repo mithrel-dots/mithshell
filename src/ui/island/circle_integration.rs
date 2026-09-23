@@ -708,8 +708,11 @@ fn spec_for(module: CircleModule, _scale: f64) -> (CircleSpec, Visual) {
             height: 250.0,
         },
         CircleModule::Tray => Size {
-            width: 300.0,
-            height: 150.0,
+            // The tray is a horizontal pill, not a grid panel.  The fixed
+            // viewport keeps hover/pin compact; overflow remains reachable
+            // through the host's horizontal scroller.
+            width: 144.0,
+            height: 36.0,
         },
         CircleModule::Media => Size {
             width: 320.0,

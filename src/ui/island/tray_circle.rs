@@ -186,13 +186,17 @@ impl TrayCircle {
 
 fn tray_grid() -> gtk::FlowBox {
     let grid = gtk::FlowBox::new();
+    // Tray indicators are a single horizontal strip.  FlowBox's default
+    // vertical orientation wraps after the configured children-per-line,
+    // turning a compact tray into a tall panel as items accumulate.
+    grid.set_orientation(gtk::Orientation::Horizontal);
     grid.set_selection_mode(gtk::SelectionMode::None);
-    grid.set_max_children_per_line(8);
+    grid.set_max_children_per_line(i32::MAX as u32);
     grid.set_min_children_per_line(1);
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);
     grid.set_hexpand(true);
-    grid.set_vexpand(true);
+    grid.set_vexpand(false);
     // The shared circle scroller intentionally suppresses natural-size
     // propagation.  Give FlowBox a real minimum so its viewport does not
     // collapse to 0x0 before the first allocation.
@@ -213,7 +217,7 @@ fn ensure_page_measurement(page: &gtk::FlowBox) {
     if let Some(parent) = page.parent() {
         parent.set_size_request(1, 1);
         parent.set_hexpand(true);
-        parent.set_vexpand(true);
+        parent.set_vexpand(false);
         parent.set_halign(Align::Fill);
         parent.set_valign(Align::Fill);
         if let Some(scroll) = parent.downcast_ref::<gtk::ScrolledWindow>() {
@@ -377,7 +381,7 @@ mod tests {
         while gtk::glib::MainContext::default().pending() {
             gtk::glib::MainContext::default().iteration(false);
         }
-        circle.hover.allocate(435, 24, -1, None);
+        circle.hover.allocate(435, 36, -1, None);
         assert_eq!(children(&circle.hover.clone().upcast()).len(), items.len());
         for child in children(&circle.hover.clone().upcast()) {
             assert!(child.is_visible() && child.is_mapped());
@@ -394,6 +398,46 @@ mod tests {
         for child in children(&circle.full.clone().upcast()) {
             assert!(child.is_visible() && child.is_mapped());
             assert!(child.width() > 0 && child.height() > 0);
+        }
+        for count in [1, 4, 9] {
+            let sample = items
+                .iter()
+                .cloned()
+                .chain((items.len()..count).map(|index| {
+                    tray_item(
+                        &format!("extra-{index}"),
+                        TrayIcon::Name("application-x-executable".into()),
+                    )
+                }))
+                .take(count)
+                .collect::<Vec<_>>();
+            circle.update(&sample);
+            circle
+                .host
+                .dispatch(super::super::circle::Event::Pointer(true));
+            circle.hover.allocate(435, 36, -1, None);
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+            let allocated = children(&circle.hover.clone().upcast());
+            assert_eq!(allocated.len(), count);
+            let row_y = allocated[0].allocation().y();
+            assert!(
+                allocated.iter().all(|child| {
+                    child.width() > 0 && child.height() > 0 && child.allocation().y() == row_y
+                }),
+                "count={count}, allocations={:?}",
+                allocated
+                    .iter()
+                    .map(|child| (
+                        child.is_mapped(),
+                        child.width(),
+                        child.height(),
+                        child.allocation().x(),
+                        child.allocation().y()
+                    ))
+                    .collect::<Vec<_>>()
+            );
         }
         assert!(circle.host.widget().width() > 0);
         window.close();
