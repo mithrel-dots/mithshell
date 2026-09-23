@@ -5,7 +5,7 @@ use super::*;
 
 use std::rc::Rc;
 
-use gtk::{Application, ApplicationWindow, Fixed, Orientation, Overflow, gdk, glib};
+use gtk::{Application, ApplicationWindow, DrawingArea, Fixed, Orientation, Overflow, gdk, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 use super::battery_wave::BatteryWaves;
@@ -121,6 +121,21 @@ impl IslandWindow {
             monitor_geometry.width().max(1),
             monitor_geometry.height().max(1),
         );
+        // GTK does not allocate a wl_buffer for an otherwise empty
+        // transparent container. A bufferless layer surface can commit
+        // forever without ever becoming a compositor pointer target, and
+        // GDK consequently has nowhere to send its input region. Keep the
+        // catcher visually transparent, but give it a real render node so
+        // the Wayland surface gets an attached buffer.
+        let dismiss_render = DrawingArea::new();
+        dismiss_render.set_hexpand(true);
+        dismiss_render.set_vexpand(true);
+        dismiss_render.set_draw_func(|_, context, width, height| {
+            context.set_operator(gtk::cairo::Operator::Clear);
+            context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+            context.fill().expect("clear catcher render surface");
+        });
+        dismiss_area.append(&dismiss_render);
         dismiss_window.set_child(Some(&dismiss_area));
 
         let window = ApplicationWindow::builder()
