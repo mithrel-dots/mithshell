@@ -65,19 +65,65 @@ impl IslandWindow {
         central_click.set_button(gdk::BUTTON_PRIMARY);
         central_click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        central_click.connect_pressed(move |gesture, _, x, y| {
+        central_click.connect_released(move |gesture, _, x, y| {
             let Some(island) = weak.upgrade() else {
                 return;
             };
-            let picked = island.fixed.pick(x, y, gtk::PickFlags::DEFAULT);
-            let picked_pill = picked.as_ref().is_some_and(|picked| {
-                picked == island.compact.upcast_ref::<gtk::Widget>()
-                    || picked == island.media.upcast_ref::<gtk::Widget>()
-            });
-            if picked_pill && matches!(island.current_view.get(), View::Compact | View::Media) && {
-                let rect = island.central_circle_rect();
-                x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
-            } {
+            let central = island.central_circle_rect();
+            let in_central = x >= central.x
+                && x < central.x + central.width
+                && y >= central.y
+                && y < central.y + central.height;
+            let picked_pill = [
+                island.compact.clone().upcast::<gtk::Widget>(),
+                island.media.clone().upcast::<gtk::Widget>(),
+            ]
+            .into_iter()
+            .find_map(|pill| {
+                let mut local_x = x;
+                let mut local_y = y;
+                let mut current = pill.clone();
+                while current != island.fixed.clone().upcast::<gtk::Widget>() {
+                    #[allow(deprecated)]
+                    let allocation = current.allocation();
+                    local_x -= f64::from(allocation.x());
+                    local_y -= f64::from(allocation.y());
+                    current = current.parent()?;
+                }
+                if local_x < 0.0
+                    || local_y < 0.0
+                    || local_x >= f64::from(pill.width())
+                    || local_y >= f64::from(pill.height())
+                {
+                    return None;
+                }
+                let picked = pill.pick(local_x, local_y, gtk::PickFlags::DEFAULT)?;
+                let mut current = picked;
+                let mut descendant_has_click = false;
+                loop {
+                    if current != pill {
+                        let controllers = current.observe_controllers();
+                        descendant_has_click = (0..controllers.n_items()).any(|index| {
+                            controllers
+                                .item(index)
+                                .is_some_and(|controller| controller.is::<GestureClick>())
+                        });
+                        if descendant_has_click {
+                            break;
+                        }
+                    }
+                    if current == pill {
+                        break;
+                    }
+                    current = current.parent()?;
+                }
+                Some(current == pill && !descendant_has_click)
+            })
+            .unwrap_or(in_central);
+            if picked_pill
+                && matches!(island.current_view.get(), View::Compact | View::Media)
+                && in_central
+            {
                 island.toggle();
                 gesture.set_state(gtk::EventSequenceState::Claimed);
             }

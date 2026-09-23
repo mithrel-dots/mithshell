@@ -85,6 +85,7 @@ pub(crate) struct CircleIntegration {
     notifications: Option<Rc<NotificationCircle>>,
     animations: RefCell<[Option<CircleAnimation>; 2]>,
     tick_scheduled: Cell<bool>,
+    main_promoted_for_catcher: Cell<bool>,
     owner: Weak<IslandWindow>,
 }
 
@@ -188,6 +189,7 @@ impl CircleIntegration {
             notifications,
             animations: RefCell::new([None, None]),
             tick_scheduled: Cell::new(false),
+            main_promoted_for_catcher: Cell::new(false),
             owner: Rc::downgrade(island),
         };
         for (index, module) in [left, right].into_iter().enumerate() {
@@ -312,6 +314,11 @@ impl CircleIntegration {
     }
 
     pub(crate) fn relayout(&self, island: &IslandWindow) {
+        if self.full_host().is_some() && !self.main_promoted_for_catcher.replace(true) {
+            island.promote_main_above_dismiss_catcher();
+        } else if self.full_host().is_none() {
+            self.main_promoted_for_catcher.set(false);
+        }
         let central = island.central_circle_rect();
         let monitor = Rect {
             x: 0.0,

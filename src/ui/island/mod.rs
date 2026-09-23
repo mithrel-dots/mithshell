@@ -1370,18 +1370,18 @@ mod tests {
             }
             None
         }
-        fn emit_primary_click(widget: &gtk::Widget) {
-            let controllers = widget.observe_controllers();
+        fn emit_root_primary_click(root: &gtk::Widget, x: f64, y: f64) {
+            let controllers = root.observe_controllers();
             for index in 0..controllers.n_items() {
                 let controller = controllers.item(index).expect("controller");
                 if let Ok(click) = controller.downcast::<gtk::GestureClick>() {
                     click.set_button(1);
-                    click.emit_by_name::<()>("pressed", &[&1_i32, &0.0_f64, &0.0_f64]);
-                    click.emit_by_name::<()>("released", &[&1_i32, &0.0_f64, &0.0_f64]);
+                    click.emit_by_name::<()>("pressed", &[&1_i32, &x, &y]);
+                    click.emit_by_name::<()>("released", &[&1_i32, &x, &y]);
                     return;
                 }
             }
-            panic!("production click controller missing");
+            panic!("root fallback click controller missing");
         }
 
         for cycle in 0..10 {
@@ -1625,19 +1625,29 @@ mod tests {
                     first_allocated::<gtk::Button>(&island.compact_workspaces.clone().upcast())
                         .expect("workspace button");
                 let compact_root = island.compact.clone().upcast::<gtk::Widget>();
-                let workspace_point = point_in(&compact_root, &workspace.clone().upcast());
+                let workspace_point = point_in(&root, &workspace.clone().upcast());
+                let workspace_local = point_in(&compact_root, &workspace.clone().upcast());
                 let picked_workspace = compact_root
                     .pick(
-                        f64::from(workspace_point.x()),
-                        f64::from(workspace_point.y()),
+                        f64::from(workspace_local.x()),
+                        f64::from(workspace_local.y()),
                         gtk::PickFlags::DEFAULT,
                     )
                     .expect("workspace pick");
                 assert!(ancestry_has(&picked_workspace, "workspace-dot"));
                 assert!(ancestry_has(&picked_workspace, "compact-content"));
+                // The root fallback must not claim a descendant workspace
+                // target merely because it lies inside the central rectangle.
+                emit_root_primary_click(
+                    &root,
+                    f64::from(workspace_point.x()),
+                    f64::from(workspace_point.y()),
+                );
+                drain();
+                assert!(!island.dashboard_open.get());
 
-                // Pick the actual central pill background, then synthesize only
-                // the production GTK controller signal (not a compositor event).
+                // Pick the actual central pill background and exercise the
+                // production fixed-root fallback controller.
                 let compact_point = point_in(&root, &island.compact);
                 let picked_compact = root
                     .pick(
@@ -1647,7 +1657,11 @@ mod tests {
                     )
                     .expect("central pill pick");
                 assert!(!picked_compact.has_css_class("mithshell-hover-region"));
-                emit_primary_click(&island.compact);
+                emit_root_primary_click(
+                    &root,
+                    island.central_circle_rect().x + island.central_circle_rect().width / 2.0,
+                    island.central_circle_rect().y + island.central_circle_rect().height / 2.0,
+                );
                 drain();
                 assert!(island.dashboard_open.get());
                 assert_eq!(island.current_view.get(), View::Dashboard);

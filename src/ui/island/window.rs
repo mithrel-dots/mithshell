@@ -94,11 +94,10 @@ impl IslandWindow {
             dismiss_window.init_layer_shell();
         }
         dismiss_window.set_namespace(Some("mithshell-dismiss"));
-        // The catcher must remain below the main window.  Dashboard/search
-        // promote the main surface to Overlay; leaving this catcher at Top
-        // makes it win picking over close buttons while still covering the
-        // whole monitor.
-        dismiss_window.set_layer(Layer::Overlay);
+        // The catcher stays at Top. Views that need it promote the main
+        // surface to Overlay before presenting the catcher, so the catcher
+        // remains below every interactive main-window surface.
+        dismiss_window.set_layer(Layer::Top);
         dismiss_window.set_keyboard_mode(KeyboardMode::None);
         dismiss_window.set_monitor(Some(monitor));
         for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
@@ -673,6 +672,19 @@ impl IslandWindow {
         if let Some(overlay) = &self.pill_overlay {
             overlay.window.close();
         }
+    }
+
+    /// Establish the layer/stack invariant needed by outside dismissal:
+    /// `dismiss_window` is a full-screen Top-layer catcher and the interactive
+    /// main window must be Overlay while the catcher is mapped. This is also
+    /// needed for full notification circles, whose normal compact view stays
+    /// on Top rather than entering the dashboard view path.
+    pub(super) fn promote_main_above_dismiss_catcher(&self) {
+        self.window.set_layer(Layer::Overlay);
+        // Re-presenting is intentional: an already-visible catcher may have
+        // been shown before the main layer changed. Presenting the main window
+        // again re-establishes ordering without changing keyboard policy.
+        self.window.present();
     }
 
     fn start_clock(self: &Rc<Self>) {
