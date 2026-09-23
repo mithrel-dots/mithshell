@@ -179,6 +179,7 @@ pub(super) fn media_state_for_player(state: &MediaState, service: Option<&str>) 
         artist: player.artist.clone(),
         album: player.album.clone(),
         app_icon: player.app_icon.clone(),
+        art_url: player.art_url.clone(),
         position_us: player.position_us,
         length_us: player.length_us,
         can_play: player.can_play,

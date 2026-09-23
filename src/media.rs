@@ -298,6 +298,13 @@ fn media_player_from_properties(
         .get("xesam:album")
         .and_then(|value| value.get::<String>())
         .filter(|value| !value.is_empty());
+    let art_url = metadata
+        .get("mpris:artUrl")
+        .and_then(|value| value.get::<String>())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| {
+            !value.is_empty() && (value.starts_with("file://") || value.starts_with("https://"))
+        });
     let length_us = metadata
         .get("mpris:length")
         .and_then(|value| value.get::<i64>());
@@ -321,6 +328,7 @@ fn media_player_from_properties(
         artist,
         album,
         app_icon,
+        art_url,
         position_us,
         length_us,
         can_play: capability("CanPlay"),
@@ -339,6 +347,7 @@ fn media_state(active: MediaPlayer, players: Vec<MediaPlayer>) -> MediaState {
         artist: active.artist.clone(),
         album: active.album.clone(),
         app_icon: active.app_icon.clone(),
+        art_url: active.art_url.clone(),
         position_us: active.position_us,
         length_us: active.length_us,
         can_play: active.can_play,
@@ -467,6 +476,70 @@ mod tests {
         // Absent capability properties default to supported.
         assert!(state.can_play);
         assert!(state.can_pause);
+    }
+
+    #[test]
+    fn extracts_only_supported_nonblank_mpris_art_urls_and_tracks_active_player() {
+        let mut spotify = properties("Playing", "First track");
+        let mut metadata = spotify["Metadata"]
+            .get::<HashMap<String, glib::Variant>>()
+            .unwrap();
+        metadata.insert(
+            "mpris:artUrl".to_owned(),
+            "https://cdn.example/cover.jpg".to_variant(),
+        );
+        spotify.insert("Metadata".to_owned(), metadata.to_variant());
+        let first = media_player_from_properties(
+            "org.mpris.MediaPlayer2.spotify",
+            &spotify,
+            Some("spotify".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            first.art_url.as_deref(),
+            Some("https://cdn.example/cover.jpg")
+        );
+
+        let mut local = properties("Paused", "Second track");
+        let mut metadata = local["Metadata"]
+            .get::<HashMap<String, glib::Variant>>()
+            .unwrap();
+        metadata.insert(
+            "mpris:artUrl".to_owned(),
+            "file:///tmp/cover.png".to_variant(),
+        );
+        local.insert("Metadata".to_owned(), metadata.to_variant());
+        let second =
+            media_player_from_properties("org.mpris.MediaPlayer2.vlc", &local, None).unwrap();
+        assert_eq!(second.art_url.as_deref(), Some("file:///tmp/cover.png"));
+
+        let switched = media_state(second.clone(), vec![first.clone(), second]);
+        assert_eq!(switched.player, "vlc");
+        assert_eq!(switched.art_url.as_deref(), Some("file:///tmp/cover.png"));
+
+        for url in [
+            "",
+            "  ",
+            "http://example.com/cover.jpg",
+            "javascript:alert(1)",
+        ] {
+            let mut props = properties("Playing", "Track");
+            let mut metadata = props["Metadata"]
+                .get::<HashMap<String, glib::Variant>>()
+                .unwrap();
+            metadata.insert("mpris:artUrl".to_owned(), url.to_variant());
+            props.insert("Metadata".to_owned(), metadata.to_variant());
+            let parsed =
+                media_player_from_properties("org.mpris.MediaPlayer2.test", &props, None).unwrap();
+            assert_eq!(parsed.art_url, None, "unexpected accepted art URL {url:?}");
+        }
+        let absent = media_player_from_properties(
+            "org.mpris.MediaPlayer2.test",
+            &properties("Playing", "Track"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(absent.art_url, None);
     }
 
     #[test]

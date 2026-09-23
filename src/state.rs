@@ -97,6 +97,7 @@ pub struct MediaState {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub app_icon: Option<String>,
+    pub art_url: Option<String>,
     /// Track position at the moment this state was captured, in
     /// microseconds. Since `MediaState` is only ever produced for a
     /// `Playing` player, a progress bar can interpolate forward from this
@@ -120,6 +121,7 @@ pub struct MediaPlayer {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub app_icon: Option<String>,
+    pub art_url: Option<String>,
     pub position_us: i64,
     pub length_us: Option<i64>,
     pub can_play: bool,
