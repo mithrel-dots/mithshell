@@ -24,6 +24,9 @@ pub(crate) struct CircleHost {
     radius_style: gtk::CssProvider,
     state: Cell<State>,
     frame: Cell<Option<Frame>>,
+    /// Last pointer position reported by the fixed integration root. `None`
+    /// means the pointer has physically left the layer surface.
+    root_pointer: Cell<Option<(f64, f64)>>,
     /// The page currently presented.  `state.mode()` is the requested page;
     /// these intentionally differ while the integration fades between them.
     presented_page: Cell<Option<Mode>>,
@@ -81,6 +84,7 @@ impl CircleHost {
             radius_style,
             state: Cell::new(State::new(supports_full)),
             frame: Cell::new(None),
+            root_pointer: Cell::new(None),
             presented_page: Cell::new(None),
             on_change: RefCell::new(None),
             key_controller: gtk::EventControllerKey::new(),
@@ -98,16 +102,30 @@ impl CircleHost {
                 glib::Propagation::Proceed
             });
         host.surface.add_controller(host.key_controller.clone());
+        // The fixed root is authoritative for pointer ownership. Keep the
+        // production motion controller for GTK's normal event topology (and
+        // for descendants that enter after a page commit), but never accept a
+        // child leave: resizing/moving CircleSurface during animation can
+        // synthesize that leave for a stationary pointer. Root leave in
+        // CircleIntegration performs the real collapse, while repeated child
+        // enters are harmless because Pointer(true) is idempotent.
         let motion = gtk::EventControllerMotion::new();
         let weak = Rc::downgrade(&host);
         motion.connect_enter(move |_, _, _| {
-            if let Some(host) = weak.upgrade() {
+            if let Some(host) = weak.upgrade()
+                && host
+                    .root_pointer
+                    .get()
+                    .is_none_or(|(x, y)| host.frame.get().is_some_and(|frame| frame.contains(x, y)))
+            {
                 host.dispatch(Event::Pointer(true));
             }
         });
         let weak = Rc::downgrade(&host);
         motion.connect_leave(move |_| {
-            if let Some(host) = weak.upgrade() {
+            if let Some(host) = weak.upgrade()
+                && host.root_pointer.get().is_none()
+            {
                 host.dispatch(Event::Pointer(false));
             }
         });
@@ -152,6 +170,10 @@ impl CircleHost {
     /// Cleared immediately on absence, regardless of pending frame callbacks.
     pub(crate) fn frame(&self) -> Option<Frame> {
         self.frame.get()
+    }
+
+    pub(crate) fn set_root_pointer(&self, point: Option<(f64, f64)>) {
+        self.root_pointer.set(point);
     }
 
     /// A single layout invalidation hook; install before the first Content

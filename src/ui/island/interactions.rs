@@ -19,6 +19,9 @@ impl IslandWindow {
             && y >= 0.0
             && y < f64::from(self.metrics.compact_height + self.metrics.spacing(16));
         self.set_pointer_in_hover_region(inside);
+        if let Some(circles) = self.circles.borrow().as_ref() {
+            circles.update_pointer(x, y);
+        }
     }
 
     #[cfg(test)]
@@ -58,6 +61,30 @@ impl IslandWindow {
             pill.add_controller(click);
         }
 
+        // The layer input region is authoritative at the compositor boundary,
+        // but GTK picking can still stop at the ScrolledWindow/content wrapper
+        // instead of reaching the compact child.  Claim only a primary press
+        // inside the currently rendered central pill at the fixed root, and
+        // only for pill views; dashboard controls continue through normal
+        // child picking.
+        let central_click = GestureClick::new();
+        central_click.set_button(gdk::BUTTON_PRIMARY);
+        central_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        central_click.connect_pressed(move |gesture, _, x, y| {
+            let Some(island) = weak.upgrade() else {
+                return;
+            };
+            if matches!(island.current_view.get(), View::Compact | View::Media) && {
+                let rect = island.central_circle_rect();
+                x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+            } {
+                island.toggle();
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        self.fixed.add_controller(central_click);
+
         // Observe motion in capture phase on the actual GTK root. The old
         // transparent sibling could win picking over the pill and report
         // enter/leave for stale geometry. Root coordinates remain stable while
@@ -80,6 +107,9 @@ impl IslandWindow {
         surface_motion.connect_leave(move |_| {
             if let Some(island) = weak.upgrade() {
                 island.set_pointer_in_hover_region(false);
+                if let Some(circles) = island.circles.borrow().as_ref() {
+                    circles.clear_pointer();
+                }
             }
         });
         self.fixed.add_controller(surface_motion);

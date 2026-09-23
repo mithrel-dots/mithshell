@@ -89,6 +89,25 @@ pub(crate) struct CircleIntegration {
 }
 
 impl CircleIntegration {
+    /// Updates each circle from the fixed root's coordinates.  This is the
+    /// sole pointer source for circle hover: child motion controllers are not
+    /// reliable while their allocations are animated because GTK may report a
+    /// synthetic leave/enter without any physical pointer movement.
+    pub(crate) fn update_pointer(&self, x: f64, y: f64) {
+        for slot in self.slots.iter().flatten() {
+            slot.host.set_root_pointer(Some((x, y)));
+            let hovered = slot.host.frame().is_some_and(|frame| frame.contains(x, y));
+            slot.host.dispatch(Event::Pointer(hovered));
+        }
+    }
+
+    pub(crate) fn clear_pointer(&self) {
+        for slot in self.slots.iter().flatten() {
+            slot.host.set_root_pointer(None);
+            slot.host.dispatch(Event::Pointer(false));
+        }
+    }
+
     pub(crate) fn owns(&self, module: CircleModule) -> bool {
         self.slots
             .iter()
