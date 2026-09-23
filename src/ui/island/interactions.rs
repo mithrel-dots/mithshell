@@ -412,6 +412,12 @@ impl IslandWindow {
             });
 
         let dismiss_click = GestureClick::new();
+        let trace_press = super::window::trace_catcher();
+        dismiss_click.connect_pressed(move |_, _, x, y| {
+            if trace_press {
+                log::info!("dismiss catcher GTK press received x={x:.1} y={y:.1}");
+            }
+        });
         let weak = Rc::downgrade(self);
         dismiss_click.connect_released(move |_, _, _, _| {
             if super::window::trace_catcher() {
@@ -431,6 +437,15 @@ impl IslandWindow {
         dismiss_click.set_propagation_phase(gtk::PropagationPhase::Capture);
         self.dismiss_window.add_controller(dismiss_click.clone());
         *self.dismiss_click.borrow_mut() = Some(dismiss_click);
+
+        if super::window::trace_catcher() {
+            let motion = gtk::EventControllerMotion::new();
+            motion.connect_enter(|_, x, y| {
+                log::info!("dismiss catcher GTK enter received x={x:.1} y={y:.1}");
+            });
+            motion.connect_leave(|_| log::info!("dismiss catcher GTK leave received"));
+            self.dismiss_window.add_controller(motion);
+        }
 
         let header_click = GestureClick::new();
         header_click.set_propagation_phase(gtk::PropagationPhase::Bubble);
