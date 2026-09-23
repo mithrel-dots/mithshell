@@ -689,6 +689,16 @@ impl IslandWindow {
         self.window.present();
     }
 
+    pub(super) fn restore_main_layer_after_full_circle(&self) {
+        let layer = desired_main_layer(
+            self.current_view.get(),
+            self.launcher_presentation == crate::config::LauncherPresentation::Independent
+                && self.search_window.is_visible(),
+        );
+        self.window.set_layer(layer);
+        self.window.present();
+    }
+
     fn start_clock(self: &Rc<Self>) {
         self.update_clock();
         let weak = Rc::downgrade(self);
@@ -712,5 +722,29 @@ impl IslandWindow {
                 self.hero_date.set_label(&date);
             }
         }
+    }
+}
+
+fn desired_main_layer(view: View, independent_search_visible: bool) -> Layer {
+    if independent_search_visible || matches!(view, View::Dashboard | View::Weather | View::Search)
+    {
+        Layer::Overlay
+    } else {
+        Layer::Top
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    #[test]
+    fn full_circle_restores_top_only_without_another_overlay_owner() {
+        assert_eq!(desired_main_layer(View::Compact, false), Layer::Top);
+        assert_eq!(desired_main_layer(View::Media, false), Layer::Top);
+        assert_eq!(desired_main_layer(View::Compact, true), Layer::Overlay);
+        assert_eq!(desired_main_layer(View::Dashboard, false), Layer::Overlay);
+        assert_eq!(desired_main_layer(View::Weather, false), Layer::Overlay);
+        assert_eq!(desired_main_layer(View::Search, false), Layer::Overlay);
     }
 }

@@ -314,9 +314,15 @@ impl CircleIntegration {
     }
 
     pub(crate) fn relayout(&self, island: &IslandWindow) {
-        if self.full_host().is_some() && !self.main_promoted_for_catcher.replace(true) {
-            island.promote_main_above_dismiss_catcher();
-        } else if self.full_host().is_none() {
+        if self.full_host().is_some() {
+            if !self.main_promoted_for_catcher.replace(true) {
+                island.promote_main_above_dismiss_catcher();
+            }
+        } else if self.main_promoted_for_catcher.get() {
+            // Restore the layer before releasing ownership of the promotion.
+            // Dashboard/search/weather remain Overlay; compact/media return to
+            // Top only when no other view owns the Overlay layer.
+            island.restore_main_layer_after_full_circle();
             self.main_promoted_for_catcher.set(false);
         }
         let central = island.central_circle_rect();
