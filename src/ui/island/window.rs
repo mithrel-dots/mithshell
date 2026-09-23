@@ -94,7 +94,11 @@ impl IslandWindow {
             dismiss_window.init_layer_shell();
         }
         dismiss_window.set_namespace(Some("mithshell-dismiss"));
-        dismiss_window.set_layer(Layer::Top);
+        // The catcher must remain below the main window.  Dashboard/search
+        // promote the main surface to Overlay; leaving this catcher at Top
+        // makes it win picking over close buttons while still covering the
+        // whole monitor.
+        dismiss_window.set_layer(Layer::Overlay);
         dismiss_window.set_keyboard_mode(KeyboardMode::None);
         dismiss_window.set_monitor(Some(monitor));
         for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {

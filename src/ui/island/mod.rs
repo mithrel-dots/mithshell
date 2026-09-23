@@ -1388,7 +1388,7 @@ mod tests {
             for scale in [0.75, 1.0, 1.4, 1.75] {
                 let mut config = AppConfig::default();
                 config.shell.scale = scale;
-                config.shell.animation_ms = 0;
+                config.shell.animation_ms = 20;
                 config.circles.left = CircleModule::Tray;
                 config.circles.right = CircleModule::Notifications;
                 let actions = IslandActions {
@@ -1420,7 +1420,7 @@ mod tests {
                     format!("pick-{cycle}-{scale}"),
                     &config,
                     actions,
-                    false,
+                    true,
                 );
                 // This is the production snapshot path that creates the actual
                 // workspace buttons and gives the central pill a nonempty target.
@@ -1505,13 +1505,26 @@ mod tests {
                 assert!(tray_host.frame().is_some_and(|frame| {
                     (frame.rect.width - expected as f64).abs() < f64::EPSILON
                 }));
-                let _: () = tray_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
+                let tray_frame = tray_host.frame().expect("compact tray frame");
+                let tray_x = tray_frame.rect.x + tray_frame.rect.width / 2.0;
+                let tray_y = tray_frame.rect.y + tray_frame.rect.height / 2.0;
+                let _: () = root_motion.emit_by_name("enter", &[&tray_x, &tray_y]);
                 drain();
+                island.relayout_circles();
                 assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
                 assert_eq!(
                     tray_host.target_page(),
                     Some(super::circle::Mode::HoverExpanded)
                 );
+                // Animation remains enabled in this production-flow test.
+                // Repeated frame reallocations must not manufacture a leave
+                // and collapse a stationary pointer.
+                for _ in 0..12 {
+                    std::thread::sleep(std::time::Duration::from_millis(4));
+                    drain();
+                    island.relayout_circles();
+                    assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
+                }
                 assert!(
                     tray_host
                         .frame()
@@ -1528,16 +1541,12 @@ mod tests {
                 assert!(!island.pointer_in_hover_region.get());
                 assert_eq!(tray_host.mode(), super::circle::Mode::Compact);
                 let _: () = root_motion.emit_by_name("enter", &[&center_x, &center_y]);
-                let _: () = tray_motion.emit_by_name("enter", &[&0.0_f64, &0.0_f64]);
                 drain();
                 assert!(island.pointer_in_hover_region.get());
-                let tray_point = point_in(&root, tray_widget);
+                let _: () = root_motion.emit_by_name("enter", &[&tray_x, &tray_y]);
+                drain();
                 let picked_tray = root
-                    .pick(
-                        f64::from(tray_point.x()),
-                        f64::from(tray_point.y()),
-                        gtk::PickFlags::DEFAULT,
-                    )
+                    .pick(tray_x, tray_y, gtk::PickFlags::DEFAULT)
                     .expect("tray compact pick");
                 assert!(ancestry_has(&picked_tray, "circle-surface"));
                 assert!(!picked_tray.has_css_class("mithshell-hover-region"));
@@ -1581,6 +1590,9 @@ mod tests {
                 island.relayout_circles();
                 island.fixed.queue_allocate();
                 drain();
+                std::thread::sleep(std::time::Duration::from_millis(28));
+                drain();
+                island.relayout_circles();
                 assert_eq!(tray_host.mode(), super::circle::Mode::FullExpanded);
                 assert_eq!(
                     tray_host.presented_page(),

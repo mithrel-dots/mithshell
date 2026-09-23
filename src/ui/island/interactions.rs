@@ -47,26 +47,20 @@ impl IslandWindow {
         } = buttons;
         for pill in [&self.compact, self.media.upcast_ref()] {
             let click = GestureClick::new();
+            click.set_button(gdk::BUTTON_PRIMARY);
             let weak = Rc::downgrade(self);
-            click.connect_released(move |gesture, _, _, _| {
-                // `emit_by_name` in the Broadway regression test does not
-                // populate GtkGesture's compositor button state; it still
-                // exercises this production handler and is test-only.
-                if (gesture.current_button() == 1 || cfg!(test))
-                    && let Some(island) = weak.upgrade()
-                {
+            click.connect_released(move |_, _, _, _| {
+                if let Some(island) = weak.upgrade() {
                     island.toggle();
                 }
             });
             pill.add_controller(click);
         }
 
-        // The layer input region is authoritative at the compositor boundary,
-        // but GTK picking can still stop at the ScrolledWindow/content wrapper
-        // instead of reaching the compact child.  Claim only a primary press
-        // inside the currently rendered central pill at the fixed root, and
-        // only for pill views; dashboard controls continue through normal
-        // child picking.
+        // The layer input region is authoritative at the compositor boundary.
+        // Keep a root fallback only for a press whose GTK pick is exactly the
+        // pill background.  Never claim a descendant button/control: those
+        // must continue through their normal gesture path.
         let central_click = GestureClick::new();
         central_click.set_button(gdk::BUTTON_PRIMARY);
         central_click.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -75,7 +69,12 @@ impl IslandWindow {
             let Some(island) = weak.upgrade() else {
                 return;
             };
-            if matches!(island.current_view.get(), View::Compact | View::Media) && {
+            let picked = island.fixed.pick(x, y, gtk::PickFlags::DEFAULT);
+            let picked_pill = picked.as_ref().is_some_and(|picked| {
+                picked == island.compact.upcast_ref::<gtk::Widget>()
+                    || picked == island.media.upcast_ref::<gtk::Widget>()
+            });
+            if picked_pill && matches!(island.current_view.get(), View::Compact | View::Media) && {
                 let rect = island.central_circle_rect();
                 x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
             } {
