@@ -10,14 +10,28 @@ use gtk::{GestureClick, gdk, glib};
 use super::{IslandWindow, OverlayButtons, dominant_scroll_direction};
 
 impl IslandWindow {
-    fn update_pointer_from_root(self: &Rc<Self>, x: f64, y: f64) {
-        let left = f64::from(self.metrics.window_width - self.metrics.media_max_width) / 2.0
-            - f64::from(self.metrics.spacing(8));
-        let right = left + f64::from(self.metrics.media_max_width + self.metrics.spacing(16));
-        let inside = x >= left
-            && x < right
-            && y >= 0.0
-            && y < f64::from(self.metrics.compact_height + self.metrics.spacing(16));
+    pub(super) fn update_pointer_from_root(self: &Rc<Self>, x: f64, y: f64) {
+        // The layer/root is intentionally much larger than the visible pill
+        // (it also hosts the dashboard and overlay controls). Use the current
+        // rendered pill bounds so that the broad transparent surface cannot
+        // trigger hover from hundreds of pixels away. A small logical-pixel
+        // slop keeps edge crossings stable while the pill animates.
+        const HOVER_SLOP: f64 = 4.0;
+        let pill = match self.current_view.get() {
+            View::Compact => Some(self.compact.clone().upcast::<gtk::Widget>()),
+            View::Media => Some(self.media.clone().upcast::<gtk::Widget>()),
+            _ => None,
+        };
+        let inside = pill
+            .and_then(|pill| pill.compute_bounds(&self.fixed))
+            .is_some_and(|bounds| {
+                let left = f64::from(bounds.x()) - HOVER_SLOP;
+                let top = f64::from(bounds.y()) - HOVER_SLOP;
+                x >= left
+                    && x < left + f64::from(bounds.width()) + HOVER_SLOP * 2.0
+                    && y >= top
+                    && y < top + f64::from(bounds.height()) + HOVER_SLOP * 2.0
+            });
         self.set_pointer_in_hover_region(inside);
         if let Some(circles) = self.circles.borrow().as_ref() {
             circles.update_pointer(x, y);

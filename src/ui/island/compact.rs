@@ -380,6 +380,30 @@ mod tests {
         };
         drain(Duration::from_millis(50));
         let base_height = f64::from(island.metrics.compact_height);
+        let assert_hover_hitbox = |island: &Rc<super::super::IslandWindow>| {
+            let pill = match island.current_view.get() {
+                super::super::View::Compact => island.compact.clone().upcast::<gtk::Widget>(),
+                super::super::View::Media => island.media.clone().upcast::<gtk::Widget>(),
+                view => panic!("expected pill view for hover hitbox: {view:?}"),
+            };
+            let bounds = pill.compute_bounds(&island.fixed).unwrap();
+            let center_x = f64::from(bounds.x()) + f64::from(bounds.width()) / 2.0;
+            let center_y = f64::from(bounds.y()) + f64::from(bounds.height()) / 2.0;
+            island.update_pointer_from_root(center_x, center_y);
+            assert!(
+                island.pointer_in_hover_region.get(),
+                "pill center must hover"
+            );
+            let outside_x = center_x + f64::from(bounds.width()) / 2.0 + 40.0;
+            assert!(outside_x < f64::from(island.fixed.width()));
+            island.update_pointer_from_root(outside_x, center_y);
+            assert!(
+                !island.pointer_in_hover_region.get(),
+                "point outside visible pill triggered hover: bounds={bounds:?}"
+            );
+            island.update_pointer_from_root(center_x, center_y);
+            assert!(island.pointer_in_hover_region.get(), "re-entry must hover");
+        };
         let content = island.compact.clone();
         let samples: Samples = Rc::new(RefCell::new(Vec::new()));
         let sample_tick = |island: &Rc<super::super::IslandWindow>, samples: &Samples| {
@@ -413,6 +437,7 @@ mod tests {
         }
         drop(sampled);
         assert!(content.is_mapped() && content.width() > 0 && content.height() > 0);
+        assert_hover_hitbox(&island);
         island.compact_clock.set_can_target(true);
         let picked = island.compact.pick(
             f64::from(island.compact.width()) / 2.0,
@@ -491,6 +516,7 @@ mod tests {
             island.current_view.get() == super::super::View::Media
                 && !island.view_transition_active.get()
         });
+        assert_hover_hitbox(&island);
         drain(Duration::from_millis(30));
         let media_y_before = f64::from(island.media.compute_bounds(&island.fixed).unwrap().y());
         island.update_media(Some(&media));
@@ -535,6 +561,7 @@ mod tests {
             island.current_view.get() == super::super::View::Compact
                 && !island.view_transition_active.get()
         });
+        assert_hover_hitbox(&island);
 
         // Keep hover active while opening and closing the dashboard. The close
         // track returns to the raised compact target, so sample that incoming

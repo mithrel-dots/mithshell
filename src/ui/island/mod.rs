@@ -1707,8 +1707,11 @@ mod tests {
                 let root = island.fixed.clone().upcast::<gtk::Widget>();
                 let root_motion = motion_controller(&root);
                 let tray_motion = motion_controller(tray_widget);
-                let center_x = f64::from(island.metrics.window_width) / 2.0;
-                let center_y = f64::from(island.metrics.compact_height) / 2.0;
+                let compact_bounds = island.compact.compute_bounds(&island.fixed).unwrap();
+                let center_x =
+                    f64::from(compact_bounds.x()) + f64::from(compact_bounds.width()) / 2.0;
+                let center_y =
+                    f64::from(compact_bounds.y()) + f64::from(compact_bounds.height()) / 2.0;
                 let _: () = root_motion.emit_by_name("leave", &[]);
                 let _: () = tray_motion.emit_by_name("leave", &[]);
                 drain();
