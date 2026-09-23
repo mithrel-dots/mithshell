@@ -185,7 +185,11 @@ impl MediaCircle {
 
     fn set_media(&self, state: &MediaState) {
         for image in [&self.compact_icon, &self.hover_icon] {
-            icon::set_foreign_image(image, state.app_icon.as_deref(), Icon::Executable);
+            if image == &self.compact_icon {
+                set_compact_art(image, state.app_icon.as_deref(), self.icon_style);
+            } else {
+                icon::set_foreign_image(image, state.app_icon.as_deref(), Icon::Executable);
+            }
             image.set_tooltip_text(Some(&format!("{} — {}", state.title, state.player)));
         }
         self.hover_title.set_label(&state.title);
@@ -385,6 +389,31 @@ fn compact_page(
     (overlay, image, area)
 }
 
+/// File-backed MPRIS artwork can have a huge natural size; GtkImage's
+/// pixel-size hint only constrains themed icons. Decode and downsample paths
+/// before handing them to GTK, while preserving their aspect ratio.
+fn set_compact_art(image: &gtk::Image, name: Option<&str>, style: crate::config::IconStyle) {
+    let art_size = image.pixel_size().max(1) as u32;
+    if let Some(path) = name.map(str::trim).filter(|name| name.starts_with('/')) {
+        if let Ok(source) = image::open(path) {
+            let source = source.thumbnail(art_size, art_size).to_rgba8();
+            let (width, height) = source.dimensions();
+            let texture = gtk::gdk::MemoryTexture::new(
+                width as i32,
+                height as i32,
+                gtk::gdk::MemoryFormat::R8g8b8a8,
+                &glib::Bytes::from_owned(source.into_raw()),
+                width as usize * 4,
+            );
+            image.set_paintable(Some(&texture));
+        } else {
+            icon::set_icon(image.upcast_ref(), Icon::Executable, style);
+        }
+    } else {
+        icon::set_foreign_image(image, name, Icon::Executable);
+    }
+}
+
 fn hover_page(
     metrics: Metrics,
 ) -> (
@@ -397,14 +426,15 @@ fn hover_page(
     gtk::Button,
     gtk::Button,
 ) {
-    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
-    root.set_margin_start(metrics.spacing(10));
-    root.set_margin_end(metrics.spacing(10));
-    root.set_margin_top(metrics.spacing(6));
-    root.set_margin_bottom(metrics.spacing(6));
+    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
+    root.set_margin_start(metrics.spacing(6));
+    root.set_margin_end(metrics.spacing(6));
+    root.set_margin_top(metrics.spacing(2));
+    root.set_margin_bottom(metrics.spacing(2));
     root.add_css_class("media-circle-hover");
     let icon = gtk::Image::new();
-    icon.set_pixel_size(metrics.spacing(32));
+    icon.set_pixel_size(metrics.spacing(24));
+    icon.set_size_request(metrics.spacing(24), metrics.spacing(24));
     root.append(&icon);
     let text = gtk::Box::new(Orientation::Vertical, 0);
     let title = gtk::Label::new(None);
@@ -419,6 +449,7 @@ fn hover_page(
     root.append(&text);
     let select = gtk::ComboBoxText::new();
     select.set_hexpand(false);
+    select.set_size_request(metrics.spacing(72), -1);
     root.append(&select);
     let previous = icon::icon_button(Icon::Previous, metrics.icons);
     let play = icon::icon_button(Icon::Play, metrics.icons);
@@ -439,9 +470,7 @@ mod tests {
 
     use crate::{config::IconStyle, state::MediaPlayer};
 
-    use super::{
-        PlaybackStatus, Progress, SelectorUpdate, compact_page, progress_fraction, timer_needed,
-    };
+    use super::{PlaybackStatus, Progress, SelectorUpdate, progress_fraction, timer_needed};
     #[test]
     fn progress_is_safe_for_unknown_and_invalid_values() {
         assert_eq!(progress_fraction(-1, None), 0.0);
@@ -552,41 +581,134 @@ mod tests {
             .expect("monitor type");
         for scale in [1.0, 1.9] {
             let metrics = super::Metrics::new(&monitor, scale, 1.0, IconStyle::Symbolic);
-            let (compact, image, ring) = compact_page(
-                metrics,
-                Rc::new(std::cell::RefCell::new(Progress::default())),
-            );
+            let fixture = std::env::temp_dir().join(format!("media-circle-{scale}.png"));
+            image::RgbaImage::from_fn(320, 96, |x, y| image::Rgba([x as u8, y as u8, 0x80, 255]))
+                .save(&fixture)
+                .expect("oversized file-backed test artwork");
+            let fixture = fixture.to_string_lossy().into_owned();
+            let actions = super::MediaCircleActions {
+                play_pause: Rc::new(|_| {}),
+                next: Rc::new(|_| {}),
+                previous: Rc::new(|_| {}),
+                select: Rc::new(|_| {}),
+            };
+            let circle = super::MediaCircle::new(metrics, actions).expect("media circle");
             let mut state = test_media_state(PlaybackStatus::Paused, Some(10_000_000));
-            state.app_icon = Some("audio-x-generic".to_owned());
-            crate::ui::icon::set_foreign_image(
-                &image,
-                Some("audio-x-generic"),
-                crate::ui::icon::Icon::Executable,
-            );
-            image.set_tooltip_text(Some(&state.title));
+            state.app_icon = Some(fixture.clone());
+            circle.update(Some(&state));
             let window = gtk::Window::new();
-            window.set_child(Some(&compact));
+            let fixed = gtk::Fixed::new();
+            fixed.set_size_request(400, 200);
+            fixed.put(circle.host.widget(), 0.0, 0.0);
+            window.set_default_size(400, 200);
+            window.set_child(Some(&fixed));
+            let frame = super::super::circle::Frame {
+                rect: super::super::circle::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: metrics.spacing(32) as f64,
+                    height: metrics.spacing(32) as f64,
+                },
+                radius: metrics.spacing(16) as f64,
+            };
+            circle.host.render(circle.host.revision(), Some(frame));
+            circle.host.commit_page(circle.host.revision());
             window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
 
             let diameter = metrics.spacing(32);
             let art_size = metrics.spacing(24);
-            assert_eq!(
-                compact.width(),
-                diameter,
-                "compact diameter at scale {scale}"
-            );
+            let image = &circle.compact_icon;
+            let ring = &circle.progress_area;
+            assert_eq!(image.width(), art_size, "file art width at scale {scale}");
+            assert_eq!(image.height(), art_size, "file art height at scale {scale}");
             assert_eq!(ring.width(), diameter, "ring width at scale {scale}");
             assert_eq!(ring.height(), diameter, "ring height at scale {scale}");
             assert!(image.width() <= art_size, "art width at scale {scale}");
             assert!(image.height() <= art_size, "art height at scale {scale}");
-            let bounds = image.compute_bounds(&compact).expect("art bounds");
+            let bounds = image
+                .compute_bounds(circle.host.widget())
+                .expect("host-clipped artwork bounds");
             assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
-            assert!(bounds.x() + bounds.width() <= diameter as f32);
-            assert!(bounds.y() + bounds.height() <= diameter as f32);
+            assert!(
+                bounds.x() + bounds.width() <= diameter as f32,
+                "x bounds {bounds:?}, host width {}, scale {scale}",
+                circle.host.widget().width()
+            );
+            assert!(
+                bounds.y() + bounds.height() <= diameter as f32,
+                "y bounds {bounds:?}, host height {}, scale {scale}",
+                circle.host.widget().height()
+            );
+            let paintable = image.paintable().expect("file artwork texture");
+            assert!(paintable.intrinsic_width() <= art_size);
+            assert!(paintable.intrinsic_height() <= art_size);
+            assert!(paintable.intrinsic_width() > paintable.intrinsic_height());
+            assert!(
+                circle
+                    .host
+                    .widget()
+                    .pick(
+                        f64::from(diameter) / 2.0,
+                        f64::from(diameter) / 2.0,
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .is_some(),
+                "compact circle is targetable at scale {scale}"
+            );
+
+            // Exercise the real host page lifecycle and snapshot refresh while
+            // mapped; leave must return to the same bounded compact allocation.
+            circle
+                .host
+                .dispatch(super::super::circle::Event::Pointer(true));
+            let expanded = super::super::circle::Frame {
+                rect: super::super::circle::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: metrics.spacing(420) as f64,
+                    height: metrics.spacing(44) as f64,
+                },
+                radius: metrics.spacing(16) as f64,
+            };
+            circle.host.render(circle.host.revision(), Some(expanded));
+            circle.host.commit_page(circle.host.revision());
+            while gtk::glib::MainContext::default().iteration(false) {}
+            assert!(
+                circle.host.widget().height() <= metrics.spacing(44),
+                "media hover is shallow at scale {scale}: {}",
+                circle.host.widget().height()
+            );
+            assert!(circle.player_select.width() > 0, "selector remains usable");
+            assert!(
+                circle.player_select.width() <= metrics.spacing(72),
+                "selector stays compact at scale {scale}"
+            );
+            assert!(
+                circle
+                    .host
+                    .widget()
+                    .pick(
+                        f64::from(metrics.spacing(420)) - 8.0,
+                        f64::from(metrics.spacing(44)) / 2.0,
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .is_some(),
+                "hover controls remain targetable in available lane at scale {scale}"
+            );
+            circle.update(Some(&state));
+            circle
+                .host
+                .dispatch(super::super::circle::Event::Pointer(false));
+            circle.host.render(circle.host.revision(), Some(frame));
+            circle.host.commit_page(circle.host.revision());
+            while gtk::glib::MainContext::default().iteration(false) {}
+            assert_eq!(image.width(), art_size, "art after leave/update at {scale}");
+            assert_eq!(ring.width(), diameter, "ring after leave/update at {scale}");
 
             window.close();
             while gtk::glib::MainContext::default().iteration(false) {}
+            let _ = std::fs::remove_file(fixture);
         }
     }
 

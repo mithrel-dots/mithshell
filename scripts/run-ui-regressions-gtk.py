@@ -12,6 +12,8 @@ import pathlib
 import re
 import socket
 import subprocess
+import sys
+import sys
 import tempfile
 import time
 
@@ -30,8 +32,21 @@ TESTS = [
     "ui::island::view::tests::finished_integrated_search_is_visible_and_targetable",
     "ui::island::tray::tracker_tests::broadway_popovers_share_global_lifetime_and_close_on_invalidation",
     "ui::island::media_circle::tests::gtk_update_selection_and_timer_lifecycle",
+    "ui::island::media_circle::tests::compact_art_and_ring_fit_mapped_circle_at_runtime_scales",
     "ui::island::battery_wave::tests::playing_media_keeps_a_live_full_width_battery_background",
 ]
+if len(sys.argv) > 1:
+    requested = sys.argv[1:]
+    unknown = set(requested) - set(TESTS)
+    if unknown:
+        raise SystemExit("unknown GTK regression filter: " + ", ".join(sorted(unknown)))
+    TESTS = requested
+if len(sys.argv) > 1:
+    requested = set(sys.argv[1:])
+    unknown = requested.difference(TESTS)
+    if unknown:
+        raise SystemExit("unknown GTK regression filter(s): " + ", ".join(sorted(unknown)))
+    TESTS = [test for test in TESTS if test in requested]
 
 
 def free_port():
