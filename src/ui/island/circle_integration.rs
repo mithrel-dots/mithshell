@@ -32,6 +32,7 @@ struct CircleAnimation {
     incoming: crate::ui::motion::Profile,
     phase: AnimationPhase,
     page_committed: bool,
+    fade: bool,
     opacity_start: f64,
     total: Duration,
 }
@@ -383,6 +384,13 @@ impl CircleIntegration {
                             .or(presented)
                             .unwrap_or(circle::Mode::Compact);
                         let geometry_only = presented == Some(mode);
+                        // Media keeps its cover anchored at the left while
+                        // the pill grows. Switch to the matching hover page
+                        // immediately, then animate only the frame; fading
+                        // out the cover and back in makes it visibly blink.
+                        let no_fade_expand = slot.module == CircleModule::Media
+                            && mode == circle::Mode::HoverExpanded
+                            && mode_rank(mode) > mode_rank(from_mode);
                         let opacity_start = slot.host.widget().opacity();
                         let animation_ms = island.animation_ms.get();
                         if !island.animations_enabled.get() || animation_ms == 0 {
@@ -409,11 +417,17 @@ impl CircleIntegration {
                             true,
                             animation_ms,
                         );
-                        let total = geometry.duration.max(if geometry_only {
+                        let total = geometry.duration.max(if no_fade_expand {
+                            Duration::ZERO
+                        } else if geometry_only {
                             incoming.duration
                         } else {
                             out.duration.saturating_add(incoming.duration)
                         });
+                        if no_fade_expand {
+                            slot.host.commit_page(slot.host.revision());
+                            slot.host.widget().set_opacity(1.0);
+                        }
                         animations[index] = Some(CircleAnimation {
                             revision: slot.host.revision(),
                             from_mode,
@@ -424,12 +438,13 @@ impl CircleIntegration {
                             geometry,
                             out,
                             incoming,
-                            phase: if geometry_only {
+                            phase: if geometry_only || no_fade_expand {
                                 AnimationPhase::Incoming
                             } else {
                                 AnimationPhase::Outgoing
                             },
-                            page_committed: geometry_only,
+                            page_committed: geometry_only || no_fade_expand,
+                            fade: !no_fade_expand,
                             opacity_start: if geometry_only { opacity_start } else { 1.0 },
                             total,
                         });
@@ -445,7 +460,9 @@ impl CircleIntegration {
                         committed_now = true;
                         slot.host.widget().set_opacity(0.0);
                     }
-                    let opacity = if committed_now {
+                    let opacity = if !animation.fade {
+                        1.0
+                    } else if committed_now {
                         0.0
                     } else {
                         match animation.phase {

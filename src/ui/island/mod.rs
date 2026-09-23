@@ -1485,17 +1485,41 @@ mod tests {
         }
         assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
 
-        // Retarget during outgoing and verify the real transition reverses
-        // from its current visual instead of flashing through compact.
+        // Media expansion animates its geometry for the configured 420ms
+        // without fading the cover. The hover page is visible immediately;
+        // reversing during the expansion still starts the normal collapse.
+        island.animation_ms.set(420);
         media_host.dispatch(super::circle::Event::Pointer(true));
         island.relayout_circles();
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+        assert_eq!(media_host.test_opacity(), 1.0);
+        let start_width = media_host
+            .frame()
+            .expect("expanding media frame")
+            .rect
+            .width;
+        std::thread::sleep(std::time::Duration::from_millis(50));
         island.relayout_circles();
-        let before_retarget = media_host.test_opacity();
+        let middle_width = media_host.frame().expect("animated media frame").rect.width;
+        assert!(middle_width > start_width, "media frame still expands");
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            island.relayout_circles();
+            assert_eq!(media_host.test_opacity(), 1.0, "media cover must not fade");
+            assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+        }
+        island.animation_ms.set(100);
         media_host.dispatch(super::circle::Event::Pointer(false));
         island.relayout_circles();
+        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+        let collapse_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while media_host.test_visible_page().as_deref() != Some("compact")
+            && std::time::Instant::now() < collapse_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            island.relayout_circles();
+        }
         assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
-        assert!(media_host.test_opacity() >= before_retarget.min(1.0));
     }
 
     #[test]
