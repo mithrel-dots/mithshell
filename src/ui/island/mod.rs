@@ -178,6 +178,8 @@ pub struct IslandWindow {
     search_fixed: Fixed,
     search_surface: gtk::ScrolledWindow,
     dismiss_window: ApplicationWindow,
+    /// Full-size pick target for the mapped outside-click layer surface.
+    dismiss_area: gtk::Box,
     dismiss_click: RefCell<Option<gtk::GestureClick>>,
     fixed: Fixed,
     /// Stable, neutral hover hit target behind the moving pill. Its allocation
@@ -533,6 +535,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an isolated GTK display; run scripts/run-island-presentation-gtk.py"]
+    #[allow(deprecated)]
     fn integrated_search_return_uses_real_finish_and_scheduler_path() {
         gtk::init().expect("GTK display");
         let application = gtk::Application::new(
@@ -624,6 +627,28 @@ mod tests {
         };
         island.open_search();
         drain_search(&island);
+        // The outside catcher must be a real mapped/pickable GTK child, not
+        // merely a compositor surface reported at monitor size.  This is the
+        // regression that a synthetic GestureClick emission cannot cover.
+        let catcher_width = island.dismiss_area.allocated_width();
+        let catcher_height = island.dismiss_area.allocated_height();
+        assert!(
+            catcher_width > island.metrics.dashboard_width,
+            "mapped catcher width {catcher_width} did not cover the dashboard"
+        );
+        assert!(
+            catcher_height > island.metrics.dashboard_height,
+            "mapped catcher height {catcher_height} did not cover the dashboard"
+        );
+        let far_pick = island.dismiss_area.pick(
+            f64::from(catcher_width - 1),
+            f64::from(catcher_height - 1),
+            gtk::PickFlags::DEFAULT,
+        );
+        assert!(
+            far_pick.is_some(),
+            "mapped catcher had no GTK pick target at its far corner"
+        );
         // Seed the normal GTK focus before exercising the same production
         // return scheduler below; Broadway cannot activate a layer surface.
         island.search_entry.set_can_focus(true);

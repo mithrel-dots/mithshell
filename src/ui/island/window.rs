@@ -107,6 +107,18 @@ impl IslandWindow {
         let dismiss_area = gtk::Box::new(Orientation::Vertical, 0);
         dismiss_area.set_hexpand(true);
         dismiss_area.set_vexpand(true);
+        dismiss_area.set_can_target(true);
+        // An all-edge layer-shell window does not derive its GTK child
+        // allocation from the monitor geometry.  With only expand flags the
+        // child can retain a zero/natural allocation even while the
+        // compositor maps the surface over the whole monitor.  That leaves
+        // holes in the GTK pick tree (the symptom is an outside click that
+        // works only after it happens to land inside the main surface).
+        let monitor_geometry = monitor.geometry();
+        dismiss_area.set_size_request(
+            monitor_geometry.width().max(1),
+            monitor_geometry.height().max(1),
+        );
         dismiss_window.set_child(Some(&dismiss_area));
 
         let window = ApplicationWindow::builder()
@@ -301,6 +313,7 @@ impl IslandWindow {
             search_fixed,
             search_surface,
             dismiss_window,
+            dismiss_area: dismiss_area.clone(),
             dismiss_click: RefCell::new(None),
             fixed,
             content,
@@ -506,6 +519,16 @@ impl IslandWindow {
             }
         });
         island.window.present();
+        // Re-assert the catcher allocation after layer-shell has negotiated
+        // the mapped surface size.  The explicit input region is important
+        // for compositors that otherwise retain the pre-negotiation GTK
+        // input shape.
+        let weak = Rc::downgrade(&island);
+        island.dismiss_window.connect_realize(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.refresh_dismiss_input_region();
+            }
+        });
         let weak = Rc::downgrade(&island);
         glib::idle_add_local_once(move || {
             if let Some(island) = weak.upgrade() {
@@ -687,6 +710,25 @@ impl IslandWindow {
         // been shown before the main layer changed. Presenting the main window
         // again re-establishes ordering without changing keyboard policy.
         self.window.present();
+    }
+
+    /// Keep the compositor input shape synchronized with the actual GTK
+    /// allocation. The layer-shell protocol may negotiate the window size
+    /// after the child has first been realized.
+    #[allow(deprecated)]
+    pub(super) fn refresh_dismiss_input_region(&self) {
+        let Some(surface) = self.dismiss_window.surface() else {
+            return;
+        };
+        let width = self.dismiss_area.allocated_width();
+        let height = self.dismiss_area.allocated_height();
+        let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+            0,
+            0,
+            width.max(1),
+            height.max(1),
+        ));
+        surface.set_input_region(Some(&region));
     }
 
     pub(super) fn restore_main_layer_after_full_circle(&self) {

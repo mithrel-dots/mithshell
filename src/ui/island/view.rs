@@ -51,6 +51,7 @@ impl IslandWindow {
         if !catcher_was_visible || !self.window.is_visible() {
             self.window.present();
         }
+        self.refresh_dismiss_input_region();
     }
 
     fn dismiss_catcher_needed(&self) -> bool {

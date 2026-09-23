@@ -35,7 +35,7 @@ impl IslandWindow {
     pub(super) fn connect_interactions(
         self: &Rc<Self>,
         buttons: OverlayButtons<'_>,
-        dismiss_area: &gtk::Box,
+        _dismiss_area: &gtk::Box,
     ) {
         let OverlayButtons {
             close_button,
@@ -420,7 +420,13 @@ impl IslandWindow {
                 island.close();
             }
         });
-        dismiss_area.add_controller(dismiss_click.clone());
+        // Listen at the window root.  The full-size child remains pickable for
+        // the mapped surface, while the root capture phase is reliable when a
+        // layer-shell backend has a stale child pick region during the first
+        // mapped allocation. A GTK event controller can only belong to one
+        // widget, so do not attach this instance to both widgets.
+        dismiss_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        self.dismiss_window.add_controller(dismiss_click.clone());
         *self.dismiss_click.borrow_mut() = Some(dismiss_click);
 
         let header_click = GestureClick::new();
