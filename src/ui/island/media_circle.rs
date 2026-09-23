@@ -153,11 +153,11 @@ pub(crate) struct MediaCircle {
     hover_icon: gtk::Image,
     hover_title: gtk::Label,
     hover_artist: gtk::Label,
-    player_select: gtk::MenuButton,
+    player_select: gtk::Button,
     player_label: gtk::Label,
-    player_list: gtk::Box,
-    player_popover: gtk::Popover,
-    player_rows: RefCell<Vec<(String, gtk::Button)>>,
+    players: RefCell<Vec<(String, String)>>,
+    source_scroll: gtk::EventControllerScroll,
+    scroll_progress: Cell<f64>,
     previous: gtk::Button,
     play_pause: gtk::Button,
     next: gtk::Button,
@@ -195,8 +195,6 @@ impl MediaCircle {
             hover_artist,
             player_select,
             player_label,
-            player_list,
-            player_popover,
             previous,
             play_pause,
             next,
@@ -206,6 +204,13 @@ impl MediaCircle {
             hover: hover.clone().upcast(),
             full: None,
         })?;
+        let source_scroll =
+            gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+        // The CircleHost wraps expanded pages in a ScrolledWindow. Capture
+        // wheel events first so they change source instead of shifting a
+        // clipped page; this also works directly on the compact artwork.
+        source_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        host.widget().add_controller(source_scroll.clone());
         let circle = Rc::new(Self {
             host,
             progress,
@@ -216,9 +221,9 @@ impl MediaCircle {
             hover_artist,
             player_select,
             player_label,
-            player_list,
-            player_popover,
-            player_rows: RefCell::new(Vec::new()),
+            players: RefCell::new(Vec::new()),
+            source_scroll,
+            scroll_progress: Cell::new(0.0),
             previous,
             play_pause,
             next,
@@ -284,46 +289,21 @@ impl MediaCircle {
             .map(|player| (player.service.clone(), player.player.clone()))
             .collect();
         // Discovery can briefly lag the selected snapshot. Keep that source
-        // selectable without rebuilding an open popover on every position tick.
+        // available until the next snapshot reconciles the list.
         if !players.iter().any(|(service, _)| service == &state.service) {
             players.push((state.service.clone(), state.player.clone()));
         }
-        if self
-            .player_rows
-            .borrow()
-            .iter()
-            .map(|(service, button)| {
-                (
-                    service.clone(),
-                    button.label().unwrap_or_default().to_string(),
-                )
-            })
-            .collect::<Vec<_>>()
-            != players
-        {
-            while let Some(child) = self.player_list.first_child() {
-                self.player_list.remove(&child);
-            }
-            let mut rows = Vec::new();
-            for (service, name) in players {
-                let button = gtk::Button::with_label(&name);
-                button.set_halign(Align::Fill);
-                let weak = Rc::downgrade(self);
-                let service_for_click = service.clone();
-                button.connect_clicked(move |_| {
-                    if let Some(owner) = weak.upgrade() {
-                        owner.select_player(&service_for_click);
-                    }
-                });
-                self.player_list.append(&button);
-                rows.push((service, button));
-            }
-            *self.player_rows.borrow_mut() = rows;
+        if *self.players.borrow() != players {
+            *self.players.borrow_mut() = players;
+            self.scroll_progress.set(0.0);
         }
         self.player_label.set_label(&state.player);
         self.player_label.set_tooltip_text(Some(&state.player));
+        self.player_select.set_tooltip_text(Some(
+            "Scroll over the media circle or click to change source",
+        ));
         self.player_select
-            .set_tooltip_text(Some("Select media player"));
+            .set_sensitive(self.players.borrow().len() > 1);
         self.previous.set_sensitive(state.can_go_previous);
         self.next.set_sensitive(state.can_go_next);
         self.play_pause
@@ -340,21 +320,54 @@ impl MediaCircle {
     }
 
     fn select_player(&self, service: &str) {
-        self.player_popover.popdown();
         if self.current_service.borrow().as_deref() == Some(service) {
             return;
         }
         self.current_service.replace(Some(service.to_owned()));
-        if let Some((_, button)) = self
-            .player_rows
+        if let Some((_, name)) = self
+            .players
             .borrow()
             .iter()
             .find(|(source, _)| source == service)
         {
-            self.player_label
-                .set_label(button.label().as_deref().unwrap_or_default());
+            self.player_label.set_label(name);
         }
         (self.actions.select)(service.to_owned());
+    }
+
+    fn step_player(&self, direction: i32) -> bool {
+        let players = self.players.borrow();
+        if players.len() < 2 {
+            return false;
+        }
+        let index = players
+            .iter()
+            .position(|(service, _)| self.current_service.borrow().as_deref() == Some(service))
+            .unwrap_or_default();
+        let next = (index as i32 + direction).rem_euclid(players.len() as i32) as usize;
+        let service = players[next].0.clone();
+        drop(players);
+        self.select_player(&service);
+        true
+    }
+
+    fn scroll_player(&self, dx: f64, dy: f64) -> bool {
+        let delta = if dy.abs() >= dx.abs() { dy } else { dx };
+        if !delta.is_finite() || delta == 0.0 || self.players.borrow().len() < 2 {
+            return false;
+        }
+        let previous = self.scroll_progress.get();
+        let progress = if previous.signum() != delta.signum() {
+            delta
+        } else {
+            previous + delta
+        };
+        if progress.abs() < 1.0 {
+            self.scroll_progress.set(progress);
+            return true;
+        }
+        self.scroll_progress.set(0.0);
+        self.step_player(if progress > 0.0 { 1 } else { -1 })
     }
 
     fn update_artwork(self: &Rc<Self>, state: &MediaState) {
@@ -405,6 +418,23 @@ impl MediaCircle {
     }
 
     fn connect_actions(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.source_scroll.connect_scroll(move |_, dx, dy| {
+            if weak
+                .upgrade()
+                .is_some_and(|circle| circle.scroll_player(dx, dy))
+            {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.player_select.connect_clicked(move |_| {
+            if let Some(circle) = weak.upgrade() {
+                circle.step_player(1);
+            }
+        });
         for (button, action) in [
             (&self.previous, self.actions.previous.clone()),
             (&self.next, self.actions.next.clone()),
@@ -467,13 +497,13 @@ impl MediaCircle {
 
     #[cfg(test)]
     pub(crate) fn test_select_service(&self, service: &str) {
-        if let Some((_, button)) = self
-            .player_rows
+        if self
+            .players
             .borrow()
             .iter()
-            .find(|(source, _)| source == service)
+            .any(|(source, _)| source == service)
         {
-            button.emit_clicked();
+            self.select_player(service);
         }
     }
 
@@ -575,10 +605,8 @@ fn hover_page(
     gtk::Image,
     gtk::Label,
     gtk::Label,
-    gtk::MenuButton,
+    gtk::Button,
     gtk::Label,
-    gtk::Box,
-    gtk::Popover,
     gtk::Button,
     gtk::Button,
     gtk::Button,
@@ -614,22 +642,14 @@ fn hover_page(
     text.append(&title);
     text.append(&artist);
     root.append(&text);
-    let select = gtk::MenuButton::new();
+    let select = gtk::Button::new();
     select.set_hexpand(false);
     select.set_valign(Align::Center);
     let source_label = gtk::Label::new(None);
-    source_label.set_width_chars(3);
-    source_label.set_max_width_chars(5);
+    source_label.set_width_chars(2);
+    source_label.set_max_width_chars(4);
     source_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     select.set_child(Some(&source_label));
-    let sources = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
-    sources.set_margin_start(metrics.spacing(3));
-    sources.set_margin_end(metrics.spacing(3));
-    sources.set_margin_top(metrics.spacing(2));
-    sources.set_margin_bottom(metrics.spacing(2));
-    let popover = gtk::Popover::new();
-    popover.set_child(Some(&sources));
-    select.set_popover(Some(&popover));
     root.append(&select);
     let previous = icon::icon_button(Icon::Previous, metrics.icons);
     let play = icon::icon_button(Icon::Play, metrics.icons);
@@ -645,8 +665,6 @@ fn hover_page(
         artist,
         select,
         source_label,
-        sources,
-        popover,
         previous,
         play,
         next,
@@ -956,31 +974,29 @@ mod tests {
                 scroller.hadjustment().upper(),
                 scroller.hadjustment().page_size()
             );
-            hover_circle.player_popover.popup();
-            while gtk::glib::MainContext::default().iteration(false) {}
-            let source_button = hover_circle.player_rows.borrow()[1].1.clone();
-            assert!(
-                source_button.is_mapped()
-                    && source_button.width() > 0
-                    && source_button.height() > 0,
-                "second source row is visible and clickable at scale {scale}"
-            );
-            let source_point = source_button
-                .compute_bounds(&hover_circle.player_popover)
-                .expect("second source inside popover");
             assert!(
                 hover_circle
-                    .player_popover
-                    .pick(
-                        f64::from(source_point.x() + source_point.width() / 2.0),
-                        f64::from(source_point.y() + source_point.height() / 2.0),
-                        gtk::PickFlags::DEFAULT,
-                    )
-                    .is_some(),
-                "second source is pickable at scale {scale}"
+                    .source_scroll
+                    .emit_by_name::<bool>("scroll", &[&0.0_f64, &1.0_f64]),
             );
-            hover_circle.test_select_service("org.test.other");
-            assert_eq!(selected.get(), 1, "user selected another source at {scale}");
+            assert_eq!(
+                selected.get(),
+                1,
+                "wheel selected another source at {scale}"
+            );
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.other")
+            );
+            hover_circle
+                .source_scroll
+                .emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]);
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.player")
+            );
+            hover_circle.player_select.emit_clicked();
+            assert_eq!(selected.get(), 3, "click also cycles sources at {scale}");
             assert_eq!(
                 hover_circle.test_service().as_deref(),
                 Some("org.test.other")
@@ -1051,6 +1067,14 @@ mod tests {
                 hover_circle.progress_area.width(),
                 diameter,
                 "ring after leave/update at {scale}"
+            );
+            hover_circle
+                .source_scroll
+                .emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]);
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.player"),
+                "wheel switches source from the compact circle at scale {scale}"
             );
 
             hover_window.close();
