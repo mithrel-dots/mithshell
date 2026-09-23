@@ -362,12 +362,24 @@ impl MediaCircle {
         } else {
             previous + delta
         };
+        if !progress.is_finite() {
+            self.scroll_progress.set(0.0);
+            return false;
+        }
         if progress.abs() < 1.0 {
             self.scroll_progress.set(progress);
             return true;
         }
-        self.scroll_progress.set(0.0);
-        self.step_player(if progress > 0.0 { 1 } else { -1 })
+        self.scroll_progress.set(progress.fract());
+        // Smooth trackpads can report several whole steps in one event. Limit
+        // callbacks per frame for extreme devices but retain the fractional
+        // distance so normal gestures never lose their overshoot.
+        let steps = progress.abs().floor().min(32.0) as usize;
+        let direction = if progress > 0.0 { 1 } else { -1 };
+        for _ in 0..steps {
+            self.step_player(direction);
+        }
+        true
     }
 
     fn update_artwork(self: &Rc<Self>, state: &MediaState) {
@@ -997,6 +1009,49 @@ mod tests {
             );
             hover_circle.player_select.emit_clicked();
             assert_eq!(selected.get(), 3, "click also cycles sources at {scale}");
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.other")
+            );
+            for fraction in [0.4_f64, 0.4_f64] {
+                hover_circle
+                    .source_scroll
+                    .emit_by_name::<bool>("scroll", &[&0.0_f64, &fraction]);
+            }
+            assert_eq!(
+                selected.get(),
+                3,
+                "fractional wheel input has not crossed a step"
+            );
+            hover_circle
+                .source_scroll
+                .emit_by_name::<bool>("scroll", &[&0.0_f64, &0.3_f64]);
+            assert_eq!(selected.get(), 4, "fractions accumulate to one source step");
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.player")
+            );
+            hover_circle
+                .source_scroll
+                .emit_by_name::<bool>("scroll", &[&0.0_f64, &2.1_f64]);
+            assert_eq!(
+                selected.get(),
+                6,
+                "multi-unit wheel input applies each step"
+            );
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.player"),
+                "two steps wrap back to the first of two sources"
+            );
+            assert!(
+                (hover_circle.scroll_progress.get() - 0.2).abs() < 1e-9,
+                "preserve fractional overshoot across wheel events"
+            );
+            hover_circle
+                .source_scroll
+                .emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]);
+            assert_eq!(selected.get(), 7, "reverse wheel direction changes source");
             assert_eq!(
                 hover_circle.test_service().as_deref(),
                 Some("org.test.other")
