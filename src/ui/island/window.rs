@@ -529,6 +529,21 @@ impl IslandWindow {
                 island.refresh_dismiss_input_region();
             }
         });
+        // Layer-shell negotiation can complete after `realize`. Re-send the
+        // region after map and once more from idle so the post-map wl_surface
+        // commit cannot retain the initial empty input shape.
+        let weak = Rc::downgrade(&island);
+        island.dismiss_window.connect_map(move |_| {
+            if let Some(island) = weak.upgrade() {
+                island.refresh_dismiss_input_region();
+                let weak = Rc::downgrade(&island);
+                glib::idle_add_local_once(move || {
+                    if let Some(island) = weak.upgrade() {
+                        island.refresh_dismiss_input_region();
+                    }
+                });
+            }
+        });
         let weak = Rc::downgrade(&island);
         glib::idle_add_local_once(move || {
             if let Some(island) = weak.upgrade() {
@@ -722,6 +737,16 @@ impl IslandWindow {
         };
         let width = self.dismiss_area.allocated_width();
         let height = self.dismiss_area.allocated_height();
+        if trace_catcher() {
+            log::info!(
+                "dismiss catcher input region commit mapped={} window={}x{} child={}x{}",
+                self.dismiss_window.is_mapped(),
+                self.dismiss_window.width(),
+                self.dismiss_window.height(),
+                width,
+                height
+            );
+        }
         let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
             0,
             0,
@@ -729,6 +754,9 @@ impl IslandWindow {
             height.max(1),
         ));
         surface.set_input_region(Some(&region));
+        // The region is transmitted with the next wl_surface commit. The
+        // catcher has no normal visual changes, so request that commit.
+        self.dismiss_window.queue_draw();
     }
 
     pub(super) fn restore_main_layer_after_full_circle(&self) {
@@ -765,6 +793,10 @@ impl IslandWindow {
             }
         }
     }
+}
+
+pub(super) fn trace_catcher() -> bool {
+    std::env::var_os("MITHSHELL_TRACE_CATCHER").is_some()
 }
 
 fn desired_main_layer(view: View, independent_search_visible: bool) -> Layer {

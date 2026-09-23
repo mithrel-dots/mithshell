@@ -414,6 +414,9 @@ impl IslandWindow {
         let dismiss_click = GestureClick::new();
         let weak = Rc::downgrade(self);
         dismiss_click.connect_released(move |_, _, _, _| {
+            if super::window::trace_catcher() {
+                log::info!("dismiss catcher GTK release received");
+            }
             if let Some(island) = weak.upgrade()
                 && !island.dismiss_full_circle()
             {
