@@ -1578,7 +1578,7 @@ mod tests {
         }
 
         for cycle in 0..10 {
-            for scale in [0.75, 1.0, 1.4, 1.75] {
+            for scale in [0.75, 1.0, 1.4, 1.45, 1.75] {
                 let mut config = AppConfig::default();
                 config.shell.scale = scale;
                 config.shell.animation_ms = 20;
@@ -1657,7 +1657,7 @@ mod tests {
                 island.fixed.queue_allocate();
                 drain();
 
-                let expected = (32.0 * scale).round() as i32;
+                let expected = (32.0 * scale).ceil() as i32;
                 let tray_host = island
                     .circles
                     .borrow()
