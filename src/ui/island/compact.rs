@@ -174,6 +174,7 @@ impl IslandWindow {
         self.pill_animation_generation.set(generation);
         if profile.duration.is_zero() {
             self.apply_geometry(target);
+            self.sync_pill_content_geometry(target);
             return;
         }
         let started = Cell::new(None::<i64>);
@@ -191,12 +192,93 @@ impl IslandWindow {
                 now
             });
             let progress = profile.progress(Duration::from_micros((now - origin).max(0) as u64));
-            island.apply_geometry(start.interpolate(target, progress));
+            let geometry = start.interpolate(target, progress);
+            island.apply_geometry(geometry);
+            island.sync_pill_content_geometry(geometry);
             if progress >= 1.0 {
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
             }
         });
+    }
+
+    /// Keeps the fixed-size foreground centered in the animated pill surface.
+    ///
+    /// `surface` is the animated backdrop and grows symmetrically for hover,
+    /// while the compact/media roots deliberately retain their natural size so
+    /// labels and icons do not scale with the chrome.  Without this correction
+    /// the roots stay at the surface's old top edge: the backdrop moves down
+    /// and grows, but its contents do not.  Positioning the unchanged content
+    /// in the animated surface preserves both visual alignment and GTK's real
+    /// descendant pick coordinates.
+    pub(super) fn sync_pill_content_geometry(&self, geometry: Geometry) {
+        let (widget, base_width, base_height) = match self.current_view.get() {
+            View::Compact => (
+                &self.compact,
+                self.compact_width.get(),
+                self.metrics.compact_height,
+            ),
+            View::Media => (
+                self.media.upcast_ref::<gtk::Widget>(),
+                self.media_width.get(),
+                self.metrics.media_height,
+            ),
+            _ => return,
+        };
+        let (x, y) =
+            pill_content_offset(geometry, self.metrics.window_width, base_width, base_height);
+        self.content.move_(widget, x, y);
+    }
+}
+
+/// Returns the fixed-content position inside an animated pill surface. The
+/// foreground dimensions remain unchanged; only its position follows the
+/// surface's expanding frame.
+fn pill_content_offset(
+    geometry: Geometry,
+    window_width: i32,
+    content_width: i32,
+    content_height: i32,
+) -> (f64, f64) {
+    (
+        f64::from((window_width - content_width) / 2),
+        ((geometry.height - f64::from(content_height)) / 2.0).max(0.0),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Geometry, pill_content_offset};
+
+    #[test]
+    fn content_stays_centered_at_every_hover_frame_without_scaling() {
+        let base = Geometry {
+            width: 380.0,
+            height: 61.0,
+            y: 0.0,
+        };
+        let target = Geometry {
+            width: 395.2,
+            height: 68.6,
+            y: 3.8,
+        };
+        let content_width = 380;
+        let content_height = 61;
+
+        for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let frame = base.interpolate(target, progress);
+            let (x, y) = pill_content_offset(frame, 1_700, content_width, content_height);
+            let expected_x = f64::from((1_700 - content_width) / 2);
+            let expected_y = (frame.height - f64::from(content_height)) / 2.0;
+            assert_eq!(x, expected_x);
+            assert!((y - expected_y.max(0.0)).abs() < f64::EPSILON);
+
+            // The foreground is intentionally not scaled with the backdrop.
+            assert_eq!(content_width, 380);
+            assert_eq!(content_height, 61);
+            assert!(x >= 0.0 && x + f64::from(content_width) <= 1_700.0);
+            assert!(y >= 0.0 && y + f64::from(content_height) <= frame.height + 0.001);
+        }
     }
 }
