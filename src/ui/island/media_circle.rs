@@ -5,8 +5,6 @@
 //! actions; it does not create another MPRIS listener or media store.
 
 #![allow(dead_code)]
-#![allow(deprecated)] // ComboBoxText remains the project's GTK4-compatible selector.
-
 use std::{
     cell::{Cell, RefCell},
     io::Read,
@@ -153,9 +151,7 @@ pub(crate) struct MediaCircle {
     hover_icon: gtk::Image,
     hover_title: gtk::Label,
     hover_artist: gtk::Label,
-    player_select: gtk::Button,
-    player_label: gtk::Label,
-    players: RefCell<Vec<(String, String)>>,
+    players: RefCell<Vec<String>>,
     source_scroll: gtk::EventControllerScroll,
     scroll_progress: Cell<f64>,
     previous: gtk::Button,
@@ -188,17 +184,8 @@ impl MediaCircle {
     ) -> Result<Rc<Self>, &'static str> {
         let progress = Rc::new(RefCell::new(Progress::default()));
         let (compact, compact_icon, progress_area) = compact_page(metrics, progress.clone());
-        let (
-            hover,
-            hover_icon,
-            hover_title,
-            hover_artist,
-            player_select,
-            player_label,
-            previous,
-            play_pause,
-            next,
-        ) = hover_page(metrics);
+        let (hover, hover_icon, hover_title, hover_artist, previous, play_pause, next) =
+            hover_page(metrics);
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
@@ -219,8 +206,6 @@ impl MediaCircle {
             hover_icon,
             hover_title,
             hover_artist,
-            player_select,
-            player_label,
             players: RefCell::new(Vec::new()),
             source_scroll,
             scroll_progress: Cell::new(0.0),
@@ -283,27 +268,20 @@ impl MediaCircle {
         self.hover_artist
             .set_label(state.artist.as_deref().unwrap_or_default());
         self.hover_artist.set_visible(state.artist.is_some());
-        let mut players: Vec<(String, String)> = state
+        let mut players: Vec<String> = state
             .players
             .iter()
-            .map(|player| (player.service.clone(), player.player.clone()))
+            .map(|player| player.service.clone())
             .collect();
         // Discovery can briefly lag the selected snapshot. Keep that source
         // available until the next snapshot reconciles the list.
-        if !players.iter().any(|(service, _)| service == &state.service) {
-            players.push((state.service.clone(), state.player.clone()));
+        if !players.contains(&state.service) {
+            players.push(state.service.clone());
         }
         if *self.players.borrow() != players {
             *self.players.borrow_mut() = players;
             self.scroll_progress.set(0.0);
         }
-        self.player_label.set_label(&state.player);
-        self.player_label.set_tooltip_text(Some(&state.player));
-        self.player_select.set_tooltip_text(Some(
-            "Scroll over the media circle or click to change source",
-        ));
-        self.player_select
-            .set_sensitive(self.players.borrow().len() > 1);
         self.previous.set_sensitive(state.can_go_previous);
         self.next.set_sensitive(state.can_go_next);
         self.play_pause
@@ -324,14 +302,6 @@ impl MediaCircle {
             return;
         }
         self.current_service.replace(Some(service.to_owned()));
-        if let Some((_, name)) = self
-            .players
-            .borrow()
-            .iter()
-            .find(|(source, _)| source == service)
-        {
-            self.player_label.set_label(name);
-        }
         (self.actions.select)(service.to_owned());
     }
 
@@ -342,10 +312,10 @@ impl MediaCircle {
         }
         let index = players
             .iter()
-            .position(|(service, _)| self.current_service.borrow().as_deref() == Some(service))
+            .position(|service| self.current_service.borrow().as_deref() == Some(service))
             .unwrap_or_default();
         let next = (index as i32 + direction).rem_euclid(players.len() as i32) as usize;
-        let service = players[next].0.clone();
+        let service = players[next].clone();
         drop(players);
         self.select_player(&service);
         true
@@ -441,12 +411,6 @@ impl MediaCircle {
                 glib::Propagation::Proceed
             }
         });
-        let weak = Rc::downgrade(self);
-        self.player_select.connect_clicked(move |_| {
-            if let Some(circle) = weak.upgrade() {
-                circle.step_player(1);
-            }
-        });
         for (button, action) in [
             (&self.previous, self.actions.previous.clone()),
             (&self.next, self.actions.next.clone()),
@@ -509,12 +473,7 @@ impl MediaCircle {
 
     #[cfg(test)]
     pub(crate) fn test_select_service(&self, service: &str) {
-        if self
-            .players
-            .borrow()
-            .iter()
-            .any(|(source, _)| source == service)
-        {
+        if self.players.borrow().iter().any(|source| source == service) {
             self.select_player(service);
         }
     }
@@ -546,7 +505,11 @@ fn compact_page(
     let diameter = metrics.spacing(COMPACT_DIAMETER);
     let art_size = metrics.spacing(COMPACT_DIAMETER - ART_INSET * 2);
     overlay.set_size_request(diameter, diameter);
-    overlay.set_halign(Align::Center);
+    // The right-side circle expands from a fixed left edge. Its compact page
+    // stays presented through the outgoing part of that animation; centering
+    // this overlay in the growing Stack sends the cover to the right before
+    // the hover page commits and snaps it back. Pin it to that same left edge.
+    overlay.set_halign(Align::Start);
     overlay.set_valign(Align::Center);
     overlay.add_css_class("media-circle-compact");
     let image = gtk::Image::new();
@@ -618,13 +581,11 @@ fn hover_page(
     gtk::Label,
     gtk::Label,
     gtk::Button,
-    gtk::Label,
-    gtk::Button,
     gtk::Button,
     gtk::Button,
 ) {
     let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(1));
-    root.set_margin_start(metrics.spacing(3));
+    root.set_margin_start(metrics.spacing(4));
     root.set_margin_end(metrics.spacing(3));
     root.set_margin_top(metrics.spacing(2));
     root.set_margin_bottom(metrics.spacing(2));
@@ -644,25 +605,16 @@ fn hover_page(
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.set_single_line_mode(true);
     title.set_width_chars(2);
-    title.set_max_width_chars(6);
+    title.set_max_width_chars(12);
     let artist = gtk::Label::new(None);
     artist.set_xalign(0.0);
     artist.add_css_class("dim-label");
     artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
     artist.set_single_line_mode(true);
-    artist.set_max_width_chars(6);
+    artist.set_max_width_chars(12);
     text.append(&title);
     text.append(&artist);
     root.append(&text);
-    let select = gtk::Button::new();
-    select.set_hexpand(false);
-    select.set_valign(Align::Center);
-    let source_label = gtk::Label::new(None);
-    source_label.set_width_chars(2);
-    source_label.set_max_width_chars(4);
-    source_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    select.set_child(Some(&source_label));
-    root.append(&select);
     let previous = icon::icon_button(Icon::Previous, metrics.icons);
     let play = icon::icon_button(Icon::Play, metrics.icons);
     let next = icon::icon_button(Icon::Next, metrics.icons);
@@ -670,17 +622,7 @@ fn hover_page(
         button.add_css_class("media-circle-control");
         root.append(button);
     }
-    (
-        root,
-        icon,
-        title,
-        artist,
-        select,
-        source_label,
-        previous,
-        play,
-        next,
-    )
+    (root, icon, title, artist, previous, play, next)
 }
 
 #[cfg(test)]
@@ -743,18 +685,13 @@ mod tests {
         let drawing_area = circle.progress_area.downgrade();
         let state = test_media_state(PlaybackStatus::Playing, Some(10_000_000));
         circle.update(Some(&state));
-        assert_eq!(
-            selected.get(),
-            0,
-            "snapshot selector update emitted an action"
-        );
+        assert_eq!(selected.get(), 0, "snapshot update switched sources");
         assert!(
             circle.tick.borrow().is_some(),
             "known duration starts timer"
         );
 
-        // This is the same signal path used by a user selecting a different
-        // row, unlike update()'s guarded programmatic selection.
+        // The same callback path as wheel selection, unlike a snapshot update.
         circle.test_select_service("org.test.other");
         assert_eq!(selected.get(), 1, "user selection emits exactly once");
 
@@ -872,12 +809,48 @@ mod tests {
                     .is_some(),
                 "compact circle is targetable at scale {scale}"
             );
+            let compact_art_x = bounds.x();
+            // A 420ms hover keeps the compact page presented while its frame
+            // grows. The art must not slide toward the middle of that frame
+            // before the expanded page replaces it.
+            circle
+                .host
+                .dispatch(super::super::circle::Event::Pointer(true));
+            for design_width in [48, 120, 210] {
+                let animated_frame = super::super::circle::Frame {
+                    rect: super::super::circle::Rect {
+                        width: metrics.spacing(design_width) as f64,
+                        ..frame.rect
+                    },
+                    ..frame
+                };
+                circle
+                    .host
+                    .render(circle.host.revision(), Some(animated_frame));
+                circle
+                    .host
+                    .widget()
+                    .allocate(animated_frame.rect.width as i32, diameter, -1, None);
+                fixed.queue_resize();
+                while gtk::glib::MainContext::default().iteration(false) {}
+                assert_eq!(
+                    circle.host.presented_page(),
+                    Some(super::super::circle::Mode::Compact)
+                );
+                let moving_bounds = image
+                    .compute_bounds(circle.host.widget())
+                    .expect("artwork during outgoing hover animation");
+                assert!(
+                    (moving_bounds.x() - compact_art_x).abs() <= 1.0,
+                    "art slides at scale {scale}, width {design_width}: {moving_bounds:?} vs x={compact_art_x}"
+                );
+            }
 
             window.close();
             while gtk::glib::MainContext::default().iteration(false) {}
 
             // Map a new, production CircleHost in the actual media side-lane
-            // width. The source menu and all controls must fit without making
+            // width. All controls must fit without making
             // the shared scroller horizontally scrollable.
             let selected = Rc::new(Cell::new(0));
             let on_select = selected.clone();
@@ -923,22 +896,14 @@ mod tests {
                 "media hover is shallow at scale {scale}: {}",
                 hover_circle.host.widget().height()
             );
-            assert!(
-                hover_circle.player_select.width() > 0,
-                "selector remains usable"
-            );
-            assert!(
-                hover_circle.player_select.width() <= metrics.spacing(60),
-                "selector stays compact at scale {scale}: {}",
-                hover_circle.player_select.width()
-            );
-            let source_bounds = hover_circle
-                .player_select
+            let expanded_art = hover_circle
+                .hover_icon
                 .compute_bounds(hover_circle.host.widget())
-                .expect("source picker bounds");
-            assert!(source_bounds.x() >= 0.0 && source_bounds.y() >= 0.0);
-            assert!(source_bounds.x() + source_bounds.width() <= expanded.rect.width as f32);
-            assert!(source_bounds.y() + source_bounds.height() <= expanded.rect.height as f32);
+                .expect("hover cover art bounds");
+            assert!(
+                (expanded_art.x() - compact_art_x).abs() <= 1.0,
+                "cover jumps at page commit at scale {scale}: {expanded_art:?} vs x={compact_art_x}"
+            );
             for button in [
                 &hover_circle.previous,
                 &hover_circle.play_pause,
@@ -1007,12 +972,6 @@ mod tests {
                 hover_circle.test_service().as_deref(),
                 Some("org.test.player")
             );
-            hover_circle.player_select.emit_clicked();
-            assert_eq!(selected.get(), 3, "click also cycles sources at {scale}");
-            assert_eq!(
-                hover_circle.test_service().as_deref(),
-                Some("org.test.other")
-            );
             for fraction in [0.4_f64, 0.4_f64] {
                 hover_circle
                     .source_scroll
@@ -1020,29 +979,29 @@ mod tests {
             }
             assert_eq!(
                 selected.get(),
-                3,
+                2,
                 "fractional wheel input has not crossed a step"
             );
             hover_circle
                 .source_scroll
                 .emit_by_name::<bool>("scroll", &[&0.0_f64, &0.3_f64]);
-            assert_eq!(selected.get(), 4, "fractions accumulate to one source step");
+            assert_eq!(selected.get(), 3, "fractions accumulate to one source step");
             assert_eq!(
                 hover_circle.test_service().as_deref(),
-                Some("org.test.player")
+                Some("org.test.other")
             );
             hover_circle
                 .source_scroll
                 .emit_by_name::<bool>("scroll", &[&0.0_f64, &2.1_f64]);
             assert_eq!(
                 selected.get(),
-                6,
+                5,
                 "multi-unit wheel input applies each step"
             );
             assert_eq!(
                 hover_circle.test_service().as_deref(),
-                Some("org.test.player"),
-                "two steps wrap back to the first of two sources"
+                Some("org.test.other"),
+                "two steps wrap back to the same source"
             );
             assert!(
                 (hover_circle.scroll_progress.get() - 0.2).abs() < 1e-9,
@@ -1051,10 +1010,10 @@ mod tests {
             hover_circle
                 .source_scroll
                 .emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]);
-            assert_eq!(selected.get(), 7, "reverse wheel direction changes source");
+            assert_eq!(selected.get(), 6, "reverse wheel direction changes source");
             assert_eq!(
                 hover_circle.test_service().as_deref(),
-                Some("org.test.other")
+                Some("org.test.player")
             );
             let next_fixture = std::env::temp_dir().join(format!("media-circle-next-{scale}.png"));
             image::RgbaImage::from_pixel(96, 320, image::Rgba([0x40, 0x98, 0xd0, 255]))
@@ -1077,7 +1036,10 @@ mod tests {
                 .paintable()
                 .expect("selected player's cover art");
             assert!(next_art.intrinsic_width() < next_art.intrinsic_height());
-            assert_eq!(hover_circle.player_label.label(), "VLC");
+            assert_eq!(
+                hover_circle.hover_icon.tooltip_text().as_deref(),
+                Some("Track — VLC")
+            );
             next_state.art_url = None;
             hover_circle.update(Some(&next_state));
             assert!(hover_circle.artwork_texture.borrow().is_none());
