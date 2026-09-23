@@ -337,17 +337,28 @@ fn compact_page(
     metrics: Metrics,
     progress: Rc<RefCell<Progress>>,
 ) -> (gtk::Overlay, gtk::Image, gtk::DrawingArea) {
+    // CircleSpec's compact footprint is 32 design units. Keep every child's
+    // request within that footprint: the host clips to its rounded frame, so a
+    // larger overlay is both wasteful and risks clipping the artwork/ring.
+    const COMPACT_DIAMETER: i32 = 32;
+    const ART_INSET: i32 = 4;
     let overlay = gtk::Overlay::new();
-    overlay.set_size_request(metrics.spacing(48), metrics.spacing(48));
+    let diameter = metrics.spacing(COMPACT_DIAMETER);
+    let art_size = metrics.spacing(COMPACT_DIAMETER - ART_INSET * 2);
+    overlay.set_size_request(diameter, diameter);
+    overlay.set_halign(Align::Center);
+    overlay.set_valign(Align::Center);
     overlay.add_css_class("media-circle-compact");
     let image = gtk::Image::new();
-    image.set_pixel_size(metrics.spacing(30));
+    image.set_pixel_size(art_size);
+    image.set_size_request(art_size, art_size);
     image.set_halign(Align::Center);
     image.set_valign(Align::Center);
     overlay.set_child(Some(&image));
     let area = gtk::DrawingArea::new();
-    area.set_content_width(metrics.spacing(48));
-    area.set_content_height(metrics.spacing(48));
+    area.set_content_width(diameter);
+    area.set_content_height(diameter);
+    area.set_size_request(diameter, diameter);
     area.add_css_class("media-circle-progress");
     let draw_progress = progress;
     area.set_draw_func(move |area, cr, width, height| {
@@ -428,7 +439,9 @@ mod tests {
 
     use crate::{config::IconStyle, state::MediaPlayer};
 
-    use super::{PlaybackStatus, Progress, SelectorUpdate, progress_fraction, timer_needed};
+    use super::{
+        PlaybackStatus, Progress, SelectorUpdate, compact_page, progress_fraction, timer_needed,
+    };
     #[test]
     fn progress_is_safe_for_unknown_and_invalid_values() {
         assert_eq!(progress_fraction(-1, None), 0.0);
@@ -524,6 +537,57 @@ mod tests {
             drawing_area.upgrade().is_none(),
             "draw callback retained DrawingArea"
         );
+    }
+
+    #[test]
+    #[ignore = "requires the project-local Broadway runner"]
+    fn compact_art_and_ring_fit_mapped_circle_at_runtime_scales() {
+        gtk::init().expect("Broadway GTK display");
+        let display = gtk::gdk::Display::default().expect("Broadway display");
+        let monitor = display
+            .monitors()
+            .item(0)
+            .expect("Broadway monitor")
+            .downcast::<gtk::gdk::Monitor>()
+            .expect("monitor type");
+        for scale in [1.0, 1.9] {
+            let metrics = super::Metrics::new(&monitor, scale, 1.0, IconStyle::Symbolic);
+            let (compact, image, ring) = compact_page(
+                metrics,
+                Rc::new(std::cell::RefCell::new(Progress::default())),
+            );
+            let mut state = test_media_state(PlaybackStatus::Paused, Some(10_000_000));
+            state.app_icon = Some("audio-x-generic".to_owned());
+            crate::ui::icon::set_foreign_image(
+                &image,
+                Some("audio-x-generic"),
+                crate::ui::icon::Icon::Executable,
+            );
+            image.set_tooltip_text(Some(&state.title));
+            let window = gtk::Window::new();
+            window.set_child(Some(&compact));
+            window.present();
+            while gtk::glib::MainContext::default().iteration(false) {}
+
+            let diameter = metrics.spacing(32);
+            let art_size = metrics.spacing(24);
+            assert_eq!(
+                compact.width(),
+                diameter,
+                "compact diameter at scale {scale}"
+            );
+            assert_eq!(ring.width(), diameter, "ring width at scale {scale}");
+            assert_eq!(ring.height(), diameter, "ring height at scale {scale}");
+            assert!(image.width() <= art_size, "art width at scale {scale}");
+            assert!(image.height() <= art_size, "art height at scale {scale}");
+            let bounds = image.compute_bounds(&compact).expect("art bounds");
+            assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
+            assert!(bounds.x() + bounds.width() <= diameter as f32);
+            assert!(bounds.y() + bounds.height() <= diameter as f32);
+
+            window.close();
+            while gtk::glib::MainContext::default().iteration(false) {}
+        }
     }
 
     #[cfg(test)]
