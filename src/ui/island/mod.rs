@@ -348,7 +348,16 @@ pub struct IslandWindow {
     media_playing: Cell<bool>,
     media_width: Cell<i32>,
     geometry: Cell<Geometry>,
-    animation_generation: Cell<u64>,
+    /// Generation for page transitions (view/content opacity and geometry).
+    /// Pill hover/content reconciliation has its own lifetime: changing the
+    /// pill width must not cancel a closing launcher before `finish_view`.
+    view_animation_generation: Cell<u64>,
+    /// Generation for compact/media geometry reconciliation.
+    pill_animation_generation: Cell<u64>,
+    /// Prevents a pill track from competing with a page transition for the
+    /// shared surface geometry. The terminal page state is authoritative;
+    /// `finish_view` samples the current pill target before committing it.
+    view_transition_active: Cell<bool>,
     animation_ms: Cell<u32>,
     animations_enabled: Cell<bool>,
     launcher_presentation: LauncherPresentation,

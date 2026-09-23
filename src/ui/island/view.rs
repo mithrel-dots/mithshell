@@ -169,6 +169,12 @@ impl IslandWindow {
         let previous_view = self.current_view.get();
         let search_start_opacity = self.search.opacity();
         self.current_view.set(view);
+        // A page transition owns the shared surface geometry until its
+        // terminal cleanup. Invalidate any older pill-only track, but keep
+        // the page generation independent so a hover/width reconciliation
+        // cannot strand an incoming page at opacity zero.
+        self.pill_animation_generation
+            .set(self.pill_animation_generation.get().wrapping_add(1));
 
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated
             && view == View::Search
@@ -190,8 +196,9 @@ impl IslandWindow {
         }
         self.refresh_keyboard_mode();
         let start = self.geometry.get();
-        let generation = self.animation_generation.get().wrapping_add(1);
-        self.animation_generation.set(generation);
+        let generation = self.view_animation_generation.get().wrapping_add(1);
+        self.view_animation_generation.set(generation);
+        self.view_transition_active.set(true);
         if !self.animations_enabled.get() || self.animation_ms.get() == 0 {
             self.apply_geometry(target);
             self.finish_view(view);
@@ -225,7 +232,7 @@ impl IslandWindow {
             let Some(island) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if island.animation_generation.get() != generation {
+            if island.view_animation_generation.get() != generation {
                 return glib::ControlFlow::Break;
             }
             let now = frame_clock.frame_time();
@@ -332,6 +339,7 @@ impl IslandWindow {
     }
 
     pub(super) fn finish_view(self: &Rc<Self>, view: View) {
+        self.view_transition_active.set(false);
         self.apply_geometry(self.presentation_target_geometry(view));
         for (widget, widget_view) in self.view_widgets() {
             let active = widget_view == view;

@@ -151,7 +151,7 @@ impl IslandWindow {
     /// rendered geometry, making interruption and reversal continuous.
     pub(super) fn reconcile_pill_geometry(self: &Rc<Self>) {
         let view = self.current_view.get();
-        if !matches!(view, View::Compact | View::Media) {
+        if !matches!(view, View::Compact | View::Media) || self.view_transition_active.get() {
             return;
         }
         let target = self.presentation_target_geometry(view);
@@ -170,8 +170,8 @@ impl IslandWindow {
             self.animations_enabled.get(),
             self.animation_ms.get(),
         );
-        let generation = self.animation_generation.get().wrapping_add(1);
-        self.animation_generation.set(generation);
+        let generation = self.pill_animation_generation.get().wrapping_add(1);
+        self.pill_animation_generation.set(generation);
         if profile.duration.is_zero() {
             self.apply_geometry(target);
             return;
@@ -182,7 +182,7 @@ impl IslandWindow {
             let Some(island) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if island.animation_generation.get() != generation {
+            if island.pill_animation_generation.get() != generation {
                 return glib::ControlFlow::Break;
             }
             let now = clock.frame_time();
