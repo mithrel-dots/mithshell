@@ -1,10 +1,7 @@
-//! Collision policy: reserve room for each present module's largest view, even
-//! while compact. If both side corridors can fit those widths, use them. If not,
-//! place the present slots in non-overlapping lanes below the central island.
-//! Two slots share the available width equally; one gets the entire width.
-//! Side lanes keep their inner edge and top anchor. Below-island lanes expand
-//! around the compact center, clamped to the lane, with the same top anchor.
-//! Thus hover itself never triggers a lane change or moves the compact footprint.
+//! Collision policy: keep each present module in its side corridor whenever its
+//! compact diameter fits. Expanded views are constrained to that corridor and
+//! scroll there; they never cause a lane change or vertical relocation.
+//! Thus hover itself never moves the compact footprint.
 //! Expanded content scrolls when constrained; a slot is temporarily suppressed
 //! (`None`) if its lane cannot fit even its compact diameter. We never overlap
 //! the central island, the other slot, or monitor edges to force a circle in.
@@ -76,12 +73,6 @@ impl CircleSpec {
                 16.0_f64.min(self.diameter / 2.0)
             },
         })
-    }
-
-    fn max_width(self) -> f64 {
-        self.diameter
-            .max(self.hover.width)
-            .max(self.full.map_or(0.0, |s| s.width))
     }
 
     fn valid(self) -> bool {
@@ -196,38 +187,19 @@ pub(crate) fn layout(
                 && s.visual.radius.is_finite()
         })
     });
-    let count = slots.iter().flatten().count();
-    if count == 0 {
+    if slots.iter().all(Option::is_none) {
         return [None; 2];
     }
     let gap = (8.0 * scale).ceil();
     let left_edge = (central.x - gap).min(monitor.right());
     let right_edge = (central.right() + gap).max(monitor.x);
-    let side_widths = [left_edge - monitor.x, monitor.right() - right_edge];
-    let beside = slots
-        .iter()
-        .enumerate()
-        .all(|(i, slot)| slot.is_none_or(|s| side_widths[i] >= s.spec.max_width() * scale));
-    let y = if beside {
-        central.y.max(monitor.y).ceil()
-    } else {
-        (central.bottom() + gap).max(monitor.y).ceil()
-    };
-    let mid = monitor.x + monitor.width / 2.0;
+    let y = central.y.max(monitor.y).ceil();
     std::array::from_fn(|i| {
         let slot = slots[i]?;
-        let (start, end) = if beside {
-            if i == 0 {
-                (monitor.x, left_edge)
-            } else {
-                (right_edge, monitor.right())
-            }
-        } else if count == 1 {
-            (monitor.x, monitor.right())
-        } else if i == 0 {
-            (monitor.x, mid - gap / 2.0)
+        let (start, end) = if i == 0 {
+            (monitor.x, left_edge)
         } else {
-            (mid + gap / 2.0, monitor.right())
+            (right_edge, monitor.right())
         };
         let start = start.ceil();
         let end = end.floor();
@@ -245,17 +217,7 @@ pub(crate) fn layout(
             .max(diameter)
             .min(available_height)
             .floor();
-        let x = if beside {
-            if i == 0 { end - width } else { start }
-        } else {
-            let anchor = if i == 0 {
-                central.x - gap - diameter / 2.0
-            } else {
-                central.right() + gap + diameter / 2.0
-            }
-            .clamp(start + diameter / 2.0, end - diameter / 2.0);
-            (anchor - width / 2.0).clamp(start, end - width).floor()
-        };
+        let x = if i == 0 { end - width } else { start };
         Some(Frame {
             rect: Rect {
                 x,
@@ -333,14 +295,14 @@ mod tests {
             [request(Mode::FullExpanded), None],
         );
         assert!(single[1].is_none());
-        assert_eq!(single[0].unwrap().rect.width, 360.0); // no phantom half lane
+        assert_eq!(single[0].unwrap().rect.width, 80.0);
         let pair = layout(
             central(400.0),
             monitor(400.0, 600.0),
             1.0,
             [request(Mode::FullExpanded); 2],
         );
-        assert_eq!(pair[0].unwrap().rect.width, 196.0);
+        assert_eq!(pair[0].unwrap().rect.width, 80.0);
         assert!(
             !pair[0]
                 .unwrap()
@@ -490,6 +452,67 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn expanded_tray_and_media_stay_top_anchored_in_narrow_side_corridors() {
+        let monitor = monitor(1778.0, 1000.0);
+        let central = Rect {
+            x: 220.0,
+            y: 4.0,
+            width: 1338.0,
+            height: 756.0,
+        };
+        let scale: f64 = 1.9;
+        let specs = [
+            CircleSpec {
+                diameter: 32.0,
+                hover: Size {
+                    width: 300.0,
+                    height: 150.0,
+                },
+                full: None,
+            },
+            CircleSpec {
+                diameter: 32.0,
+                hover: Size {
+                    width: 320.0,
+                    height: 110.0,
+                },
+                full: None,
+            },
+        ];
+        let gap = (8.0 * scale).ceil();
+        for step in 0..=10 {
+            let mut frame_central = central;
+            // Sample dashboard growth/collapse geometry across the full motion.
+            frame_central.height = 32.0 + (756.0 - 32.0) * f64::from(step) / 10.0;
+            let slots = std::array::from_fn(|i| {
+                let compact = specs[i].visual(Mode::Compact).unwrap();
+                let expanded = specs[i].visual(Mode::HoverExpanded).unwrap();
+                Some(CircleRequest {
+                    spec: specs[i],
+                    visual: compact.interpolate(expanded, f64::from(step) / 10.0),
+                })
+            });
+            let frames = layout(frame_central, monitor, scale, slots);
+            for (i, frame) in frames.into_iter().enumerate() {
+                let frame = frame.expect("compact circle fits its side corridor");
+                assert_eq!(frame.rect.y, 4.0, "step {step}, side {i}");
+                assert!(frame.rect.y >= monitor.y);
+                assert!(frame.rect.bottom() <= monitor.bottom());
+                assert!(!overlaps(frame.rect, frame_central));
+                if i == 0 {
+                    assert!((frame_central.x - frame.rect.right()) >= gap - 1.0);
+                } else {
+                    assert!((frame.rect.x - frame_central.right()) >= gap - 1.0);
+                }
+            }
+            let [Some(left), Some(right)] = frames else {
+                panic!("both circles fit")
+            };
+            assert!(!overlaps(left.rect, right.rect));
         }
     }
 }
