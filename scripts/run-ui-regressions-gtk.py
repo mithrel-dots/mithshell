@@ -20,6 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "target" / "ui-regressions-cargo"
 TARGET.mkdir(mode=0o700, parents=True, exist_ok=True)
 TESTS = [
+    "ui::island::compact::tests::mapped_scale_1p9_hover_content_tracks_animation_and_picking",
     "ui::island::notification_circle::tests::gtk_notification_circle_integration",
     "ui::island::tests::circle_integration_real_widgets_and_callbacks",
     "ui::island::tests::real_circle_allocations_and_gtk_picking_survive_scale_and_rebuilds",

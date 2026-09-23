@@ -246,7 +246,11 @@ impl IslandWindow {
             let elapsed = Duration::from_micros((now - started).max(0) as u64);
             let linear = profile.progress(elapsed);
             let eased = linear;
-            island.apply_geometry(start.interpolate(target, eased));
+            let geometry = start.interpolate(target, eased);
+            island.apply_geometry(geometry);
+            // The page track owns the backdrop during view transitions too;
+            // keep a pill page's fixed-size foreground centered on every frame.
+            island.sync_pill_content_geometry(geometry);
             island.apply_content_opacity(view, previous_view, elapsed, start_opacities);
             island.apply_search_opacity(view, previous_view, elapsed, search_start_opacity);
             if elapsed >= transition_duration {
@@ -341,7 +345,9 @@ impl IslandWindow {
 
     pub(super) fn finish_view(self: &Rc<Self>, view: View) {
         self.view_transition_active.set(false);
-        self.apply_geometry(self.presentation_target_geometry(view));
+        let geometry = self.presentation_target_geometry(view);
+        self.apply_geometry(geometry);
+        self.sync_pill_content_geometry(geometry);
         for (widget, widget_view) in self.view_widgets() {
             let active = widget_view == view;
             widget.set_visible(active);

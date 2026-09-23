@@ -127,12 +127,19 @@ impl IslandWindow {
         if self.tray_hovered.get() == hovered {
             return;
         }
+        // A reversal can be requested before the next frame of the current
+        // track.  Preserve the content's position against that still-rendered
+        // backdrop before changing natural widths and scheduling its successor.
+        if matches!(self.current_view.get(), View::Compact | View::Media) {
+            self.sync_pill_content_geometry(self.geometry.get());
+        }
         self.tray_hovered.set(hovered);
         if !matches!(self.current_view.get(), View::Compact | View::Media) {
             return;
         }
         self.resize_compact();
         self.resize_media();
+        self.sync_pill_content_geometry(self.geometry.get());
         self.reconcile_pill_geometry();
     }
 
@@ -280,5 +287,173 @@ mod tests {
             assert!(x >= 0.0 && x + f64::from(content_width) <= 1_700.0);
             assert!(y >= 0.0 && y + f64::from(content_height) <= frame.height + 0.001);
         }
+    }
+
+    /// This uses the production IslandWindow hierarchy and animation tracks,
+    /// rather than manually allocating a compact fixture.  The runner for
+    /// this ignored test is `scripts/run-ui-regressions-gtk.py`.
+    #[test]
+    #[ignore = "requires the project-local Broadway runner"]
+    #[allow(deprecated)]
+    fn mapped_scale_1p9_hover_content_tracks_animation_and_picking() {
+        use super::super::{IslandActions, IslandWindow};
+        use crate::config::AppConfig;
+        use crate::tarragon::TarragonSelection;
+        use gtk::prelude::*;
+        use std::{cell::RefCell, rc::Rc, time::Duration};
+        type Samples = Rc<RefCell<Vec<(f64, f64, f64)>>>;
+
+        gtk::init().expect("Broadway GTK display");
+        let app = gtk::Application::new(
+            Some("org.mithshell.compact-motion-test"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        app.connect_activate(|_| {});
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("register GTK application");
+        let display = gtk::gdk::Display::default().expect("Broadway display");
+        let monitor = display
+            .monitors()
+            .item(0)
+            .and_downcast::<gtk::gdk::Monitor>()
+            .expect("Broadway monitor");
+        let actions = IslandActions {
+            switch_workspace: Rc::new(|_, _| {}),
+            set_volume: Rc::new(|_| {}),
+            set_brightness: Rc::new(|_| {}),
+            search: Rc::new(|_| {}),
+            select: Rc::new(|_: TarragonSelection| {}),
+            tarragon_status: Rc::new(|| {}),
+            tarragon_reload: Rc::new(|| {}),
+            load_preview: Rc::new(|_, _| {}),
+            media_play_pause: Rc::new(|_| {}),
+            media_next: Rc::new(|_| {}),
+            media_previous: Rc::new(|_| {}),
+            notification_expired: Rc::new(|_, _| {}),
+            notification_dismiss: Rc::new(|_| {}),
+            notification_invoke: Rc::new(|_, _| {}),
+            notification_clear_all: Rc::new(|| {}),
+            notification_inhibit: Rc::new(|_| {}),
+            tray_activate: Rc::new(|_, _, _, _| {}),
+            tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+            tray_context_menu: Rc::new(|_, _, _, _| {}),
+            tray_scroll: Rc::new(|_, _, _, _| {}),
+            tray_menu_event: Rc::new(|_, _, _| {}),
+        };
+        let mut config = AppConfig::default();
+        config.shell.scale = 1.9;
+        config.shell.animation_ms = 420;
+        let island = IslandWindow::new_for_test(
+            &app,
+            &monitor,
+            "broadway-motion".to_owned(),
+            &config,
+            actions,
+            true,
+        );
+        app.activate();
+
+        let drain = |duration: Duration| {
+            let loop_ = gtk::glib::MainLoop::new(None, false);
+            let quit = loop_.clone();
+            gtk::glib::timeout_add_local_once(duration, move || quit.quit());
+            loop_.run();
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+        };
+        let settle = |predicate: &dyn Fn() -> bool| {
+            for _ in 0..188 {
+                if predicate() {
+                    return;
+                }
+                drain(Duration::from_millis(16));
+            }
+            assert!(predicate(), "production animation did not settle");
+        };
+        drain(Duration::from_millis(50));
+        let base_height = f64::from(island.metrics.compact_height);
+        let content = island.compact.clone();
+        let samples: Samples = Rc::new(RefCell::new(Vec::new()));
+        let sample_tick = |island: &Rc<super::super::IslandWindow>, samples: &Samples| {
+            let geometry = island.geometry.get();
+            let allocation = island.compact.allocation();
+            let bounds = island.compact.compute_bounds(&island.surface).unwrap();
+            samples.borrow_mut().push((
+                geometry.height,
+                f64::from(allocation.y()),
+                f64::from(bounds.y()),
+            ));
+        };
+
+        island.set_pointer_in_hover_region(true);
+        for _ in 0..6 {
+            drain(Duration::from_millis(45));
+            sample_tick(&island, &samples);
+        }
+        let sampled = samples.borrow();
+        assert!(sampled.len() >= 4);
+        for (height, local_y, surface_y) in sampled.iter() {
+            let expected = ((height - base_height) / 2.0).max(0.0);
+            assert!(
+                (local_y - expected).abs() <= 2.0,
+                "content y={local_y} expected {expected}"
+            );
+            assert!(
+                *surface_y >= -1.0 && *surface_y <= 80.0,
+                "content escaped backdrop: {surface_y}"
+            );
+        }
+        drop(sampled);
+        assert!(content.is_mapped() && content.width() > 0 && content.height() > 0);
+        island.compact_clock.set_can_target(true);
+        let picked = island.compact.pick(
+            f64::from(island.compact.width()) / 2.0,
+            f64::from(island.compact.height()) / 2.0,
+            gtk::PickFlags::DEFAULT,
+        );
+        assert!(
+            picked.is_some(),
+            "animated compact content lost GTK picking"
+        );
+
+        // Reverse before the 420 ms enter track settles; no stale-frame jump
+        // may place the content outside its current backdrop.
+        drain(Duration::from_millis(55));
+        island.set_pointer_in_hover_region(false);
+        for _ in 0..4 {
+            drain(Duration::from_millis(35));
+            let geometry = island.geometry.get();
+            let local_y = f64::from(island.compact.allocation().y());
+            let expected = ((geometry.height - base_height) / 2.0).max(0.0);
+            assert!((local_y - expected).abs() <= 2.0);
+        }
+        settle(&|| {
+            island.geometry.get()
+                == island.presentation_target_geometry(crate::ui::island::View::Compact)
+        });
+
+        island.open();
+        settle(&|| {
+            island.current_view.get() == crate::ui::island::View::Dashboard
+                && !island.view_transition_active.get()
+        });
+        island.close();
+        settle(&|| {
+            island.current_view.get() == crate::ui::island::View::Compact
+                && !island.view_transition_active.get()
+        });
+        assert!(island.compact.is_mapped());
+        assert!(
+            island
+                .compact
+                .pick(
+                    f64::from(island.compact.width()) / 2.0,
+                    f64::from(island.compact.height()) / 2.0,
+                    gtk::PickFlags::DEFAULT,
+                )
+                .is_some()
+        );
+        island.window.close();
     }
 }
