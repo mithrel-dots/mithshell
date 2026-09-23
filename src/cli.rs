@@ -35,7 +35,11 @@ pub enum Command {
         ///
         /// Test-only isolation mode: no notification bus name is registered,
         /// no systemd-logind listener is started, and the Lock IPC command is
-        /// refused. Pair with an isolated --socket and DP-2-only config.
+        /// refused. TarraGon is not resolved, queried, selected, reloaded, or
+        /// detached. Pair with an isolated --socket, DP-2-only config, and
+        /// private XDG_CONFIG_HOME/XDG_STATE_HOME/XDG_CACHE_HOME directories.
+        /// Hardware/media/weather workers still run in the real daemon; the
+        /// unit-test fixture replaces those workers before calling Controller::new.
         #[arg(long)]
         no_global_services: bool,
     },

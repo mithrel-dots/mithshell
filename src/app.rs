@@ -366,6 +366,7 @@ fn run_daemon(
             animations,
             test_battery,
             no_global_services,
+            StartupHooks::production(),
         ) {
             Ok(controller) => {
                 controller.clone().start();
@@ -447,6 +448,40 @@ struct StartupServices {
     logind: bool,
     tarragon: bool,
     tray: bool,
+}
+
+type TrayFactory = fn(Sender<Vec<TrayItem>>) -> thread::JoinHandle<()>;
+type TarragonFactory =
+    fn(Sender<TarragonEvent>) -> (Sender<TarragonCommand>, thread::JoinHandle<()>);
+type NotificationFactory =
+    fn(Sender<NotificationEvent>) -> (Sender<NotificationCommand>, thread::JoinHandle<()>);
+type LogindFactory = fn(Sender<LogindEvent>) -> (Sender<LogindCommand>, thread::JoinHandle<()>);
+
+#[derive(Clone, Copy)]
+struct StartupHooks {
+    /// Test fixtures replace all passive workers so constructing a Controller
+    /// cannot touch a desktop, system bus, or network.
+    skip_passive_workers: bool,
+    tray: TrayFactory,
+    tarragon: TarragonFactory,
+    notifications: NotificationFactory,
+    logind: LogindFactory,
+}
+
+impl StartupHooks {
+    fn production() -> Self {
+        Self {
+            skip_passive_workers: false,
+            tray: tray::start_listener,
+            tarragon: tarragon::start_listener,
+            notifications: notifications::start_server,
+            logind: lock::logind::start_listener,
+        }
+    }
+}
+
+fn idle_worker() -> thread::JoinHandle<()> {
+    thread::spawn(|| {})
 }
 
 impl StartupServices {
@@ -531,6 +566,7 @@ impl NotificationEpochRegistry {
 }
 
 impl Controller {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         application: &Application,
         config_path: PathBuf,
@@ -539,6 +575,7 @@ impl Controller {
         animations: bool,
         test_battery: Option<u8>,
         no_global_services: bool,
+        hooks: StartupHooks,
     ) -> Result<Rc<Self>> {
         let startup_services = StartupServices::for_daemon(no_global_services);
         let mut initial_theme = config.theme.clone();
@@ -555,21 +592,33 @@ impl Controller {
             ui::install_user_styles(&crate::config::colors_css_path(&config_path));
         let (theme_sender, theme_receiver) = async_channel::unbounded();
         let (media_sender, media_receiver) = async_channel::unbounded();
-        let media_listener = media::start_listener(media_sender);
+        let media_listener = if hooks.skip_passive_workers {
+            idle_worker()
+        } else {
+            media::start_listener(media_sender)
+        };
         let (visualizer_sender, visualizer_receiver) = async_channel::bounded(2);
-        let visualizer_listener = media::start_visualizer(visualizer_sender);
+        let visualizer_listener = if hooks.skip_passive_workers {
+            idle_worker()
+        } else {
+            media::start_visualizer(visualizer_sender)
+        };
         let (weather_sender, weather_receiver) = async_channel::unbounded();
-        let weather_listener = weather::start_poller(
-            config.weather.provider,
-            config.weather.city.clone(),
-            weather_sender,
-        );
+        let weather_listener = if hooks.skip_passive_workers {
+            idle_worker()
+        } else {
+            weather::start_poller(
+                config.weather.provider,
+                config.weather.city.clone(),
+                weather_sender,
+            )
+        };
         let (tray_sender, tray_receiver) = async_channel::unbounded();
-        let tray_listener = (startup_services.tray && config.tray.enabled)
-            .then(|| tray::start_listener(tray_sender));
+        let tray_listener =
+            (startup_services.tray && config.tray.enabled).then(|| (hooks.tray)(tray_sender));
         let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
         let (tarragon_sender, tarragon_listener) = if startup_services.tarragon {
-            let (sender, listener) = tarragon::start_listener(tarragon_event_sender);
+            let (sender, listener) = (hooks.tarragon)(tarragon_event_sender);
             (sender, Some(listener))
         } else {
             // No listener, retry loop, socket resolution, or Detach request.
@@ -579,13 +628,23 @@ impl Controller {
             (sender, None)
         };
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
-        let (preview_sender, preview_listener) = preview::start_loader(preview_event_sender);
+        let (preview_sender, preview_listener) = if hooks.skip_passive_workers {
+            let (sender, receiver) = async_channel::unbounded();
+            drop(receiver);
+            (sender, idle_worker())
+        } else {
+            preview::start_loader(preview_event_sender)
+        };
         let (gtk_css_sender, gtk_css_receiver) = async_channel::unbounded();
-        let gtk_css_watcher = theme::watch_gtk_css(gtk_css_sender);
+        let gtk_css_watcher = if hooks.skip_passive_workers {
+            None
+        } else {
+            theme::watch_gtk_css(gtk_css_sender)
+        };
         let (notification_event_sender, notification_event_receiver) = async_channel::unbounded();
         let (notification_command_sender, notification_listener) = if startup_services.notifications
         {
-            let (sender, listener) = notifications::start_server(notification_event_sender);
+            let (sender, listener) = (hooks.notifications)(notification_event_sender);
             (sender, Some(listener))
         } else {
             // No worker means no session bus connection or well-known name.
@@ -599,11 +658,16 @@ impl Controller {
         // still do something about it.
         let pam_service = lock::service_name(config.lock.pam_service.as_deref());
         let (auth_event_sender, auth_event_receiver) = async_channel::unbounded();
-        let (auth_sender, auth_listener) =
-            lock::start_authenticator(pam_service, auth_event_sender);
+        let (auth_sender, auth_listener) = if hooks.skip_passive_workers {
+            let (sender, receiver) = async_channel::unbounded();
+            drop(receiver);
+            (sender, idle_worker())
+        } else {
+            lock::start_authenticator(pam_service, auth_event_sender)
+        };
         let (logind_event_sender, logind_event_receiver) = async_channel::unbounded();
         let (logind_sender, logind_listener) = if startup_services.logind {
-            let (sender, listener) = lock::logind::start_listener(logind_event_sender);
+            let (sender, listener) = (hooks.logind)(logind_event_sender);
             (sender, Some(listener))
         } else {
             // Do not call start_listener: it connects to the system bus and
@@ -665,15 +729,27 @@ impl Controller {
         controller.attach_ipc(ipc_receiver);
 
         let (hypr_sender, hypr_receiver) = async_channel::unbounded();
-        hyprland::start_listener(hypr_sender);
-        controller.attach_hyprland(hypr_receiver);
+        if !hooks.skip_passive_workers {
+            hyprland::start_listener(hypr_sender);
+        }
+        if !hooks.skip_passive_workers {
+            controller.attach_hyprland(hypr_receiver);
+        }
 
         let (system_sender, system_receiver) = async_channel::unbounded();
-        system::start_poller(system_sender);
-        controller.attach_system(system_receiver);
+        if !hooks.skip_passive_workers {
+            system::start_poller(system_sender);
+        }
+        if !hooks.skip_passive_workers {
+            controller.attach_system(system_receiver);
+        }
         let (audio_sender, audio_receiver) = async_channel::unbounded();
-        system::start_audio_listener(audio_sender);
-        controller.attach_audio(audio_receiver);
+        if !hooks.skip_passive_workers {
+            system::start_audio_listener(audio_sender);
+        }
+        if !hooks.skip_passive_workers {
+            controller.attach_audio(audio_receiver);
+        }
         controller.attach_media(media_receiver);
         controller.attach_weather(weather_receiver);
         controller.attach_tray(tray_receiver);
@@ -2195,6 +2271,61 @@ impl Drop for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TRAY_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TARRAGON_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static NOTIFICATION_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LOGIND_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn spy_tray(_: Sender<Vec<TrayItem>>) -> thread::JoinHandle<()> {
+        TRAY_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
+        idle_worker()
+    }
+
+    fn spy_tarragon(_: Sender<TarragonEvent>) -> (Sender<TarragonCommand>, thread::JoinHandle<()>) {
+        TARRAGON_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
+        let (sender, receiver) = async_channel::unbounded();
+        drop(receiver);
+        (sender, idle_worker())
+    }
+
+    fn spy_notifications(
+        _: Sender<NotificationEvent>,
+    ) -> (Sender<NotificationCommand>, thread::JoinHandle<()>) {
+        NOTIFICATION_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
+        let (sender, receiver) = async_channel::unbounded();
+        drop(receiver);
+        (sender, idle_worker())
+    }
+
+    fn spy_logind(_: Sender<LogindEvent>) -> (Sender<LogindCommand>, thread::JoinHandle<()>) {
+        LOGIND_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
+        let (sender, receiver) = async_channel::unbounded();
+        drop(receiver);
+        (sender, idle_worker())
+    }
+
+    fn isolated_startup_hooks() -> StartupHooks {
+        StartupHooks {
+            skip_passive_workers: true,
+            tray: spy_tray,
+            tarragon: spy_tarragon,
+            notifications: spy_notifications,
+            logind: spy_logind,
+        }
+    }
+
+    fn reset_factory_calls() {
+        for calls in [
+            &TRAY_FACTORY_CALLS,
+            &TARRAGON_FACTORY_CALLS,
+            &NOTIFICATION_FACTORY_CALLS,
+            &LOGIND_FACTORY_CALLS,
+        ] {
+            calls.store(0, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn no_global_services_disables_all_shared_startup_workers() {
@@ -2220,6 +2351,52 @@ mod tests {
                 tray: true,
             }
         );
+    }
+
+    #[test]
+    fn controller_new_isolates_global_workers_and_refuses_lock() {
+        reset_factory_calls();
+        gtk::init().expect("run this test under a private GTK display");
+        let application = Application::builder()
+            .application_id("dev.mithrel.mithshell.test-isolation")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        let socket = std::env::current_dir()
+            .unwrap()
+            .join("target/tmp/controller-new-isolation.sock");
+        let _ = std::fs::remove_file(&socket);
+        let config_path = std::env::current_dir()
+            .unwrap()
+            .join("target/tmp/controller-new-isolation.toml");
+        let controller = Controller::new(
+            &application,
+            config_path,
+            AppConfig::default(),
+            socket.clone(),
+            false,
+            None,
+            true,
+            isolated_startup_hooks(),
+        )
+        .expect("isolated Controller::new should not require shared services");
+
+        assert_eq!(TRAY_FACTORY_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(TARRAGON_FACTORY_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(NOTIFICATION_FACTORY_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(LOGIND_FACTORY_CALLS.load(Ordering::SeqCst), 0);
+        assert!(controller.tarragon_sender.is_closed());
+        assert!(controller.notification_command_sender.is_closed());
+        assert!(controller.logind_sender.is_closed());
+
+        let response = controller.handle_command(IpcCommand::Lock);
+        assert!(!response.ok);
+        assert_eq!(
+            response.message,
+            "session locking is disabled by --no-global-services"
+        );
+        assert!(controller.lock().is_err());
+        drop(controller);
+        let _ = std::fs::remove_file(socket);
     }
 
     #[test]
