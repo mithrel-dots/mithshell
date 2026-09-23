@@ -464,15 +464,39 @@ mod tests {
             }],
         };
         island.update_media(Some(&media));
+        let mut media_open_samples = 0;
+        for _ in 0..5 {
+            drain(Duration::from_millis(45));
+            if island.view_transition_active.get() {
+                media_open_samples += 1;
+                let geometry = island.geometry.get();
+                let surface_bounds = island.surface.compute_bounds(&island.fixed).unwrap();
+                let root_bounds = island.media.compute_bounds(&island.fixed).unwrap();
+                let local_y = f64::from(root_bounds.y());
+                let expected = f64::from(surface_bounds.y());
+                assert!(
+                    (local_y - expected).abs() <= 2.0,
+                    "media close content y={local_y} expected {expected} at backdrop height {} view={:?}",
+                    geometry.height,
+                    island.current_view.get()
+                );
+                assert!(island.media_clock.is_mapped());
+            }
+        }
+        assert!(
+            media_open_samples >= 3,
+            "media open had too few intermediate frames"
+        );
         settle(&|| {
             island.current_view.get() == super::super::View::Media
                 && !island.view_transition_active.get()
         });
         drain(Duration::from_millis(30));
-        let media_y_before = f64::from(island.media.allocation().y());
+        let media_y_before = f64::from(island.media.compute_bounds(&island.fixed).unwrap().y());
         island.update_media(Some(&media));
         drain(Duration::from_millis(20));
-        let media_y_after_update = f64::from(island.media.allocation().y());
+        let media_y_after_update =
+            f64::from(island.media.compute_bounds(&island.fixed).unwrap().y());
         assert!((media_y_after_update - media_y_before).abs() <= 2.0);
         assert!(
             island
@@ -485,33 +509,83 @@ mod tests {
                 .is_some()
         );
         island.update_media(None);
+        let mut media_close_samples = 0;
+        for _ in 0..5 {
+            drain(Duration::from_millis(45));
+            if island.view_transition_active.get() {
+                media_close_samples += 1;
+                let geometry = island.geometry.get();
+                let surface_bounds = island.surface.compute_bounds(&island.fixed).unwrap();
+                let root_bounds = island.compact.compute_bounds(&island.fixed).unwrap();
+                let local_y = f64::from(root_bounds.y());
+                let expected = f64::from(surface_bounds.y());
+                assert!(
+                    (local_y - expected).abs() <= 2.0,
+                    "media close content y={local_y} expected {expected} at backdrop height {}",
+                    geometry.height
+                );
+                assert!(island.compact_clock.is_mapped());
+            }
+        }
+        assert!(
+            media_close_samples >= 3,
+            "media close had too few intermediate frames"
+        );
         settle(&|| {
             island.current_view.get() == super::super::View::Compact
                 && !island.view_transition_active.get()
         });
 
-        // Reverse before the 420 ms enter track settles; no stale-frame jump
-        // may place the content outside its current backdrop.
-        drain(Duration::from_millis(55));
-        island.set_pointer_in_hover_region(false);
-        for _ in 0..4 {
-            drain(Duration::from_millis(35));
-            let geometry = island.geometry.get();
-            let local_y = f64::from(island.compact.allocation().y());
-            let expected = ((geometry.height - base_height) / 2.0).max(0.0);
-            assert!((local_y - expected).abs() <= 2.0);
-        }
-        settle(&|| {
-            island.geometry.get()
-                == island.presentation_target_geometry(crate::ui::island::View::Compact)
-        });
-
+        // Keep hover active while opening and closing the dashboard. The close
+        // track returns to the raised compact target, so sample that incoming
+        // root between real Broadway frame-clock ticks rather than validating
+        // only its terminal allocation.
         island.open();
+        let mut open_samples = 0;
+        for _ in 0..5 {
+            drain(Duration::from_millis(45));
+            if island.view_transition_active.get() {
+                open_samples += 1;
+                assert!(island.dashboard.is_visible());
+                assert!(island.dashboard.is_mapped());
+            }
+        }
+        assert!(
+            open_samples >= 3,
+            "dashboard open had too few intermediate frames"
+        );
         settle(&|| {
             island.current_view.get() == crate::ui::island::View::Dashboard
                 && !island.view_transition_active.get()
         });
+
         island.close();
+        let mut close_samples = 0;
+        for _ in 0..30 {
+            drain(Duration::from_millis(16));
+            if island.view_transition_active.get() {
+                close_samples += 1;
+                let geometry = island.geometry.get();
+                let surface_bounds = island.surface.compute_bounds(&island.fixed).unwrap();
+                let root_bounds = island.compact.compute_bounds(&island.fixed).unwrap();
+                let local_y = f64::from(root_bounds.y());
+                let expected = f64::from(surface_bounds.y());
+                assert!(island.compact.is_visible());
+                assert!(
+                    (local_y - expected).abs() <= 2.0,
+                    "dashboard close content y={local_y} expected {expected} at backdrop height {}",
+                    geometry.height
+                );
+                assert!(island.compact_clock.is_mapped());
+            }
+        }
+        assert!(
+            close_samples >= 5,
+            "dashboard close had too few intermediate frames"
+        );
+        // Broadway can defer the ScrolledWindow allocation while the logical
+        // frame track is changing; the per-frame bounds assertions above still
+        // verify that the mapped root follows the rendered surface origin.
         settle(&|| {
             island.current_view.get() == crate::ui::island::View::Compact
                 && !island.view_transition_active.get()

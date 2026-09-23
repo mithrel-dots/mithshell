@@ -170,6 +170,9 @@ impl IslandWindow {
         let previous_view = self.current_view.get();
         let search_start_opacity = self.search.opacity();
         self.current_view.set(view);
+        // Establish the incoming pill's position before GTK maps/reallocates
+        // it; the first transition frame must not inherit the old y=0 slot.
+        self.sync_pill_content_geometry(self.geometry.get());
         // A page transition owns the shared surface geometry until its
         // terminal cleanup. Invalidate any older pill-only track, but keep
         // the page generation independent so a hover/width reconciliation
@@ -248,11 +251,12 @@ impl IslandWindow {
             let eased = linear;
             let geometry = start.interpolate(target, eased);
             island.apply_geometry(geometry);
-            // The page track owns the backdrop during view transitions too;
-            // keep a pill page's fixed-size foreground centered on every frame.
-            island.sync_pill_content_geometry(geometry);
             island.apply_content_opacity(view, previous_view, elapsed, start_opacities);
             island.apply_search_opacity(view, previous_view, elapsed, search_start_opacity);
+            // Opacity/visibility changes can cause GTK to reallocate an
+            // incoming page after the geometry write. Re-apply the pill
+            // position last so the mapped child cannot snap back to y=0.
+            island.sync_pill_content_geometry(geometry);
             if elapsed >= transition_duration {
                 island.finish_view(view);
                 glib::ControlFlow::Break
