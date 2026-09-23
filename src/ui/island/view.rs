@@ -344,6 +344,7 @@ impl IslandWindow {
         for (widget, widget_view) in self.view_widgets() {
             let active = widget_view == view;
             widget.set_visible(active);
+            widget.set_can_target(active);
             widget.set_opacity(if active { 1.0 } else { 0.0 });
         }
         if self.launcher_presentation == crate::config::LauncherPresentation::Integrated {

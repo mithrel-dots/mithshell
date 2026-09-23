@@ -572,9 +572,10 @@ mod tests {
             tray_scroll: Rc::new(|_, _, _, _| {}),
             tray_menu_event: Rc::new(|_, _, _| {}),
         };
+        let independent_actions = actions.clone();
         let mut config = AppConfig::default();
         config.launcher.presentation = LauncherPresentation::Integrated;
-        config.shell.animation_ms = 0;
+        config.shell.animation_ms = 280;
         let island = IslandWindow::new_for_test(
             &application,
             &monitor,
@@ -587,7 +588,42 @@ mod tests {
         while gtk::glib::MainContext::default().pending() {
             gtk::glib::MainContext::default().iteration(false);
         }
+        let drain_search = |island: &Rc<IslandWindow>| {
+            let frame_loop = gtk::glib::MainLoop::new(None, false);
+            let weak = Rc::downgrade(island);
+            let loop_for_timeout = frame_loop.clone();
+            let completed = Rc::new(std::cell::Cell::new(false));
+            let completed_in_callback = completed.clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+                if let Some(island) = weak.upgrade() {
+                    if island.current_view.get() == View::Search
+                        && !island.view_transition_active.get()
+                        && island.search.opacity() == 1.0
+                    {
+                        completed_in_callback.set(true);
+                        loop_for_timeout.quit();
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                } else {
+                    loop_for_timeout.quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    loop_for_timeout.quit();
+                    gtk::glib::ControlFlow::Break
+                } else {
+                    gtk::glib::ControlFlow::Continue
+                }
+            });
+            frame_loop.run();
+            assert!(
+                completed.get(),
+                "animated search transition did not settle before deadline"
+            );
+        };
         island.open_search();
+        drain_search(&island);
         // Seed the normal GTK focus before exercising the same production
         // return scheduler below; Broadway cannot activate a layer surface.
         island.search_entry.set_can_focus(true);
@@ -622,9 +658,33 @@ mod tests {
         island.osd_active.set(true);
         island.reconcile_view();
         assert_eq!(island.current_view.get(), View::Osd);
+        let osd_loop = gtk::glib::MainLoop::new(None, false);
+        let osd_weak = Rc::downgrade(&island);
+        let osd_loop_for_timeout = osd_loop.clone();
+        let osd_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+            if let Some(island) = osd_weak.upgrade() {
+                if !island.view_transition_active.get() {
+                    osd_loop_for_timeout.quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+            } else {
+                osd_loop_for_timeout.quit();
+                return gtk::glib::ControlFlow::Break;
+            }
+            if std::time::Instant::now() >= osd_deadline {
+                osd_loop_for_timeout.quit();
+                gtk::glib::ControlFlow::Break
+            } else {
+                gtk::glib::ControlFlow::Continue
+            }
+        });
+        osd_loop.run();
+        assert!(!island.view_transition_active.get());
         assert!(island.search_focus_pending.get());
         island.osd_active.set(false);
         island.reconcile_view();
+        drain_search(&island);
         assert_eq!(island.current_view.get(), View::Search);
         // finish_view consumed the pending ownership handoff and queued the
         // guarded production scheduler.
@@ -637,8 +697,132 @@ mod tests {
 
         island.schedule_search_entry_focus();
         let queued_generation = island.search_focus_generation.get();
+        // Keep the setup above deterministic, then exercise the real
+        // production close/reconcile path with the configured motion profile.
+        // The nested loop below is intentional: GTK tick callbacks require a
+        // running mapped frame clock, not merely pending idle iterations.
+        let drain_terminal = |island: &Rc<IslandWindow>| {
+            let frame_loop = gtk::glib::MainLoop::new(None, false);
+            let weak = Rc::downgrade(island);
+            let loop_for_timeout = frame_loop.clone();
+            let completed = Rc::new(std::cell::Cell::new(false));
+            let completed_in_callback = completed.clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+                if let Some(island) = weak.upgrade() {
+                    if !island.view_transition_active.get() && island.compact.opacity() == 1.0 {
+                        completed_in_callback.set(true);
+                        loop_for_timeout.quit();
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                } else {
+                    loop_for_timeout.quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    loop_for_timeout.quit();
+                    gtk::glib::ControlFlow::Break
+                } else {
+                    gtk::glib::ControlFlow::Continue
+                }
+            });
+            frame_loop.run();
+            assert!(
+                completed.get(),
+                "animated view transition did not settle before deadline"
+            );
+        };
         island.close();
         assert!(island.search_focus_generation.get() > queued_generation);
+        island.set_pointer_in_hover_region(true);
+        drain_terminal(&island);
+        assert!(!island.view_transition_active.get());
+        assert!(island.compact.is_visible());
+        assert!(island.compact.can_target());
+        assert_eq!(island.compact.opacity(), 1.0);
+        assert!(!island.search.is_visible());
+        assert_eq!(island.search.opacity(), 0.0);
+
+        // Supersede an animated open immediately with close, then leave the
+        // pointer stationary while the replacement transition settles.
+        island.open_search();
+        island.close();
+        island.set_pointer_in_hover_region(true);
+        drain_terminal(&island);
+        assert!(!island.view_transition_active.get());
+        assert!(island.compact.is_visible());
+        assert!(island.compact.can_target());
+        assert_eq!(island.compact.opacity(), 1.0);
+        assert!(!island.search.is_visible());
+        assert_eq!(island.search.opacity(), 0.0);
+
+        // Weather uses the same page transition owner; verify a subsequent
+        // page change cannot leave the compact terminal state stale either.
+        island.open_weather();
+        island.close();
+        island.set_pointer_in_hover_region(true);
+        drain_terminal(&island);
+        assert!(!island.view_transition_active.get());
+        assert!(island.compact.is_visible());
+        assert!(island.compact.can_target());
+        assert_eq!(island.compact.opacity(), 1.0);
+        assert!(!island.weather.is_visible());
+        assert_eq!(island.weather.opacity(), 0.0);
+
+        // Independent mode exercises search.rs::dismiss_search_window as
+        // well as the shared page transition, including rapid close from the
+        // mapped search surface.
+        let mut independent_config = config.clone();
+        independent_config.launcher.presentation = LauncherPresentation::Independent;
+        independent_config.shell.animation_ms = 280;
+        let independent = IslandWindow::new_for_test(
+            &application,
+            &monitor,
+            "broadway-independent-test".to_owned(),
+            &independent_config,
+            independent_actions,
+            true,
+        );
+        independent.open_search();
+        independent.close();
+        independent.set_pointer_in_hover_region(true);
+        let independent_loop = gtk::glib::MainLoop::new(None, false);
+        let independent_weak = Rc::downgrade(&independent);
+        let independent_loop_for_timeout = independent_loop.clone();
+        let independent_completed = Rc::new(std::cell::Cell::new(false));
+        let independent_completed_in_callback = independent_completed.clone();
+        let independent_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+            if let Some(island) = independent_weak.upgrade() {
+                if !island.view_transition_active.get() && !island.search_window.is_visible() {
+                    independent_completed_in_callback.set(true);
+                    independent_loop_for_timeout.quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+            } else {
+                independent_loop_for_timeout.quit();
+                return gtk::glib::ControlFlow::Break;
+            }
+            if std::time::Instant::now() >= independent_deadline {
+                independent_loop_for_timeout.quit();
+                gtk::glib::ControlFlow::Break
+            } else {
+                gtk::glib::ControlFlow::Continue
+            }
+        });
+        independent_loop.run();
+        assert!(
+            independent_completed.get(),
+            "independent search transition did not settle before deadline"
+        );
+        assert!(!independent.view_transition_active.get());
+        assert!(independent.compact.is_visible());
+        assert!(independent.compact.can_target());
+        assert_eq!(independent.compact.opacity(), 1.0);
+        assert!(!independent.search_window.is_visible());
+        assert!(!independent.search.is_visible());
+        independent.destroy();
+
         // Make any direct refocus observable without relying on compositor
         // focus activation: closing the launcher removes the entry's focus
         // eligibility before the stale idle callback is drained.
