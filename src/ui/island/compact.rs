@@ -109,6 +109,12 @@ impl IslandWindow {
             0.0,
         );
         self.compact_width.set(width);
+        // Rebuilds can happen while hover is already rendered.  Repositioning
+        // the root above must not erase its offset against the current
+        // backdrop, even when the new width produces no new animation.
+        if self.current_view.get() == View::Compact {
+            self.sync_pill_content_geometry(self.geometry.get());
+        }
     }
 
     /// Whether the tray row should be shown: at least one item exists, and
@@ -298,6 +304,7 @@ mod tests {
     fn mapped_scale_1p9_hover_content_tracks_animation_and_picking() {
         use super::super::{IslandActions, IslandWindow};
         use crate::config::AppConfig;
+        use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
         use crate::tarragon::TarragonSelection;
         use gtk::prelude::*;
         use std::{cell::RefCell, rc::Rc, time::Duration};
@@ -416,6 +423,72 @@ mod tests {
             picked.is_some(),
             "animated compact content lost GTK picking"
         );
+
+        // These are the real rebuild/update entry points.  Exercise both
+        // unchanged-width and changed-width paths while the pill is already
+        // raised; neither is allowed to reset the root to y=0.
+        let compact_y_before = f64::from(island.compact.allocation().y());
+        island.update_tray(&[]);
+        drain(Duration::from_millis(20));
+        let compact_y_after_rebuild = f64::from(island.compact.allocation().y());
+        assert!((compact_y_after_rebuild - compact_y_before).abs() <= 2.0);
+
+        let media = MediaState {
+            player: "Test Player".into(),
+            service: "org.test.Player".into(),
+            title: "Track".into(),
+            artist: Some("Artist".into()),
+            album: None,
+            app_icon: Some("audio-x-generic".into()),
+            position_us: 25,
+            length_us: Some(100),
+            can_play: true,
+            can_pause: true,
+            can_go_next: true,
+            can_go_previous: true,
+            status: PlaybackStatus::Playing,
+            players: vec![MediaPlayer {
+                player: "Test Player".into(),
+                service: "org.test.Player".into(),
+                title: "Track".into(),
+                artist: Some("Artist".into()),
+                album: None,
+                app_icon: Some("audio-x-generic".into()),
+                position_us: 25,
+                length_us: Some(100),
+                can_play: true,
+                can_pause: true,
+                can_go_next: true,
+                can_go_previous: true,
+                status: PlaybackStatus::Playing,
+            }],
+        };
+        island.update_media(Some(&media));
+        settle(&|| {
+            island.current_view.get() == super::super::View::Media
+                && !island.view_transition_active.get()
+        });
+        drain(Duration::from_millis(30));
+        let media_y_before = f64::from(island.media.allocation().y());
+        island.update_media(Some(&media));
+        drain(Duration::from_millis(20));
+        let media_y_after_update = f64::from(island.media.allocation().y());
+        assert!((media_y_after_update - media_y_before).abs() <= 2.0);
+        assert!(
+            island
+                .media
+                .pick(
+                    f64::from(island.media.width()) / 2.0,
+                    f64::from(island.media.height()) / 2.0,
+                    gtk::PickFlags::DEFAULT,
+                )
+                .is_some()
+        );
+        island.update_media(None);
+        settle(&|| {
+            island.current_view.get() == super::super::View::Compact
+                && !island.view_transition_active.get()
+        });
 
         // Reverse before the 420 ms enter track settles; no stale-frame jump
         // may place the content outside its current backdrop.

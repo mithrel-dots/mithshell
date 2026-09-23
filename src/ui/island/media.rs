@@ -433,6 +433,10 @@ impl IslandWindow {
         self.media_width.set(width);
 
         if self.current_view.get() == View::Media {
+            // Keep direct media updates aligned with the currently rendered
+            // animated backdrop before deciding whether a new width track is
+            // needed.  This also covers unchanged-width updates.
+            self.sync_pill_content_geometry(self.geometry.get());
             self.reconcile_pill_geometry();
         }
     }
