@@ -501,7 +501,12 @@ impl CircleIntegration {
                         frame.rect.width.round().max(1.0) as i32,
                         frame.rect.height.round().max(1.0) as i32,
                         -1,
-                        None,
+                        Some(
+                            gtk::gsk::Transform::new().translate(&gtk::graphene::Point::new(
+                                frame.rect.x as f32,
+                                frame.rect.y as f32,
+                            )),
+                        ),
                     );
                 }
             }
@@ -715,8 +720,8 @@ fn spec_for(module: CircleModule, _scale: f64) -> (CircleSpec, Visual) {
             height: 36.0,
         },
         CircleModule::Media => Size {
-            width: 320.0,
-            height: 110.0,
+            width: 220.0,
+            height: 40.0,
         },
         CircleModule::None => Size {
             width: diameter,

@@ -13,7 +13,6 @@ import re
 import socket
 import subprocess
 import sys
-import sys
 import tempfile
 import time
 
@@ -41,14 +40,6 @@ if len(sys.argv) > 1:
     if unknown:
         raise SystemExit("unknown GTK regression filter: " + ", ".join(sorted(unknown)))
     TESTS = requested
-if len(sys.argv) > 1:
-    requested = set(sys.argv[1:])
-    unknown = requested.difference(TESTS)
-    if unknown:
-        raise SystemExit("unknown GTK regression filter(s): " + ", ".join(sorted(unknown)))
-    TESTS = [test for test in TESTS if test in requested]
-
-
 def free_port():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))

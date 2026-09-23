@@ -9,11 +9,12 @@
 
 use std::{
     cell::{Cell, RefCell},
+    io::Read,
     rc::Rc,
     time::{Duration, Instant},
 };
 
-use gtk::{Align, Orientation, glib, prelude::*};
+use gtk::{Align, Orientation, gdk, glib, prelude::*};
 
 use super::{
     Metrics,
@@ -81,6 +82,67 @@ fn timer_needed(progress: &Progress) -> bool {
         && progress.length_us.is_some_and(|length| length > 0)
 }
 
+struct Artwork {
+    width: i32,
+    height: i32,
+    pixels: Vec<u8>,
+}
+
+/// Decode off the GTK thread and bound both the transfer and the final image.
+/// MPRIS players commonly provide an HTTPS cover URL, while local players use
+/// `file://`. The app icon remains visible if either source fails.
+fn load_cover(url: &str, size: u32) -> Option<Artwork> {
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    if url.starts_with("file://") {
+        let path = gtk::gio::File::for_uri(url).path()?;
+        std::fs::File::open(path)
+            .ok()?
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+    } else if url.starts_with("https://") {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(6)))
+            .build()
+            .into();
+        agent
+            .get(url)
+            .call()
+            .ok()?
+            .body_mut()
+            .as_reader()
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+    } else {
+        return None;
+    }
+    if bytes.len() as u64 > MAX_BYTES {
+        return None;
+    }
+    let image = image::load_from_memory(&bytes)
+        .ok()?
+        .thumbnail(size, size)
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    Some(Artwork {
+        width: width as i32,
+        height: height as i32,
+        pixels: image.into_raw(),
+    })
+}
+
+fn artwork_texture(art: Artwork) -> gdk::MemoryTexture {
+    gdk::MemoryTexture::new(
+        art.width,
+        art.height,
+        gdk::MemoryFormat::R8g8b8a8,
+        &glib::Bytes::from_owned(art.pixels),
+        art.width as usize * 4,
+    )
+}
+
 /// A mounted circle content pair. `host()` is handed to the central layout;
 /// `update()` is called with the same selected snapshot used by the dashboard.
 pub(crate) struct MediaCircle {
@@ -91,7 +153,11 @@ pub(crate) struct MediaCircle {
     hover_icon: gtk::Image,
     hover_title: gtk::Label,
     hover_artist: gtk::Label,
-    player_select: gtk::ComboBoxText,
+    player_select: gtk::MenuButton,
+    player_label: gtk::Label,
+    player_list: gtk::Box,
+    player_popover: gtk::Popover,
+    player_rows: RefCell<Vec<(String, gtk::Button)>>,
     previous: gtk::Button,
     play_pause: gtk::Button,
     next: gtk::Button,
@@ -99,7 +165,11 @@ pub(crate) struct MediaCircle {
     icon_style: crate::config::IconStyle,
     current_service: RefCell<Option<String>>,
     tick: RefCell<Option<glib::SourceId>>,
-    selector_updating: Cell<bool>,
+    artwork_url: RefCell<Option<String>>,
+    artwork_texture: RefCell<Option<gdk::Texture>>,
+    artwork_generation: Cell<u64>,
+    fallback_icon: RefCell<Option<String>>,
+    art_size: u32,
 }
 
 impl MediaCircle {
@@ -124,6 +194,9 @@ impl MediaCircle {
             hover_title,
             hover_artist,
             player_select,
+            player_label,
+            player_list,
+            player_popover,
             previous,
             play_pause,
             next,
@@ -142,6 +215,10 @@ impl MediaCircle {
             hover_title,
             hover_artist,
             player_select,
+            player_label,
+            player_list,
+            player_popover,
+            player_rows: RefCell::new(Vec::new()),
             previous,
             play_pause,
             next,
@@ -149,7 +226,11 @@ impl MediaCircle {
             icon_style: metrics.icons,
             current_service: RefCell::new(None),
             tick: RefCell::new(None),
-            selector_updating: Cell::new(false),
+            artwork_url: RefCell::new(None),
+            artwork_texture: RefCell::new(None),
+            artwork_generation: Cell::new(0),
+            fallback_icon: RefCell::new(None),
+            art_size: metrics.spacing(24).max(1) as u32,
         });
         circle.connect_actions();
         Ok(circle)
@@ -178,40 +259,69 @@ impl MediaCircle {
         } else {
             self.stop_timer();
             self.current_service.borrow_mut().take();
+            self.artwork_generation
+                .set(self.artwork_generation.get().wrapping_add(1));
+            self.artwork_url.borrow_mut().take();
+            self.artwork_texture.borrow_mut().take();
+            self.fallback_icon.borrow_mut().take();
             self.host.dispatch(super::circle::Event::Content(false));
         }
         self.redraw_progress();
     }
 
-    fn set_media(&self, state: &MediaState) {
+    fn set_media(self: &Rc<Self>, state: &MediaState) {
+        self.update_artwork(state);
         for image in [&self.compact_icon, &self.hover_icon] {
-            if image == &self.compact_icon {
-                set_compact_art(image, state.app_icon.as_deref(), self.icon_style);
-            } else {
-                icon::set_foreign_image(image, state.app_icon.as_deref(), Icon::Executable);
-            }
             image.set_tooltip_text(Some(&format!("{} — {}", state.title, state.player)));
         }
         self.hover_title.set_label(&state.title);
         self.hover_artist
             .set_label(state.artist.as_deref().unwrap_or_default());
         self.hover_artist.set_visible(state.artist.is_some());
-        let _selector_update = SelectorUpdate::new(&self.selector_updating);
-        self.player_select.remove_all();
-        let mut selected_is_listed = false;
-        for player in &state.players {
-            selected_is_listed |= player.service == state.service;
-            self.player_select
-                .append(Some(&player.service), &player.player);
+        let mut players: Vec<(String, String)> = state
+            .players
+            .iter()
+            .map(|player| (player.service.clone(), player.player.clone()))
+            .collect();
+        // Discovery can briefly lag the selected snapshot. Keep that source
+        // selectable without rebuilding an open popover on every position tick.
+        if !players.iter().any(|(service, _)| service == &state.service) {
+            players.push((state.service.clone(), state.player.clone()));
         }
-        // A selected snapshot can briefly outlive discovery's player list.
-        // Keep valid titled media visible rather than treating that race as
-        // absence; the next snapshot reconciles the selector normally.
-        if !selected_is_listed {
-            self.player_select
-                .append(Some(&state.service), &state.player);
+        if self
+            .player_rows
+            .borrow()
+            .iter()
+            .map(|(service, button)| {
+                (
+                    service.clone(),
+                    button.label().unwrap_or_default().to_string(),
+                )
+            })
+            .collect::<Vec<_>>()
+            != players
+        {
+            while let Some(child) = self.player_list.first_child() {
+                self.player_list.remove(&child);
+            }
+            let mut rows = Vec::new();
+            for (service, name) in players {
+                let button = gtk::Button::with_label(&name);
+                button.set_halign(Align::Fill);
+                let weak = Rc::downgrade(self);
+                let service_for_click = service.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(owner) = weak.upgrade() {
+                        owner.select_player(&service_for_click);
+                    }
+                });
+                self.player_list.append(&button);
+                rows.push((service, button));
+            }
+            *self.player_rows.borrow_mut() = rows;
         }
-        self.player_select.set_active_id(Some(&state.service));
+        self.player_label.set_label(&state.player);
+        self.player_label.set_tooltip_text(Some(&state.player));
         self.player_select
             .set_tooltip_text(Some("Select media player"));
         self.previous.set_sensitive(state.can_go_previous);
@@ -229,6 +339,71 @@ impl MediaCircle {
         );
     }
 
+    fn select_player(&self, service: &str) {
+        self.player_popover.popdown();
+        if self.current_service.borrow().as_deref() == Some(service) {
+            return;
+        }
+        self.current_service.replace(Some(service.to_owned()));
+        if let Some((_, button)) = self
+            .player_rows
+            .borrow()
+            .iter()
+            .find(|(source, _)| source == service)
+        {
+            self.player_label
+                .set_label(button.label().as_deref().unwrap_or_default());
+        }
+        (self.actions.select)(service.to_owned());
+    }
+
+    fn update_artwork(self: &Rc<Self>, state: &MediaState) {
+        let url = state.art_url.as_deref();
+        let changed = self.artwork_url.borrow().as_deref() != url;
+        if changed {
+            self.artwork_generation
+                .set(self.artwork_generation.get().wrapping_add(1));
+            *self.artwork_url.borrow_mut() = state.art_url.clone();
+            self.artwork_texture.borrow_mut().take();
+        }
+        if let Some(texture) = self.artwork_texture.borrow().as_ref() {
+            for image in [&self.compact_icon, &self.hover_icon] {
+                image.set_paintable(Some(texture));
+            }
+        } else if changed || self.fallback_icon.borrow().as_ref() != state.app_icon.as_ref() {
+            for image in [&self.compact_icon, &self.hover_icon] {
+                set_compact_art(image, state.app_icon.as_deref(), self.icon_style);
+            }
+        }
+        *self.fallback_icon.borrow_mut() = state.app_icon.clone();
+        let Some(url) = state.art_url.clone().filter(|_| changed) else {
+            return;
+        };
+        let generation = self.artwork_generation.get();
+        let size = self.art_size;
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = sender.send_blocking(load_cover(&url, size));
+        });
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(Some(art)) = receiver.recv().await else {
+                return;
+            };
+            let Some(owner) = weak.upgrade() else {
+                return;
+            };
+            if owner.artwork_generation.get() != generation {
+                return;
+            }
+            let texture: gdk::Texture = artwork_texture(art).upcast();
+            for image in [&owner.compact_icon, &owner.hover_icon] {
+                image.set_paintable(Some(&texture));
+            }
+            owner.artwork_texture.replace(Some(texture));
+        });
+    }
+
     fn connect_actions(self: &Rc<Self>) {
         for (button, action) in [
             (&self.previous, self.actions.previous.clone()),
@@ -244,19 +419,6 @@ impl MediaCircle {
                 }
             });
         }
-        let weak = Rc::downgrade(self);
-        let select = self.actions.select.clone();
-        self.player_select.connect_changed(move |combo| {
-            if let Some(service) = combo.active_id() {
-                if let Some(this) = weak.upgrade() {
-                    if this.selector_updating.get() {
-                        return;
-                    }
-                    this.current_service.replace(Some(service.to_string()));
-                }
-                select(service.to_string());
-            }
-        });
     }
 
     fn restart_timer(self: &Rc<Self>) {
@@ -305,7 +467,14 @@ impl MediaCircle {
 
     #[cfg(test)]
     pub(crate) fn test_select_service(&self, service: &str) {
-        self.player_select.set_active_id(Some(service));
+        if let Some((_, button)) = self
+            .player_rows
+            .borrow()
+            .iter()
+            .find(|(source, _)| source == service)
+        {
+            button.emit_clicked();
+        }
     }
 
     #[cfg(test)]
@@ -319,21 +488,6 @@ impl Drop for MediaCircle {
         if let Some(source) = self.tick.get_mut().take() {
             source.remove();
         }
-    }
-}
-
-struct SelectorUpdate<'a>(&'a Cell<bool>);
-
-impl SelectorUpdate<'_> {
-    fn new(updating: &Cell<bool>) -> SelectorUpdate<'_> {
-        updating.set(true);
-        SelectorUpdate(updating)
-    }
-}
-
-impl Drop for SelectorUpdate<'_> {
-    fn drop(&mut self) {
-        self.0.set(false);
     }
 }
 
@@ -421,35 +575,61 @@ fn hover_page(
     gtk::Image,
     gtk::Label,
     gtk::Label,
-    gtk::ComboBoxText,
+    gtk::MenuButton,
+    gtk::Label,
+    gtk::Box,
+    gtk::Popover,
     gtk::Button,
     gtk::Button,
     gtk::Button,
 ) {
-    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
-    root.set_margin_start(metrics.spacing(6));
-    root.set_margin_end(metrics.spacing(6));
+    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(1));
+    root.set_margin_start(metrics.spacing(3));
+    root.set_margin_end(metrics.spacing(3));
     root.set_margin_top(metrics.spacing(2));
     root.set_margin_bottom(metrics.spacing(2));
+    root.set_valign(Align::Center);
+    root.set_vexpand(false);
     root.add_css_class("media-circle-hover");
     let icon = gtk::Image::new();
     icon.set_pixel_size(metrics.spacing(24));
     icon.set_size_request(metrics.spacing(24), metrics.spacing(24));
+    icon.set_valign(Align::Center);
     root.append(&icon);
     let text = gtk::Box::new(Orientation::Vertical, 0);
+    text.set_hexpand(true);
+    text.set_valign(Align::Center);
     let title = gtk::Label::new(None);
     title.set_xalign(0.0);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.set_single_line_mode(true);
+    title.set_width_chars(2);
+    title.set_max_width_chars(6);
     let artist = gtk::Label::new(None);
     artist.set_xalign(0.0);
     artist.add_css_class("dim-label");
+    artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    artist.set_single_line_mode(true);
+    artist.set_max_width_chars(6);
     text.append(&title);
     text.append(&artist);
     root.append(&text);
-    let select = gtk::ComboBoxText::new();
+    let select = gtk::MenuButton::new();
     select.set_hexpand(false);
-    select.set_size_request(metrics.spacing(72), -1);
+    select.set_valign(Align::Center);
+    let source_label = gtk::Label::new(None);
+    source_label.set_width_chars(3);
+    source_label.set_max_width_chars(5);
+    source_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    select.set_child(Some(&source_label));
+    let sources = gtk::Box::new(Orientation::Vertical, metrics.spacing(2));
+    sources.set_margin_start(metrics.spacing(3));
+    sources.set_margin_end(metrics.spacing(3));
+    sources.set_margin_top(metrics.spacing(2));
+    sources.set_margin_bottom(metrics.spacing(2));
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&sources));
+    select.set_popover(Some(&popover));
     root.append(&select);
     let previous = icon::icon_button(Icon::Previous, metrics.icons);
     let play = icon::icon_button(Icon::Play, metrics.icons);
@@ -458,19 +638,30 @@ fn hover_page(
         button.add_css_class("media-circle-control");
         root.append(button);
     }
-    (root, icon, title, artist, select, previous, play, next)
+    (
+        root,
+        icon,
+        title,
+        artist,
+        select,
+        source_label,
+        sources,
+        popover,
+        previous,
+        play,
+        next,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::{cell::Cell, rc::Rc};
 
     use gtk::prelude::*;
 
     use crate::{config::IconStyle, state::MediaPlayer};
 
-    use super::{PlaybackStatus, Progress, SelectorUpdate, progress_fraction, timer_needed};
+    use super::{PlaybackStatus, Progress, progress_fraction, timer_needed};
     #[test]
     fn progress_is_safe_for_unknown_and_invalid_values() {
         assert_eq!(progress_fraction(-1, None), 0.0);
@@ -493,23 +684,6 @@ mod tests {
             length_us: Some(1),
             ..Default::default()
         }));
-    }
-
-    #[test]
-    fn selector_updates_suppress_snapshot_emissions_but_not_user_changes() {
-        let updating = Cell::new(false);
-        let emitted = Cell::new(0);
-        {
-            let _guard = SelectorUpdate::new(&updating);
-            if !updating.get() {
-                emitted.set(emitted.get() + 1);
-            }
-        }
-        assert_eq!(emitted.get(), 0);
-        if !updating.get() {
-            emitted.set(emitted.get() + 1);
-        }
-        assert_eq!(emitted.get(), 1);
     }
 
     /// Runs under a private Broadway display. This is intentionally ignored in
@@ -551,7 +725,7 @@ mod tests {
 
         // This is the same signal path used by a user selecting a different
         // row, unlike update()'s guarded programmatic selection.
-        circle.player_select.set_active_id(Some("org.test.other"));
+        circle.test_select_service("org.test.other");
         assert_eq!(selected.get(), 1, "user selection emits exactly once");
 
         circle.update(Some(&test_media_state(PlaybackStatus::Playing, None)));
@@ -594,7 +768,8 @@ mod tests {
             };
             let circle = super::MediaCircle::new(metrics, actions).expect("media circle");
             let mut state = test_media_state(PlaybackStatus::Paused, Some(10_000_000));
-            state.app_icon = Some(fixture.clone());
+            state.app_icon = Some("audio-x-generic".to_owned());
+            state.art_url = Some(gtk::gio::File::for_path(&fixture).uri().to_string());
             circle.update(Some(&state));
             let window = gtk::Window::new();
             let fixed = gtk::Fixed::new();
@@ -615,6 +790,17 @@ mod tests {
             circle.host.commit_page(circle.host.revision());
             window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while circle.artwork_texture.borrow().is_none() && std::time::Instant::now() < deadline
+            {
+                while gtk::glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                circle.artwork_texture.borrow().is_some(),
+                "cover art loaded at {scale}"
+            );
 
             let diameter = metrics.spacing(32);
             let art_size = metrics.spacing(24);
@@ -657,58 +843,220 @@ mod tests {
                 "compact circle is targetable at scale {scale}"
             );
 
-            // Exercise the real host page lifecycle and snapshot refresh while
-            // mapped; leave must return to the same bounded compact allocation.
-            circle
+            window.close();
+            while gtk::glib::MainContext::default().iteration(false) {}
+
+            // Map a new, production CircleHost in the actual media side-lane
+            // width. The source menu and all controls must fit without making
+            // the shared scroller horizontally scrollable.
+            let selected = Rc::new(Cell::new(0));
+            let on_select = selected.clone();
+            let hover_circle = super::MediaCircle::new(
+                metrics,
+                super::MediaCircleActions {
+                    play_pause: Rc::new(|_| {}),
+                    next: Rc::new(|_| {}),
+                    previous: Rc::new(|_| {}),
+                    select: Rc::new(move |_| on_select.set(on_select.get() + 1)),
+                },
+            )
+            .expect("hover media circle");
+            hover_circle.update(Some(&state));
+            hover_circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(true));
             let expanded = super::super::circle::Frame {
                 rect: super::super::circle::Rect {
                     x: 0.0,
                     y: 0.0,
-                    width: metrics.spacing(420) as f64,
-                    height: metrics.spacing(44) as f64,
+                    width: metrics.spacing(if scale > 1.5 { 210 } else { 220 }) as f64,
+                    height: metrics.spacing(40) as f64,
                 },
                 radius: metrics.spacing(16) as f64,
             };
-            circle.host.render(circle.host.revision(), Some(expanded));
-            circle.host.commit_page(circle.host.revision());
+            hover_circle
+                .host
+                .render(hover_circle.host.revision(), Some(expanded));
+            hover_circle.host.commit_page(hover_circle.host.revision());
+            let hover_window = gtk::Window::new();
+            let hover_fixed = gtk::Fixed::new();
+            hover_fixed.set_hexpand(true);
+            hover_fixed.set_vexpand(true);
+            hover_fixed.set_size_request(metrics.spacing(250), metrics.spacing(48));
+            hover_fixed.put(hover_circle.host.widget(), 0.0, 0.0);
+            hover_window.set_default_size(metrics.spacing(250), metrics.spacing(48));
+            hover_window.set_child(Some(&hover_fixed));
+            hover_window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
             assert!(
-                circle.host.widget().height() <= metrics.spacing(44),
+                hover_circle.host.widget().height() <= metrics.spacing(40),
                 "media hover is shallow at scale {scale}: {}",
-                circle.host.widget().height()
-            );
-            assert!(circle.player_select.width() > 0, "selector remains usable");
-            assert!(
-                circle.player_select.width() <= metrics.spacing(72),
-                "selector stays compact at scale {scale}"
+                hover_circle.host.widget().height()
             );
             assert!(
-                circle
-                    .host
-                    .widget()
+                hover_circle.player_select.width() > 0,
+                "selector remains usable"
+            );
+            assert!(
+                hover_circle.player_select.width() <= metrics.spacing(60),
+                "selector stays compact at scale {scale}: {}",
+                hover_circle.player_select.width()
+            );
+            let source_bounds = hover_circle
+                .player_select
+                .compute_bounds(hover_circle.host.widget())
+                .expect("source picker bounds");
+            assert!(source_bounds.x() >= 0.0 && source_bounds.y() >= 0.0);
+            assert!(source_bounds.x() + source_bounds.width() <= expanded.rect.width as f32);
+            assert!(source_bounds.y() + source_bounds.height() <= expanded.rect.height as f32);
+            for button in [
+                &hover_circle.previous,
+                &hover_circle.play_pause,
+                &hover_circle.next,
+            ] {
+                let bounds = button
+                    .compute_bounds(hover_circle.host.widget())
+                    .expect("media control bounds");
+                assert!(
+                    bounds.x() >= 0.0 && bounds.x() + bounds.width() <= expanded.rect.width as f32,
+                    "media control {bounds:?} outside frame {:?} at scale {scale}",
+                    expanded.rect
+                );
+                assert!(
+                    bounds.y() >= 0.0
+                        && bounds.y() + bounds.height() <= expanded.rect.height as f32,
+                    "media control {bounds:?} outside frame {:?} at scale {scale}",
+                    expanded.rect
+                );
+                assert!(
+                    hover_circle
+                        .host
+                        .widget()
+                        .pick(
+                            f64::from(bounds.x() + bounds.width() / 2.0),
+                            f64::from(bounds.y() + bounds.height() / 2.0),
+                            gtk::PickFlags::DEFAULT,
+                        )
+                        .is_some()
+                );
+            }
+            let mut ancestor = hover_circle.hover_icon.parent();
+            let mut scroller = None;
+            while let Some(widget) = ancestor {
+                if let Ok(found) = widget.clone().downcast::<gtk::ScrolledWindow>() {
+                    scroller = Some(found);
+                    break;
+                }
+                ancestor = widget.parent();
+            }
+            let scroller = scroller.expect("host media scroller");
+            assert!(
+                scroller.hadjustment().upper() <= scroller.hadjustment().page_size() + 1.0,
+                "unexpected horizontal media scroll at scale {scale}: upper={}, page={}",
+                scroller.hadjustment().upper(),
+                scroller.hadjustment().page_size()
+            );
+            hover_circle.player_popover.popup();
+            while gtk::glib::MainContext::default().iteration(false) {}
+            let source_button = hover_circle.player_rows.borrow()[1].1.clone();
+            assert!(
+                source_button.is_mapped()
+                    && source_button.width() > 0
+                    && source_button.height() > 0,
+                "second source row is visible and clickable at scale {scale}"
+            );
+            let source_point = source_button
+                .compute_bounds(&hover_circle.player_popover)
+                .expect("second source inside popover");
+            assert!(
+                hover_circle
+                    .player_popover
                     .pick(
-                        f64::from(metrics.spacing(420)) - 8.0,
-                        f64::from(metrics.spacing(44)) / 2.0,
+                        f64::from(source_point.x() + source_point.width() / 2.0),
+                        f64::from(source_point.y() + source_point.height() / 2.0),
                         gtk::PickFlags::DEFAULT,
                     )
                     .is_some(),
-                "hover controls remain targetable in available lane at scale {scale}"
+                "second source is pickable at scale {scale}"
             );
-            circle.update(Some(&state));
-            circle
+            hover_circle.test_select_service("org.test.other");
+            assert_eq!(selected.get(), 1, "user selected another source at {scale}");
+            assert_eq!(
+                hover_circle.test_service().as_deref(),
+                Some("org.test.other")
+            );
+            let next_fixture = std::env::temp_dir().join(format!("media-circle-next-{scale}.png"));
+            image::RgbaImage::from_pixel(96, 320, image::Rgba([0x40, 0x98, 0xd0, 255]))
+                .save(&next_fixture)
+                .expect("second player cover art");
+            let mut next_state = state.clone();
+            next_state.service = "org.test.other".to_owned();
+            next_state.player = "VLC".to_owned();
+            next_state.art_url = Some(gtk::gio::File::for_path(&next_fixture).uri().to_string());
+            hover_circle.update(Some(&next_state));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while hover_circle.artwork_texture.borrow().is_none()
+                && std::time::Instant::now() < deadline
+            {
+                while gtk::glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let next_art = hover_circle
+                .hover_icon
+                .paintable()
+                .expect("selected player's cover art");
+            assert!(next_art.intrinsic_width() < next_art.intrinsic_height());
+            assert_eq!(hover_circle.player_label.label(), "VLC");
+            next_state.art_url = None;
+            hover_circle.update(Some(&next_state));
+            assert!(hover_circle.artwork_texture.borrow().is_none());
+            assert_eq!(
+                hover_circle.hover_icon.icon_name().as_deref(),
+                Some("audio-x-generic")
+            );
+            hover_circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(false));
-            circle.host.render(circle.host.revision(), Some(frame));
-            circle.host.commit_page(circle.host.revision());
+            hover_circle
+                .host
+                .render(hover_circle.host.revision(), Some(frame));
+            hover_circle.host.commit_page(hover_circle.host.revision());
+            // CircleIntegration publishes each committed host frame directly
+            // before queueing the parent allocation on the live Fixed root.
+            hover_circle
+                .host
+                .widget()
+                .allocate(diameter, diameter, -1, None);
+            hover_fixed.queue_resize();
+            hover_window.queue_resize();
+            let wait = gtk::glib::MainLoop::new(None, false);
+            let done = wait.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
+                done.quit();
+            });
+            wait.run();
             while gtk::glib::MainContext::default().iteration(false) {}
-            assert_eq!(image.width(), art_size, "art after leave/update at {scale}");
-            assert_eq!(ring.width(), diameter, "ring after leave/update at {scale}");
+            assert_eq!(
+                hover_circle.compact_icon.width(),
+                art_size,
+                "art after leave/update at {scale}: mode={:?} presented={:?} host={}x{} compact_visible={} compact_mapped={}",
+                hover_circle.host.mode(),
+                hover_circle.host.presented_page(),
+                hover_circle.host.widget().width(),
+                hover_circle.host.widget().height(),
+                hover_circle.compact_icon.is_visible(),
+                hover_circle.compact_icon.is_mapped()
+            );
+            assert_eq!(
+                hover_circle.progress_area.width(),
+                diameter,
+                "ring after leave/update at {scale}"
+            );
 
-            window.close();
+            hover_window.close();
             while gtk::glib::MainContext::default().iteration(false) {}
             let _ = std::fs::remove_file(fixture);
+            let _ = std::fs::remove_file(next_fixture);
         }
     }
 
