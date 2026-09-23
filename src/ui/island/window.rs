@@ -98,9 +98,9 @@ impl IslandWindow {
         // surface to Overlay before presenting the catcher, so the catcher
         // remains below every interactive main-window surface.
         dismiss_window.set_layer(Layer::Top);
-        // Keep an opt-in switch for compositor versions that incorrectly
-        // treat keyboard-interactivity NONE as non-interactive for pointers.
-        dismiss_window.set_keyboard_mode(catcher_keyboard_mode());
+        // The catcher must never acquire seat-wide keyboard focus. Pointer
+        // delivery is independent of this layer-shell keyboard setting.
+        dismiss_window.set_keyboard_mode(KeyboardMode::None);
         dismiss_window.set_monitor(Some(monitor));
         for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
             dismiss_window.set_anchor(edge, true);
@@ -531,6 +531,21 @@ impl IslandWindow {
                 island.refresh_dismiss_input_region();
             }
         });
+        if trace_catcher() {
+            let weak = Rc::downgrade(&island);
+            island.dismiss_window.connect_realize(move |window| {
+                if let Some(clock) = window.frame_clock() {
+                    let weak = weak.clone();
+                    clock.connect_after_paint(move |_| {
+                        if weak.upgrade().is_some() {
+                            log::info!(
+                                "dismiss catcher after-paint; region request reached GDK frame"
+                            );
+                        }
+                    });
+                }
+            });
+        }
         // Layer-shell negotiation can complete after `realize`. Re-send the
         // region after map and once more from idle so the post-map wl_surface
         // commit cannot retain the initial empty input shape.
@@ -799,14 +814,6 @@ impl IslandWindow {
 
 pub(super) fn trace_catcher() -> bool {
     std::env::var_os("MITHSHELL_TRACE_CATCHER").is_some()
-}
-
-fn catcher_keyboard_mode() -> KeyboardMode {
-    if std::env::var_os("MITHSHELL_CATCHER_KEYBOARD").is_some_and(|value| value == "on-demand") {
-        KeyboardMode::OnDemand
-    } else {
-        KeyboardMode::None
-    }
 }
 
 fn desired_main_layer(view: View, independent_search_visible: bool) -> Layer {
