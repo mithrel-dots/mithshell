@@ -345,10 +345,6 @@ mod tests {
         };
         circle.host.widget().set_halign(gtk::Align::Start);
         circle.host.widget().set_valign(gtk::Align::Start);
-        circle.host.widget().set_size_request(
-            frame.rect.width.round() as i32,
-            frame.rect.height.round() as i32,
-        );
         let root = gtk::Fixed::new();
         root.set_hexpand(true);
         root.set_vexpand(true);
@@ -378,7 +374,7 @@ mod tests {
         while gtk::glib::MainContext::default().pending() {
             gtk::glib::MainContext::default().iteration(false);
         }
-        let scroller = find_scroller(&circle.host.widget()).expect("host hover scroller");
+        let scroller = find_scroller(circle.host.widget()).expect("host hover scroller");
         assert_eq!(
             circle.host.widget().height(),
             frame.rect.height.round() as i32
@@ -422,6 +418,7 @@ mod tests {
             assert!(
                 allocated.iter().all(|child| {
                     child.is_visible()
+                        && child.is_mapped()
                         && child.width() > 0
                         && child.height() > 0
                         && child
@@ -446,6 +443,15 @@ mod tests {
                     ))
                     .collect::<Vec<_>>()
             );
+            if count <= 4 {
+                assert!(circle.hover.width() <= scroller.width());
+                let right = allocated
+                    .iter()
+                    .filter_map(|child| child.compute_bounds(&hover_widget))
+                    .map(|bounds| bounds.x() + bounds.width())
+                    .fold(0.0_f32, f32::max);
+                assert!(right <= scroller.width() as f32);
+            }
             let adjustment = scroller.hadjustment();
             if count == 9 {
                 assert!(adjustment.upper() > adjustment.page_size());
@@ -470,6 +476,15 @@ mod tests {
                     adjustment.value(),
                     adjustment.upper()
                 );
+                let picked = scroller.pick(
+                    f64::from(last_bounds.x() - adjustment.value() as f32),
+                    f64::from(last_bounds.y() + last_bounds.height() / 2.0),
+                    gtk::PickFlags::DEFAULT,
+                );
+                assert!(
+                    picked.is_some(),
+                    "last icon is not pickable after scrolling"
+                );
             }
         }
         circle.host.dispatch(super::super::circle::Event::OpenFull);
@@ -487,6 +502,8 @@ mod tests {
         }
         let full_children = children(&circle.full.clone().upcast());
         assert_eq!(full_children.len(), 9);
+        let full_scroller = find_parent_scroller(&circle.full).expect("full page scroller");
+        assert!(full_scroller.height() <= frame.rect.height.round() as i32);
         let full_widget: gtk::Widget = circle.full.clone().upcast();
         let full_row_y = full_children[0]
             .compute_bounds(&full_widget)
@@ -539,6 +556,17 @@ mod tests {
             if let Some(scroller) = find_scroller(&current) {
                 return Some(scroller);
             }
+        }
+        None
+    }
+
+    fn find_parent_scroller(widget: &impl IsA<gtk::Widget>) -> Option<gtk::ScrolledWindow> {
+        let mut parent = widget.as_ref().parent();
+        while let Some(current) = parent {
+            if let Ok(scroller) = current.clone().downcast::<gtk::ScrolledWindow>() {
+                return Some(scroller);
+            }
+            parent = current.parent();
         }
         None
     }
