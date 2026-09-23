@@ -24,8 +24,8 @@ use crate::state::TrayItem;
 pub(crate) struct TrayCircle {
     host: Rc<CircleHost>,
     compact: gtk::Overlay,
-    hover: gtk::FlowBox,
-    full: gtk::FlowBox,
+    hover: gtk::Box,
+    full: gtk::Box,
     island: Weak<IslandWindow>,
     enabled: bool,
     style: TrayCompactStyle,
@@ -46,8 +46,8 @@ impl TrayCircle {
         count.add_css_class("circle-tray-count");
         compact.set_child(Some(&count));
 
-        let hover = tray_grid();
-        let full = tray_grid();
+        let hover = tray_row();
+        let full = tray_row();
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
@@ -91,8 +91,8 @@ impl TrayCircle {
         let count = gtk::Label::new(Some("0"));
         count.add_css_class("circle-tray-count");
         compact.set_child(Some(&count));
-        let hover = tray_grid();
-        let full = tray_grid();
+        let hover = tray_row();
+        let full = tray_row();
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
@@ -121,8 +121,7 @@ impl TrayCircle {
     /// is intentionally capped independently of the hover/full pages.
     pub(crate) fn update(&self, items: &[TrayItem]) {
         // Popdowns can synchronously change keyboard mode and trigger a
-        // relayout.  Keep those callbacks behind the child rebuild: GTK must
-        // never allocate a FlowBox while its old children are being removed.
+        // relayout. Keep callbacks behind the child rebuild.
         self.menu_tracker.begin_batch();
         self.menu_tracker.invalidate();
         clear_children(&self.compact);
@@ -184,40 +183,25 @@ impl TrayCircle {
     }
 }
 
-fn tray_grid() -> gtk::FlowBox {
-    let grid = gtk::FlowBox::new();
-    // Tray indicators are a single horizontal strip.  FlowBox's default
-    // vertical orientation wraps after the configured children-per-line,
-    // turning a compact tray into a tall panel as items accumulate.
-    grid.set_orientation(gtk::Orientation::Horizontal);
-    grid.set_selection_mode(gtk::SelectionMode::None);
-    grid.set_max_children_per_line(i32::MAX as u32);
-    grid.set_min_children_per_line(1);
-    grid.set_row_spacing(4);
-    grid.set_column_spacing(4);
-    grid.set_hexpand(true);
-    grid.set_vexpand(false);
-    // The shared circle scroller intentionally suppresses natural-size
-    // propagation.  Give FlowBox a real minimum so its viewport does not
-    // collapse to 0x0 before the first allocation.
-    grid.set_size_request(24, 24);
-    grid.set_halign(Align::Fill);
-    grid.set_valign(Align::Fill);
-    let scroll = grid.clone();
-    // FlowBox itself is the page; the host wraps it in a ScrolledWindow only
-    // for expanded pages through this bounded policy in integration.
-    scroll.set_overflow(Overflow::Hidden);
-    grid
+fn tray_row() -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    row.set_hexpand(false);
+    row.set_vexpand(false);
+    row.set_halign(Align::Start);
+    row.set_valign(Align::Center);
+    row.set_size_request(-1, 24);
+    row.set_overflow(Overflow::Hidden);
+    row
 }
 
-fn ensure_page_measurement(page: &gtk::FlowBox) {
+fn ensure_page_measurement(page: &gtk::Box) {
     // CircleHost deliberately disables natural propagation on its shared
-    // scroller.  Keep the tray page measurable so Stack does not allocate
-    // its FlowBox viewport at 0x0 before the expanded frame arrives.
+    // scroller. Keep the tray row measurable so Stack does not allocate its
+    // viewport at 0x0 before the expanded frame arrives.
     if let Some(parent) = page.parent() {
         parent.set_size_request(1, 1);
         parent.set_hexpand(true);
-        parent.set_vexpand(false);
+        parent.set_vexpand(true);
         parent.set_halign(Align::Fill);
         parent.set_valign(Align::Fill);
         if let Some(scroll) = parent.downcast_ref::<gtk::ScrolledWindow>() {
@@ -225,7 +209,7 @@ fn ensure_page_measurement(page: &gtk::FlowBox) {
             scroll.set_min_content_height(24);
         }
     }
-    page.set_size_request(1, 24);
+    page.set_size_request(-1, 24);
 }
 
 fn clear_children<W: IsA<gtk::Widget>>(widget: &W) {
@@ -239,6 +223,12 @@ fn clear_children<W: IsA<gtk::Widget>>(widget: &W) {
     if let Some(flow) = widget.as_ref().downcast_ref::<gtk::FlowBox>() {
         while let Some(child) = flow.first_child() {
             flow.remove(&child);
+        }
+        return;
+    }
+    if let Some(row) = widget.as_ref().downcast_ref::<gtk::Box>() {
+        while let Some(child) = row.first_child() {
+            row.remove(&child);
         }
         return;
     }
@@ -321,9 +311,7 @@ mod tests {
             max_compact_icons: 4,
             ..TrayConfig::default()
         };
-        let circle = TrayCircle::synthetic(&config, 1.0);
-        window.set_child(Some(circle.host.widget()));
-        window.present();
+        let circle = TrayCircle::synthetic(&config, 1.9);
         let items = vec![
             tray_item("named", TrayIcon::Name("application-x-executable".into())),
             tray_item("unknown", TrayIcon::Name("not-a-real-icon".into())),
@@ -350,20 +338,29 @@ mod tests {
             rect: super::super::circle::Rect {
                 x: 0.0,
                 y: 0.0,
-                width: 435.0,
-                height: 215.0,
+                width: 144.0 * 1.9,
+                height: 36.0 * 1.9,
             },
-            radius: 28.0,
+            radius: 18.0 * 1.9,
         };
+        circle.host.widget().set_halign(gtk::Align::Start);
+        circle.host.widget().set_valign(gtk::Align::Start);
+        circle.host.widget().set_size_request(
+            frame.rect.width.round() as i32,
+            frame.rect.height.round() as i32,
+        );
+        let root = gtk::Fixed::new();
+        root.set_hexpand(true);
+        root.set_vexpand(true);
+        root.put(circle.host.widget(), 0.0, 0.0);
+        window.set_child(Some(&root));
+        window.present();
         assert!(circle.host.render(circle.host.revision(), Some(frame)));
         assert!(circle.host.commit_page(circle.host.revision()));
         window.queue_resize();
         while gtk::glib::MainContext::default().pending() {
             gtk::glib::MainContext::default().iteration(false);
         }
-        // Exercise the real FlowBox allocator independently of the shared
-        // CircleSurface stack; the latter's zero allocation is reported as a
-        // host integration dependency rather than hidden by this test.
         let children = |widget: &gtk::Widget| {
             let mut result = Vec::new();
             let mut child = widget.first_child();
@@ -381,24 +378,12 @@ mod tests {
         while gtk::glib::MainContext::default().pending() {
             gtk::glib::MainContext::default().iteration(false);
         }
-        circle.hover.allocate(435, 36, -1, None);
-        assert_eq!(children(&circle.hover.clone().upcast()).len(), items.len());
-        for child in children(&circle.hover.clone().upcast()) {
-            assert!(child.is_visible() && child.is_mapped());
-            assert!(child.width() > 0 && child.height() > 0);
-        }
-        circle.host.dispatch(super::super::circle::Event::OpenFull);
-        assert!(circle.host.render(circle.host.revision(), Some(frame)));
-        assert!(circle.host.commit_page(circle.host.revision()));
-        while gtk::glib::MainContext::default().pending() {
-            gtk::glib::MainContext::default().iteration(false);
-        }
-        circle.full.allocate(435, 215, -1, None);
-        assert_eq!(children(&circle.full.clone().upcast()).len(), items.len());
-        for child in children(&circle.full.clone().upcast()) {
-            assert!(child.is_visible() && child.is_mapped());
-            assert!(child.width() > 0 && child.height() > 0);
-        }
+        let scroller = find_scroller(&circle.host.widget()).expect("host hover scroller");
+        assert_eq!(
+            circle.host.widget().height(),
+            frame.rect.height.round() as i32
+        );
+        assert!(scroller.height() <= frame.rect.height.round() as i32);
         for count in [1, 4, 9] {
             let sample = items
                 .iter()
@@ -415,32 +400,147 @@ mod tests {
             circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(true));
-            circle.hover.allocate(435, 36, -1, None);
+            assert!(circle.host.render(circle.host.revision(), Some(frame)));
+            assert!(circle.host.commit_page(circle.host.revision()));
+            circle.host.widget().allocate(
+                frame.rect.width.round() as i32,
+                frame.rect.height.round() as i32,
+                -1,
+                None,
+            );
+            window.queue_resize();
             while gtk::glib::MainContext::default().pending() {
                 gtk::glib::MainContext::default().iteration(false);
             }
             let allocated = children(&circle.hover.clone().upcast());
             assert_eq!(allocated.len(), count);
-            let row_y = allocated[0].allocation().y();
+            let hover_widget: gtk::Widget = circle.hover.clone().upcast();
+            let row_y = allocated[0]
+                .compute_bounds(&hover_widget)
+                .expect("button bounds")
+                .y();
             assert!(
                 allocated.iter().all(|child| {
-                    child.width() > 0 && child.height() > 0 && child.allocation().y() == row_y
+                    child.is_visible()
+                        && child.width() > 0
+                        && child.height() > 0
+                        && child
+                            .compute_bounds(&hover_widget)
+                            .expect("button bounds")
+                            .y()
+                            == row_y
                 }),
-                "count={count}, allocations={:?}",
+                "count={count}, scroller={}x{}, row={}x{}, allocations={:?}",
+                scroller.width(),
+                scroller.height(),
+                circle.hover.width(),
+                circle.hover.height(),
                 allocated
                     .iter()
                     .map(|child| (
                         child.is_mapped(),
                         child.width(),
                         child.height(),
-                        child.allocation().x(),
-                        child.allocation().y()
+                        child.compute_bounds(&hover_widget).map(|bounds| bounds.x()),
+                        child.compute_bounds(&hover_widget).map(|bounds| bounds.y())
                     ))
                     .collect::<Vec<_>>()
             );
+            let adjustment = scroller.hadjustment();
+            if count == 9 {
+                assert!(adjustment.upper() > adjustment.page_size());
+                adjustment.set_value(adjustment.upper() - adjustment.page_size());
+                while gtk::glib::MainContext::default().pending() {
+                    gtk::glib::MainContext::default().iteration(false);
+                }
+                assert!(adjustment.value() > 0.0);
+                let last = allocated.last().unwrap();
+                let last_bounds = last
+                    .compute_bounds(&hover_widget)
+                    .expect("last tray button visible bounds");
+                assert!(last.can_target() && last.is_sensitive());
+                assert!(
+                    (last_bounds.x() - adjustment.value() as f32) < scroller.width() as f32
+                        && (last_bounds.x() - adjustment.value() as f32 + last_bounds.width())
+                            > 0.0,
+                    "last bounds={:?}, viewport={}x{}, adjustment={}/{}",
+                    last_bounds,
+                    scroller.width(),
+                    scroller.height(),
+                    adjustment.value(),
+                    adjustment.upper()
+                );
+            }
         }
+        circle.host.dispatch(super::super::circle::Event::OpenFull);
+        assert!(circle.host.render(circle.host.revision(), Some(frame)));
+        assert!(circle.host.commit_page(circle.host.revision()));
+        circle.host.widget().allocate(
+            frame.rect.width.round() as i32,
+            frame.rect.height.round() as i32,
+            -1,
+            None,
+        );
+        window.queue_resize();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let full_children = children(&circle.full.clone().upcast());
+        assert_eq!(full_children.len(), 9);
+        let full_widget: gtk::Widget = circle.full.clone().upcast();
+        let full_row_y = full_children[0]
+            .compute_bounds(&full_widget)
+            .expect("full button bounds")
+            .y();
+        assert!(
+            full_children.iter().all(|child| {
+                child.is_visible()
+                    && child.is_mapped()
+                    && child.width() > 0
+                    && child.height() > 0
+                    && child
+                        .compute_bounds(&full_widget)
+                        .expect("full button bounds")
+                        .y()
+                        == full_row_y
+            }),
+            "full page {}x{}, children={:?}",
+            circle.full.width(),
+            circle.full.height(),
+            full_children
+                .iter()
+                .map(|child| (
+                    child.is_visible(),
+                    child.is_mapped(),
+                    child.width(),
+                    child.height(),
+                    child
+                        .compute_bounds(&full_widget)
+                        .map(|bounds| (bounds.x(), bounds.y()))
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            circle.host.widget().height(),
+            frame.rect.height.round() as i32,
+            "pinned tray stays at the compact horizontal-pillar height"
+        );
         assert!(circle.host.widget().width() > 0);
         window.close();
+    }
+
+    fn find_scroller(widget: &gtk::Widget) -> Option<gtk::ScrolledWindow> {
+        if let Some(scroller) = widget.downcast_ref::<gtk::ScrolledWindow>() {
+            return Some(scroller.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            if let Some(scroller) = find_scroller(&current) {
+                return Some(scroller);
+            }
+        }
+        None
     }
 
     fn tray_item(id: &str, icon: TrayIcon) -> TrayItem {
