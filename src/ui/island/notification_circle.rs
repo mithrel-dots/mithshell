@@ -41,6 +41,7 @@ pub(crate) struct NotificationCircle {
     hover_open: gtk::Button,
     hover_count: usize,
     style: IconStyle,
+    ui_scale: f64,
     callbacks: NotificationCircleCallbacks,
     inhibit: gtk::ToggleButton,
     inhibit_remaining: gtk::Label,
@@ -125,6 +126,10 @@ impl NotificationCircle {
         full.append(&full_header);
         let full_list = gtk::Box::new(Orientation::Vertical, 4);
         full.append(&full_list);
+        for page in [&hover, &full] {
+            page.set_margin_start((8.0 * ui_scale).round() as i32);
+            page.set_margin_end((8.0 * ui_scale).round() as i32);
+        }
 
         let content = CircleContent {
             compact: compact.clone().upcast(),
@@ -152,6 +157,7 @@ impl NotificationCircle {
         bell.style_context()
             .add_provider(&compact_style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
         let circle = Rc::new(Self {
+            ui_scale,
             host,
             compact,
             compact_click: click,
@@ -189,6 +195,7 @@ impl NotificationCircle {
             self.style,
             false,
         );
+        super::circle::scale_text(self.host.widget(), self.ui_scale);
         self.host.dispatch(Event::Content(has_content(history)));
     }
 

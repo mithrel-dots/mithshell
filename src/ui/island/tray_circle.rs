@@ -30,6 +30,7 @@ pub(crate) struct TrayCircle {
     enabled: bool,
     style: TrayCompactStyle,
     max_compact_icons: usize,
+    max_expanded_icons: usize,
     menu_tracker: Rc<TrayMenuTracker>,
     scale: f64,
 }
@@ -46,8 +47,8 @@ impl TrayCircle {
         count.add_css_class("circle-tray-count");
         compact.set_child(Some(&count));
 
-        let hover = tray_row();
-        let full = tray_row();
+        let hover = tray_row(island.metrics.scale);
+        let full = tray_row(island.metrics.scale);
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
@@ -74,6 +75,7 @@ impl TrayCircle {
             enabled: config.enabled,
             style: config.compact_style,
             max_compact_icons: config.max_compact_icons,
+            max_expanded_icons: config.max_expanded_icons,
             menu_tracker,
             scale: island.metrics.scale,
         })
@@ -91,8 +93,8 @@ impl TrayCircle {
         let count = gtk::Label::new(Some("0"));
         count.add_css_class("circle-tray-count");
         compact.set_child(Some(&count));
-        let hover = tray_row();
-        let full = tray_row();
+        let hover = tray_row(scale);
+        let full = tray_row(scale);
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
@@ -112,6 +114,7 @@ impl TrayCircle {
             enabled: config.enabled,
             style: config.compact_style,
             max_compact_icons: config.max_compact_icons,
+            max_expanded_icons: config.max_expanded_icons,
             menu_tracker,
             scale,
         }
@@ -163,6 +166,7 @@ impl TrayCircle {
         }
         // Content is the only state transition this module owns.  Pointer,
         // focus, and menu events are owned by the host/integration.
+        super::circle::scale_text(self.host.widget(), self.scale);
         self.host.dispatch(Event::Content(present));
         self.menu_tracker.end_batch();
     }
@@ -174,17 +178,38 @@ impl TrayCircle {
         image
     }
 
+    pub(crate) fn expanded_width(&self) -> f64 {
+        let mut width = f64::from(self.hover.margin_start() + self.hover.margin_end());
+        let mut child = self.hover.first_child();
+        for index in 0..self.max_expanded_icons.max(1) {
+            let Some(icon) = child else { break };
+            let (_, natural, _, _) = icon.measure(gtk::Orientation::Horizontal, -1);
+            width += f64::from(natural);
+            if index > 0 {
+                width += f64::from(self.hover.spacing());
+            }
+            child = icon.next_sibling();
+        }
+        (width / self.scale).max(32.0)
+    }
+
     fn button(&self, item: &TrayItem) -> gtk::Button {
-        self.island
-            .upgrade()
-            .map_or_else(gtk::Button::new, |island| {
-                island.build_tray_icon_with_tracker(item, Some(self.menu_tracker.clone()))
-            })
+        self.island.upgrade().map_or_else(
+            || {
+                let button = gtk::Button::new();
+                let image = self.small_preview(item, (18.0 * self.scale).round() as i32);
+                button.set_child(Some(&image));
+                button
+            },
+            |island| island.build_tray_icon_with_tracker(item, Some(self.menu_tracker.clone())),
+        )
     }
 }
 
-fn tray_row() -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+fn tray_row(scale: f64) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, (4.0 * scale).round() as i32);
+    row.set_margin_start((8.0 * scale).round() as i32);
+    row.set_margin_end((8.0 * scale).round() as i32);
     row.set_hexpand(false);
     row.set_vexpand(false);
     row.set_halign(Align::Start);
@@ -204,9 +229,29 @@ fn ensure_page_measurement(page: &gtk::Box) {
         parent.set_vexpand(true);
         parent.set_halign(Align::Fill);
         parent.set_valign(Align::Fill);
-        if let Some(scroll) = parent.downcast_ref::<gtk::ScrolledWindow>() {
+        let scroller = parent
+            .clone()
+            .downcast::<gtk::ScrolledWindow>()
+            .ok()
+            .or_else(|| parent.parent().and_downcast::<gtk::ScrolledWindow>());
+        if let Some(scroll) = scroller {
             scroll.set_min_content_width(1);
             scroll.set_min_content_height(24);
+            scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+            let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+            wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let adjustment = scroll.hadjustment();
+            wheel.connect_scroll(move |_, dx, dy| {
+                if adjustment.upper() <= adjustment.page_size() {
+                    return gtk::glib::Propagation::Proceed;
+                }
+                let delta = if dx.abs() > dy.abs() { dx } else { dy };
+                adjustment.set_value(
+                    adjustment.value() + delta * (adjustment.page_size() / 3.0).max(32.0),
+                );
+                gtk::glib::Propagation::Stop
+            });
+            scroll.add_controller(wheel);
         }
     }
     page.set_size_request(-1, 24);
@@ -309,6 +354,7 @@ mod tests {
         let config = TrayConfig {
             compact_style: TrayCompactStyle::CountWithIcons,
             max_compact_icons: 4,
+            max_expanded_icons: 4,
             ..TrayConfig::default()
         };
         let circle = TrayCircle::synthetic(&config, 1.9);
@@ -380,6 +426,7 @@ mod tests {
             frame.rect.height.round() as i32
         );
         assert!(scroller.height() <= frame.rect.height.round() as i32);
+        let mut previous_width = 0.0;
         for count in [1, 4, 9] {
             let sample = items
                 .iter()
@@ -393,6 +440,26 @@ mod tests {
                 .take(count)
                 .collect::<Vec<_>>();
             circle.update(&sample);
+            let width = circle.expanded_width();
+            assert!(width >= previous_width);
+            if count == 1 {
+                let (_, natural, _, _) = circle.hover.measure(gtk::Orientation::Horizontal, -1);
+                assert_eq!(width, (f64::from(natural) / 1.9).max(32.0));
+            }
+            if count == 9 {
+                assert_eq!(
+                    width, previous_width,
+                    "long trays should stop at four visible icons"
+                );
+            }
+            previous_width = width;
+            let frame = super::super::circle::Frame {
+                rect: super::super::circle::Rect {
+                    width: width * 1.9,
+                    ..frame.rect
+                },
+                ..frame
+            };
             circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(true));
@@ -443,7 +510,7 @@ mod tests {
                     ))
                     .collect::<Vec<_>>()
             );
-            if count <= 4 {
+            if count == 1 {
                 assert!(circle.hover.width() <= scroller.width());
                 let right = allocated
                     .iter()

@@ -31,7 +31,7 @@ pub(super) struct MediaWidgets {
     pub(super) tray: gtk::Box,
 }
 
-pub(super) fn media_view(metrics: Metrics, wave: &gtk::DrawingArea) -> MediaWidgets {
+pub(super) fn media_view(metrics: Metrics) -> MediaWidgets {
     let root = gtk::Overlay::new();
     root.set_size_request(metrics.compact_width, metrics.media_height);
     root.add_css_class("media-pill");
@@ -122,8 +122,7 @@ pub(super) fn media_view(metrics: Metrics, wave: &gtk::DrawingArea) -> MediaWidg
 
     content.append(&center_box);
     content.append(&tray);
-    root.set_child(Some(wave));
-    root.add_overlay(&content);
+    root.set_child(Some(&content));
     MediaWidgets {
         root,
         workspaces,

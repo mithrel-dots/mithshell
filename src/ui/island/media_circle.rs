@@ -86,9 +86,10 @@ struct Artwork {
     pixels: Vec<u8>,
 }
 
-/// Decode off the GTK thread and bound both the transfer and the final image.
+/// Decode off the GTK thread and bound both the transfer and final image.
 /// MPRIS players commonly provide an HTTPS cover URL, while local players use
-/// `file://`. The app icon remains visible if either source fails.
+/// `file://`. Center-cropping to square lets the cover fill the circle without
+/// letterboxing; the app icon remains visible if loading fails.
 fn load_cover(url: &str, size: u32) -> Option<Artwork> {
     const MAX_BYTES: u64 = 8 * 1024 * 1024;
     let mut bytes = Vec::new();
@@ -119,9 +120,15 @@ fn load_cover(url: &str, size: u32) -> Option<Artwork> {
     if bytes.len() as u64 > MAX_BYTES {
         return None;
     }
-    let image = image::load_from_memory(&bytes)
-        .ok()?
-        .thumbnail(size, size)
+    let image = image::load_from_memory(&bytes).ok()?.thumbnail(size, size);
+    let edge = image.width().min(image.height());
+    let image = image
+        .crop_imm(
+            (image.width() - edge) / 2,
+            (image.height() - edge) / 2,
+            edge,
+            edge,
+        )
         .to_rgba8();
     let (width, height) = image.dimensions();
     Some(Artwork {
@@ -148,6 +155,7 @@ pub(crate) struct MediaCircle {
     progress: Rc<RefCell<Progress>>,
     progress_area: gtk::DrawingArea,
     compact_icon: gtk::Image,
+    hover_artwork: gtk::Picture,
     hover_icon: gtk::Image,
     hover_title: gtk::Label,
     hover_artist: gtk::Label,
@@ -184,8 +192,16 @@ impl MediaCircle {
     ) -> Result<Rc<Self>, &'static str> {
         let progress = Rc::new(RefCell::new(Progress::default()));
         let (compact, compact_icon, progress_area) = compact_page(metrics, progress.clone());
-        let (hover, hover_icon, hover_title, hover_artist, previous, play_pause, next) =
-            hover_page(metrics);
+        let (
+            hover,
+            hover_artwork,
+            hover_icon,
+            hover_title,
+            hover_artist,
+            previous,
+            play_pause,
+            next,
+        ) = hover_page(metrics);
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
@@ -203,6 +219,7 @@ impl MediaCircle {
             progress,
             progress_area,
             compact_icon,
+            hover_artwork,
             hover_icon,
             hover_title,
             hover_artist,
@@ -220,9 +237,10 @@ impl MediaCircle {
             artwork_texture: RefCell::new(None),
             artwork_generation: Cell::new(0),
             fallback_icon: RefCell::new(None),
-            art_size: metrics.spacing(24).max(1) as u32,
+            art_size: metrics.spacing(32).max(1) as u32,
         });
         circle.connect_actions();
+        super::circle::scale_text(circle.host.widget(), metrics.scale);
         Ok(circle)
     }
 
@@ -254,6 +272,9 @@ impl MediaCircle {
             self.artwork_url.borrow_mut().take();
             self.artwork_texture.borrow_mut().take();
             self.fallback_icon.borrow_mut().take();
+            self.hover_artwork.set_paintable(None::<&gdk::Paintable>);
+            self.hover_artwork.set_visible(false);
+            self.hover_icon.set_visible(true);
             self.host.dispatch(super::circle::Event::Content(false));
         }
         self.redraw_progress();
@@ -365,10 +386,16 @@ impl MediaCircle {
             for image in [&self.compact_icon, &self.hover_icon] {
                 image.set_paintable(Some(texture));
             }
+            self.hover_artwork.set_paintable(Some(texture));
+            self.hover_artwork.set_visible(true);
+            self.hover_icon.set_visible(false);
         } else if changed || self.fallback_icon.borrow().as_ref() != state.app_icon.as_ref() {
             for image in [&self.compact_icon, &self.hover_icon] {
                 set_compact_art(image, state.app_icon.as_deref(), self.icon_style);
             }
+            self.hover_artwork.set_paintable(None::<&gdk::Paintable>);
+            self.hover_artwork.set_visible(false);
+            self.hover_icon.set_visible(true);
         }
         *self.fallback_icon.borrow_mut() = state.app_icon.clone();
         let Some(url) = state.art_url.clone().filter(|_| changed) else {
@@ -395,6 +422,9 @@ impl MediaCircle {
             for image in [&owner.compact_icon, &owner.hover_icon] {
                 image.set_paintable(Some(&texture));
             }
+            owner.hover_artwork.set_paintable(Some(&texture));
+            owner.hover_artwork.set_visible(true);
+            owner.hover_icon.set_visible(false);
             owner.artwork_texture.replace(Some(texture));
         });
     }
@@ -500,10 +530,9 @@ fn compact_page(
     // request within that footprint: the host clips to its rounded frame, so a
     // larger overlay is both wasteful and risks clipping the artwork/ring.
     const COMPACT_DIAMETER: i32 = 32;
-    const ART_INSET: i32 = 4;
     let overlay = gtk::Overlay::new();
     let diameter = metrics.spacing(COMPACT_DIAMETER);
-    let art_size = metrics.spacing(COMPACT_DIAMETER - ART_INSET * 2);
+    let art_size = diameter;
     overlay.set_size_request(diameter, diameter);
     // The right-side circle expands from a fixed left edge. Its compact page
     // stays presented through the outgoing part of that animation; centering
@@ -515,8 +544,8 @@ fn compact_page(
     let image = gtk::Image::new();
     image.set_pixel_size(art_size);
     image.set_size_request(art_size, art_size);
-    image.set_halign(Align::Center);
-    image.set_valign(Align::Center);
+    image.set_halign(Align::Fill);
+    image.set_valign(Align::Fill);
     overlay.set_child(Some(&image));
     let area = gtk::DrawingArea::new();
     area.set_content_width(diameter);
@@ -548,14 +577,22 @@ fn compact_page(
     (overlay, image, area)
 }
 
-/// File-backed MPRIS artwork can have a huge natural size; GtkImage's
-/// pixel-size hint only constrains themed icons. Decode and downsample paths
-/// before handing them to GTK, while preserving their aspect ratio.
+/// File-backed app icons can have a huge natural size; decode and downsample
+/// them before handing them to GTK, center-cropped for the full-bleed circle.
 fn set_compact_art(image: &gtk::Image, name: Option<&str>, style: crate::config::IconStyle) {
     let art_size = image.pixel_size().max(1) as u32;
     if let Some(path) = name.map(str::trim).filter(|name| name.starts_with('/')) {
         if let Ok(source) = image::open(path) {
-            let source = source.thumbnail(art_size, art_size).to_rgba8();
+            let source = source.thumbnail(art_size, art_size);
+            let edge = source.width().min(source.height());
+            let source = source
+                .crop_imm(
+                    (source.width() - edge) / 2,
+                    (source.height() - edge) / 2,
+                    edge,
+                    edge,
+                )
+                .to_rgba8();
             let (width, height) = source.dimensions();
             let texture = gtk::gdk::MemoryTexture::new(
                 width as i32,
@@ -577,6 +614,7 @@ fn hover_page(
     metrics: Metrics,
 ) -> (
     gtk::Box,
+    gtk::Picture,
     gtk::Image,
     gtk::Label,
     gtk::Label,
@@ -585,18 +623,38 @@ fn hover_page(
     gtk::Button,
 ) {
     let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(1));
-    root.set_margin_start(metrics.spacing(4));
-    root.set_margin_end(metrics.spacing(3));
+    root.set_margin_start(metrics.spacing(8));
+    root.set_margin_end(metrics.spacing(8));
     root.set_margin_top(metrics.spacing(2));
     root.set_margin_bottom(metrics.spacing(2));
     root.set_valign(Align::Center);
     root.set_vexpand(false);
     root.add_css_class("media-circle-hover");
+
+    let art_size = metrics.spacing(32);
+    let art_tile = gtk::Overlay::new();
+    art_tile.set_size_request(art_size, art_size);
+    art_tile.set_halign(Align::Start);
+    art_tile.set_valign(Align::Center);
+    art_tile.set_overflow(gtk::Overflow::Hidden);
+    art_tile.add_css_class("media-circle-art-tile");
+    let artwork = gtk::Picture::new();
+    artwork.set_content_fit(gtk::ContentFit::Cover);
+    artwork.set_can_shrink(true);
+    artwork.set_size_request(art_size, art_size);
+    artwork.set_halign(Align::Fill);
+    artwork.set_valign(Align::Fill);
+    artwork.set_can_target(false);
+    artwork.set_visible(false);
+    artwork.add_css_class("media-circle-artwork");
+    art_tile.set_child(Some(&artwork));
     let icon = gtk::Image::new();
     icon.set_pixel_size(metrics.spacing(24));
     icon.set_size_request(metrics.spacing(24), metrics.spacing(24));
+    icon.set_halign(Align::Center);
     icon.set_valign(Align::Center);
-    root.append(&icon);
+    art_tile.add_overlay(&icon);
+    root.append(&art_tile);
     let text = gtk::Box::new(Orientation::Vertical, 0);
     text.set_hexpand(true);
     text.set_valign(Align::Center);
@@ -620,9 +678,23 @@ fn hover_page(
     let next = icon::icon_button(Icon::Next, metrics.icons);
     for button in [&previous, &play, &next] {
         button.add_css_class("media-circle-control");
+        let style = gtk::CssProvider::new();
+        style.load_from_string(&format!(
+            "button {{ min-width: {}px; min-height: {}px; padding: {}px; }}",
+            metrics.spacing(20),
+            metrics.spacing(24),
+            metrics.spacing(3)
+        ));
+        #[allow(deprecated)]
+        button
+            .style_context()
+            .add_provider(&style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+        if let Some(image) = button.child().and_downcast::<gtk::Image>() {
+            image.set_pixel_size(metrics.spacing(16));
+        }
         root.append(button);
     }
-    (root, icon, title, artist, previous, play, next)
+    (root, artwork, icon, title, artist, previous, play, next)
 }
 
 #[cfg(test)]
@@ -770,11 +842,12 @@ mod tests {
             );
 
             let diameter = metrics.spacing(32);
-            let art_size = metrics.spacing(24);
+            let art_size = metrics.spacing(32);
+            let decode_size = metrics.spacing(32);
             let image = &circle.compact_icon;
             let ring = &circle.progress_area;
-            assert_eq!(image.width(), art_size, "file art width at scale {scale}");
-            assert_eq!(image.height(), art_size, "file art height at scale {scale}");
+            assert_eq!(image.width(), diameter, "file art width at scale {scale}");
+            assert_eq!(image.height(), diameter, "file art height at scale {scale}");
             assert_eq!(ring.width(), diameter, "ring width at scale {scale}");
             assert_eq!(ring.height(), diameter, "ring height at scale {scale}");
             assert!(image.width() <= art_size, "art width at scale {scale}");
@@ -794,9 +867,9 @@ mod tests {
                 circle.host.widget().height()
             );
             let paintable = image.paintable().expect("file artwork texture");
-            assert!(paintable.intrinsic_width() <= art_size);
-            assert!(paintable.intrinsic_height() <= art_size);
-            assert!(paintable.intrinsic_width() > paintable.intrinsic_height());
+            assert!(paintable.intrinsic_width() <= decode_size);
+            assert!(paintable.intrinsic_height() <= decode_size);
+            assert_eq!(paintable.intrinsic_width(), paintable.intrinsic_height());
             assert!(
                 circle
                     .host
@@ -865,6 +938,14 @@ mod tests {
             )
             .expect("hover media circle");
             hover_circle.update(Some(&state));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while hover_circle.artwork_texture.borrow().is_none()
+                && std::time::Instant::now() < deadline
+            {
+                while gtk::glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(hover_circle.artwork_texture.borrow().is_some());
             hover_circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(true));
@@ -897,13 +978,24 @@ mod tests {
                 hover_circle.host.widget().height()
             );
             let expanded_art = hover_circle
-                .hover_icon
+                .hover_artwork
                 .compute_bounds(hover_circle.host.widget())
-                .expect("hover cover art bounds");
+                .expect("circle-sized hover cover art bounds");
             assert!(
-                (expanded_art.x() - compact_art_x).abs() <= 1.0,
-                "cover jumps at page commit at scale {scale}: {expanded_art:?} vs x={compact_art_x}"
+                (expanded_art.x() - metrics.spacing(8) as f32).abs() <= 1.0,
+                "hover art should shift only into the pill's leading inset at scale {scale}: {expanded_art:?}"
             );
+            assert!(
+                (expanded_art.width() - art_size as f32).abs() <= 1.0
+                    && (expanded_art.height() - art_size as f32).abs() <= 1.0,
+                "hover art must remain circle-sized at scale {scale}: {expanded_art:?} vs diameter={art_size}"
+            );
+            assert!(
+                expanded_art.y() >= 0.0
+                    && expanded_art.y() + expanded_art.height() <= expanded.rect.height as f32,
+                "circle-sized hover art must fit within the pill at scale {scale}: {expanded_art:?} vs {expanded:?}"
+            );
+            assert!(!hover_circle.hover_icon.is_visible());
             for button in [
                 &hover_circle.previous,
                 &hover_circle.play_pause,
@@ -912,6 +1004,17 @@ mod tests {
                 let bounds = button
                     .compute_bounds(hover_circle.host.widget())
                     .expect("media control bounds");
+                assert!(bounds.width() >= metrics.spacing(26) as f32 - 1.0);
+                assert!(bounds.height() >= metrics.spacing(30) as f32 - 1.0);
+                let icon = button.child().expect("transport icon");
+                if let Some(image) = icon.downcast_ref::<gtk::Image>() {
+                    assert_eq!(image.pixel_size(), metrics.spacing(16));
+                } else if let Some(label) = icon.downcast_ref::<gtk::Label>() {
+                    assert_eq!(
+                        label.pango_context().font_description().unwrap().size(),
+                        metrics.spacing(16) * gtk::pango::SCALE
+                    );
+                }
                 assert!(
                     bounds.x() >= 0.0 && bounds.x() + bounds.width() <= expanded.rect.width as f32,
                     "media control {bounds:?} outside frame {:?} at scale {scale}",
@@ -1035,7 +1138,7 @@ mod tests {
                 .hover_icon
                 .paintable()
                 .expect("selected player's cover art");
-            assert!(next_art.intrinsic_width() < next_art.intrinsic_height());
+            assert_eq!(next_art.intrinsic_width(), next_art.intrinsic_height());
             assert_eq!(
                 hover_circle.hover_icon.tooltip_text().as_deref(),
                 Some("Track — VLC")

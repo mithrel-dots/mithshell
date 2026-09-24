@@ -382,6 +382,9 @@ pub struct TrayConfig {
     /// Maximum icons around the circle's count in `count-with-icons` mode.
     /// Zero is count-only. Expanded access and the total count are unaffected.
     pub max_compact_icons: usize,
+    /// Maximum visible icons in the expanded circle. Values below one use one.
+    /// Additional icons remain available by scrolling.
+    pub max_expanded_icons: usize,
 }
 
 impl Default for TrayConfig {
@@ -390,6 +393,7 @@ impl Default for TrayConfig {
             enabled: true,
             compact_style: TrayCompactStyle::Count,
             max_compact_icons: 4,
+            max_expanded_icons: 8,
         }
     }
 }

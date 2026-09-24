@@ -83,6 +83,9 @@ compact_style = "count"
 # Maximum tiny preview icons in "count-with-icons" mode. Zero is count-only;
 # neither the total count nor access to every expanded tray item is limited.
 max_compact_icons = 4
+# Expanded circle grows to its contents, up to this many visible icons.
+# Scroll horizontally or use the mouse wheel to reach additional icons.
+max_expanded_icons = 8
 
 [icons]
 # How mithshell's own controls are drawn.

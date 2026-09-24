@@ -11,7 +11,6 @@ use super::{IslandWindow, Metrics, View, measure_clamped};
 
 pub(super) fn compact_view(
     metrics: Metrics,
-    wave: &gtk::DrawingArea,
 ) -> (gtk::Overlay, gtk::Box, gtk::Label, gtk::Label, gtk::Box) {
     let root = gtk::Overlay::new();
     root.set_size_request(metrics.compact_width, metrics.compact_height);
@@ -58,7 +57,6 @@ pub(super) fn compact_view(
     content.append(&clock);
     content.append(&battery);
     content.append(&tray);
-    root.set_child(Some(wave));
     root.add_overlay(&content);
     (root, workspaces, clock, battery, tray)
 }
@@ -350,6 +348,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.shell.scale = 1.9;
         config.shell.animation_ms = 420;
+        config.battery.wave = true;
         let island = IslandWindow::new_for_test(
             &app,
             &monitor,
@@ -379,6 +378,7 @@ mod tests {
             assert!(predicate(), "production animation did not settle");
         };
         drain(Duration::from_millis(50));
+        island.battery_waves.update(Some(50));
         let base_height = f64::from(island.metrics.compact_height);
         let assert_hover_hitbox = |island: &Rc<super::super::IslandWindow>| {
             let pill = match island.current_view.get() {
@@ -410,6 +410,20 @@ mod tests {
             let geometry = island.geometry.get();
             let allocation = island.compact.allocation();
             let bounds = island.compact.compute_bounds(&island.surface).unwrap();
+            assert!(island.battery_waves.area.is_visible());
+            assert_eq!(island.battery_waves.area.opacity(), 1.0);
+            assert!(
+                (island.battery_waves.area.width() - island.surface_shell.width()).abs() <= 2,
+                "wave width {} must follow shell width {}",
+                island.battery_waves.area.width(),
+                island.surface_shell.width()
+            );
+            assert!(
+                (island.battery_waves.area.height() - island.surface_shell.height()).abs() <= 2,
+                "wave height {} must follow shell height {}",
+                island.battery_waves.area.height(),
+                island.surface_shell.height()
+            );
             samples.borrow_mut().push((
                 geometry.height,
                 f64::from(allocation.y()),

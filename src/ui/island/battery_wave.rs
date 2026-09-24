@@ -1,4 +1,4 @@
-//! Synchronized battery backgrounds for the compact and playing-media pills.
+//! Battery-level background sized with the animated compact/media island surface.
 
 use super::*;
 
@@ -9,13 +9,14 @@ use gtk::Align;
 use crate::config::{BatteryConfig, BatteryOrientation};
 
 pub(super) struct BatteryWaves {
-    pub(super) compact: gtk::DrawingArea,
-    pub(super) media: gtk::DrawingArea,
+    pub(super) area: gtk::DrawingArea,
     percent: Rc<Cell<u8>>,
+    present: Cell<bool>,
     phase: Rc<Cell<f64>>,
     enabled: bool,
+    active: Cell<bool>,
     motion: Cell<bool>,
-    ticks: RefCell<Vec<gtk::TickCallbackId>>,
+    tick: RefCell<Option<gtk::TickCallbackId>>,
 }
 
 impl BatteryWaves {
@@ -23,28 +24,44 @@ impl BatteryWaves {
         let percent = Rc::new(Cell::new(0));
         let phase = Rc::new(Cell::new(0.0));
         Self {
-            compact: wave_widget(config, percent.clone(), phase.clone()),
-            media: wave_widget(config, percent.clone(), phase.clone()),
+            area: wave_widget(config, percent.clone(), phase.clone()),
             percent,
+            present: Cell::new(false),
             phase,
             enabled: config.wave,
+            active: Cell::new(true),
             motion: Cell::new(animations_enabled && animation_ms > 0),
-            ticks: RefCell::new(Vec::new()),
+            tick: RefCell::new(None),
         }
     }
 
     pub(super) fn update(&self, percent: Option<u8>) {
+        self.present.set(percent.is_some());
         self.percent.set(percent.unwrap_or_default().min(100));
-        for wave in [&self.compact, &self.media] {
-            wave.set_visible(self.enabled && percent.is_some());
-        }
+        self.sync_opacity();
         self.refresh_ticks();
         self.queue_draw();
     }
 
     pub(super) fn queue_draw(&self) {
-        self.compact.queue_draw();
-        self.media.queue_draw();
+        self.area.queue_draw();
+    }
+
+    pub(super) fn set_active(&self, active: bool) {
+        self.active.set(active);
+        self.sync_opacity();
+        self.refresh_ticks();
+        self.queue_draw();
+    }
+
+    fn sync_opacity(&self) {
+        self.area
+            .set_opacity(if self.enabled && self.active.get() && self.present.get() {
+                1.0
+            } else {
+                0.0
+            });
+        self.area.queue_draw();
     }
 
     pub(super) fn set_motion(&self, animations_enabled: bool, animation_ms: u32) {
@@ -59,34 +76,33 @@ impl BatteryWaves {
     fn refresh_ticks(&self) {
         // Empty and full batteries have no moving boundary. Removing callbacks
         // also lets a static/disabled indicator stop requesting frame clocks.
-        let animate = self.enabled && self.motion.get() && (1..100).contains(&self.percent.get());
-        let mut ticks = self.ticks.borrow_mut();
-        if animate != ticks.is_empty() {
+        let animate = self.enabled
+            && self.active.get()
+            && self.motion.get()
+            && (1..100).contains(&self.percent.get());
+        let mut tick = self.tick.borrow_mut();
+        if animate == tick.is_some() {
             return;
         }
-        for tick in ticks.drain(..) {
-            tick.remove();
+        if let Some(old) = tick.take() {
+            old.remove();
         }
         if animate {
-            for wave in [&self.compact, &self.media] {
-                let phase = self.phase.clone();
-                ticks.push(wave.add_tick_callback(move |area, frame_clock| {
-                    if area.is_mapped() {
-                        // Absolute frame time keeps the two instances in phase
-                        // through view switches, independent of snapshots/Cava.
-                        phase.set(frame_clock.frame_time() as f64 / 1_000_000.0 * 1.4);
-                        area.queue_draw();
-                    }
-                    glib::ControlFlow::Continue
-                }));
-            }
+            let phase = self.phase.clone();
+            *tick = Some(self.area.add_tick_callback(move |area, frame_clock| {
+                if area.is_mapped() {
+                    phase.set(frame_clock.frame_time() as f64 / 1_000_000.0 * 1.4);
+                    area.queue_draw();
+                }
+                glib::ControlFlow::Continue
+            }));
         }
     }
 }
 
 impl Drop for BatteryWaves {
     fn drop(&mut self) {
-        for tick in self.ticks.get_mut().drain(..) {
+        if let Some(tick) = self.tick.get_mut().take() {
             tick.remove();
         }
     }
@@ -98,14 +114,15 @@ fn wave_widget(
     phase: Rc<Cell<f64>>,
 ) -> gtk::DrawingArea {
     let wave = gtk::DrawingArea::new();
-    // Keep the existing theme selector for both presentations.
     wave.add_css_class("compact-battery-wave");
     wave.set_hexpand(true);
     wave.set_vexpand(true);
     wave.set_halign(Align::Fill);
     wave.set_valign(Align::Fill);
     wave.set_can_target(false);
-    wave.set_visible(false);
+    // Keep the background mapped so a battery becoming available after the
+    // island has been presented does not need a surface relayout to allocate it.
+    wave.set_opacity(0.0);
     wave.set_draw_func(move |area, context, width, height| {
         let accent = area.color();
         let _ = draw_battery_wave(
@@ -286,96 +303,87 @@ mod tests {
                         tint,
                         orientation,
                     };
-                    // Zero-duration starts static even with the daemon flag enabled.
                     let waves = BatteryWaves::new(config, true, 0);
                     let metrics = Metrics::new(&monitor, scale, 1.5, IconStyle::default());
-                    let (compact, workspaces, clock, _, _) = compact_view(metrics, &waves.compact);
-                    let media = media_view(metrics, &waves.media);
-                    waves
-                        .media
-                        .set_size_request(metrics.media_max_width, metrics.media_height);
-                    media.title.set_label("Playing track");
-                    media
-                        .root
-                        .set_size_request(metrics.media_max_width, metrics.media_height);
+                    let (compact, _, _, _, _) = compact_view(metrics);
+                    let media = media_view(metrics);
+                    let shell = gtk::Overlay::new();
+                    shell.set_size_request(metrics.media_max_width, metrics.media_height);
+                    shell.set_child(Some(&waves.area));
+                    let foreground = gtk::ScrolledWindow::new();
+                    foreground.set_hexpand(true);
+                    foreground.set_vexpand(true);
+                    foreground.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+                    foreground.set_propagate_natural_width(false);
+                    foreground.set_propagate_natural_height(false);
+                    foreground.set_has_frame(false);
+                    foreground.set_child(Some(&compact));
+                    shell.add_overlay(&foreground);
 
-                    let host = gtk::Fixed::new();
-                    // Fixed has no natural size of its own; give the mapped
-                    // production-sized fixture the same allocation as its
-                    // Broadway window before asserting descendant geometry.
-                    host.set_size_request(metrics.media_max_width, metrics.media_height);
-                    host.put(&compact, 0.0, 0.0);
-                    host.put(&media.root, 0.0, 0.0);
-                    media.root.set_visible(false);
                     let window = gtk::Window::new();
                     window.set_default_size(metrics.media_max_width, metrics.media_height);
                     if let Some(class) = metrics.css_class() {
                         window.add_css_class(class);
                     }
-                    window.set_child(Some(&host));
+                    window.set_child(Some(&shell));
                     window.present();
                     waves.update(Some(25));
                     frames();
-                    assert!(waves.compact.is_mapped());
-                    assert!(
-                        compact.width() > 0,
-                        "compact pill must be allocated by the test display"
-                    );
-                    assert!(!waves.media.is_mapped());
-                    assert_eq!(waves.compact.width(), compact.width());
-                    assert_eq!(waves.compact.height(), compact.height());
+                    assert!(waves.area.is_mapped());
+                    assert!(compact.is_mapped());
+                    assert_eq!(waves.area.width(), shell.width());
+                    assert_eq!(waves.area.height(), shell.height());
+                    assert!(!waves.area.can_target());
 
-                    // The playing view hides the compact parent, just as
-                    // finish_view does. Foreground remains exclusive to media.
-                    compact.set_visible(false);
-                    media.root.set_visible(true);
-                    frames();
+                    // The same full-frame wave stays behind the media content
+                    // after the foreground page changes from compact to media.
+                    foreground.set_child(Some(&media.root));
                     media
                         .root
-                        .allocate(metrics.media_max_width, metrics.media_height, -1, None);
+                        .set_size_request(metrics.media_max_width, metrics.media_height);
                     frames();
-                    assert!(!workspaces.is_mapped());
-                    assert!(!clock.is_mapped());
-                    assert!(!waves.compact.is_mapped());
-                    assert!(waves.media.is_mapped());
-                    assert!(media.title.is_mapped());
-                    assert_eq!(waves.media.width(), media.root.width());
-                    assert_eq!(waves.media.height(), media.root.height());
-                    assert!(!waves.media.can_target());
-                    assert!(!media.root.has_css_class("media-content"));
-                    let foreground = waves.media.next_sibling().unwrap();
-                    assert!(foreground.has_css_class("media-content"));
-                    // GTK reports a widget's allocation including its CSS
-                    // padding.  The actual foreground allocation is the
-                    // content child inside that padded box; measuring the
-                    // box itself incorrectly makes this equal to the wave.
-                    let foreground_child = foreground.first_child().unwrap();
-                    let child_bounds = foreground_child.compute_bounds(&waves.media).unwrap();
-                    let left_inset = child_bounds.x();
-                    let right_inset =
-                        waves.media.width() as f32 - (child_bounds.x() + child_bounds.width());
-                    assert!(
-                        left_inset > 0.0 && right_inset > 0.0,
-                        "CSS padding must inset the foreground child: wave={} child x={} width={} right inset={}",
-                        waves.media.width(),
-                        child_bounds.x(),
-                        child_bounds.width(),
-                        right_inset
-                    );
-                    assert!(
-                        child_bounds.width() < waves.media.width() as f32,
-                        "CSS padding must inset only the foreground child"
-                    );
+                    assert!(media.root.is_mapped());
+                    assert_eq!(waves.area.width(), shell.width());
+                    assert_eq!(waves.area.height(), shell.height());
+                    assert!(media.root.width() <= waves.area.width());
+                    assert!(media.root.height() <= waves.area.height() + 8);
 
-                    // Broadway's headless framebuffer may remain transparent
-                    // even after the draw callback ran; geometry/allocation
-                    // assertions above are the display-independent contract.
-                    assert!(waves.ticks.borrow().is_empty());
+                    waves.set_motion(true, 280);
+                    assert!(waves.tick.borrow().is_some());
+                    waves.set_active(false);
+                    assert_eq!(waves.area.opacity(), 0.0);
+                    assert!(waves.tick.borrow().is_none());
+                    waves.set_active(true);
+                    assert_eq!(waves.area.opacity(), 1.0);
+                    waves.set_motion(false, 280);
                     assert_eq!(waves.phase.get(), 0.0);
-                    waves.update(Some(75));
-                    frames();
+                    assert!(waves.tick.borrow().is_none());
+                    waves.update(None);
+                    assert_eq!(waves.area.opacity(), 0.0);
+                    assert!(waves.tick.borrow().is_none());
+                    waves.update(Some(0));
+                    assert_eq!(waves.area.opacity(), 1.0);
+                    waves.set_motion(true, 280);
+                    assert!(waves.tick.borrow().is_none());
+                    waves.update(Some(50));
+                    assert!(waves.tick.borrow().is_some());
+                    waves.update(Some(100));
+                    assert_eq!(waves.percent.get(), 100);
+                    assert!(waves.tick.borrow().is_none());
+                    waves.update(Some(255));
+                    assert_eq!(waves.percent.get(), 100);
+                    waves.update(Some(50));
+                    assert!(waves.tick.borrow().is_some());
+                    waves.update(None);
+                    assert_eq!(waves.area.opacity(), 0.0);
+                    assert!(waves.tick.borrow().is_none());
+                    waves.update(Some(25));
+                    assert_eq!(waves.area.opacity(), 1.0);
+                    assert!(waves.tick.borrow().is_some());
+                    waves.set_motion(false, 280);
+                    assert!(waves.tick.borrow().is_none());
 
-                    // Theme reload must redraw even a static media background.
+                    // Theme reload must redraw the static media background too.
                     let mut changed = palette.clone();
                     changed.primary = "#ff0000".to_owned();
                     crate::ui::update_styles(&styles, &changed);
@@ -383,46 +391,6 @@ mod tests {
                     frames();
                     crate::ui::update_styles(&styles, &palette);
                     waves.queue_draw();
-
-                    waves.set_motion(true, 280);
-                    frames();
-                    let phase = waves.phase.get();
-                    frames();
-                    // Broadway does not guarantee a frame-clock tick for a
-                    // synthetic mapped window; the tick registration and
-                    // mapped-state checks remain covered below.
-                    assert!(phase.is_finite() && waves.phase.get().is_finite());
-                    waves.set_motion(false, 280);
-                    frames();
-                    assert_eq!(waves.phase.get(), 0.0);
-                    assert!(waves.ticks.borrow().is_empty());
-                    waves.set_motion(true, 280);
-                    frames();
-                    waves.set_motion(true, 0);
-                    frames();
-                    assert_eq!(waves.phase.get(), 0.0);
-                    assert!(waves.ticks.borrow().is_empty());
-
-                    // Missing battery hides both instances; reappearance while
-                    // playing restores the media instance without a view switch.
-                    waves.update(None);
-                    assert!(!waves.compact.is_visible());
-                    assert!(!waves.media.is_mapped());
-                    waves.update(Some(0));
-                    frames();
-                    assert!(waves.media.is_mapped());
-                    waves.set_motion(true, 280);
-                    assert!(waves.ticks.borrow().is_empty());
-                    waves.update(Some(255));
-                    frames();
-                    assert_eq!(waves.percent.get(), 100);
-                    assert!(waves.ticks.borrow().is_empty());
-
-                    media.root.set_visible(false);
-                    compact.set_visible(true);
-                    frames();
-                    assert!(waves.compact.is_mapped());
-                    assert!(!waves.media.is_mapped());
                     window.close();
                 }
             }
@@ -438,7 +406,7 @@ mod tests {
                 duration,
             );
             static_waves.update(Some(50));
-            assert!(static_waves.ticks.borrow().is_empty());
+            assert!(static_waves.tick.borrow().is_none());
         }
         let disabled = BatteryWaves::new(
             BatteryConfig {
@@ -450,10 +418,10 @@ mod tests {
         );
         for percent in [None, Some(0), Some(50), Some(100)] {
             disabled.update(percent);
-            assert!(!disabled.compact.is_visible());
-            assert!(!disabled.media.is_visible());
-            assert!(disabled.ticks.borrow().is_empty());
+            assert_eq!(disabled.area.opacity(), 0.0);
+            assert!(disabled.tick.borrow().is_none());
         }
+        crate::ui::update_styles(&styles, &palette);
         gtk::style_context_remove_provider_for_display(&display, &styles);
     }
 

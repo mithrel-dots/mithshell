@@ -134,6 +134,7 @@ impl IslandWindow {
                 .set(self.search_focus_generation.get().wrapping_add(1));
         }
         let pill_view = matches!(view, View::Compact | View::Media);
+        self.battery_waves.set_active(pill_view);
         let desired_hover = pill_view && self.pointer_in_hover_region.get();
         let hover_changed = self.tray_hovered.get() != desired_hover;
         self.tray_hovered.set(desired_hover);
@@ -390,8 +391,10 @@ impl IslandWindow {
         let height = geometry.height.round() as i32;
         let x = (self.metrics.window_width - width) / 2;
         let y = geometry.y.round() as i32;
+        self.surface_shell.set_size_request(width, height);
         self.surface.set_size_request(width, height);
-        self.fixed.move_(&self.surface, f64::from(x), f64::from(y));
+        self.fixed
+            .move_(&self.surface_shell, f64::from(x), f64::from(y));
         self.surface
             .hadjustment()
             .set_value(f64::from((self.metrics.window_width - width) / 2));

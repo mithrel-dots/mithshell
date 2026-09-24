@@ -342,13 +342,19 @@ impl CircleIntegration {
             .enumerate()
             .map(|(index, slot)| {
                 slot.as_ref().and_then(|slot| {
+                    let mut spec = slot.spec;
+                    if slot.module == CircleModule::Tray {
+                        if let Some(tray) = &self.tray {
+                            spec.hover.width = tray.expanded_width();
+                        }
+                    }
                     let mode = slot.host.mode();
                     if mode == circle::Mode::Absent {
                         animations[index] = None;
                         slot.host.widget().set_opacity(0.0);
                         return None;
                     }
-                    let target = slot.spec.visual(mode)?;
+                    let target = spec.visual(mode)?;
                     let presented = slot.host.presented_page();
                     let has_animation = animations[index].is_some();
                     if presented == Some(mode) && !has_animation {
@@ -357,7 +363,7 @@ impl CircleIntegration {
                         animations[index] = None;
                         slot.host.widget().set_opacity(1.0);
                         return Some(CircleRequest {
-                            spec: slot.spec,
+                            spec,
                             visual: target,
                         });
                     }
@@ -369,14 +375,14 @@ impl CircleIntegration {
                             animations[index] = None;
                             commit[index] = true;
                             return Some(CircleRequest {
-                                spec: slot.spec,
+                                spec,
                                 visual: target,
                             });
                         }
                         let from = animations[index]
                             .as_ref()
                             .map(|animation| sample_visual(animation, now))
-                            .or_else(|| presented.and_then(|old| slot.spec.visual(old)))
+                            .or_else(|| presented.and_then(|old| spec.visual(old)))
                             .unwrap_or(target);
                         let from_mode = animations[index]
                             .as_ref()
@@ -398,7 +404,7 @@ impl CircleIntegration {
                             commit[index] = true;
                             slot.host.widget().set_opacity(1.0);
                             return Some(CircleRequest {
-                                spec: slot.spec,
+                                spec,
                                 visual: target,
                             });
                         }
@@ -484,10 +490,7 @@ impl CircleIntegration {
                         slot.host.widget().set_opacity(1.0);
                         animations[index] = None;
                     }
-                    Some(CircleRequest {
-                        spec: slot.spec,
-                        visual,
-                    })
+                    Some(CircleRequest { spec, visual })
                 })
             })
             .collect::<Vec<_>>()
@@ -730,9 +733,8 @@ fn spec_for(module: CircleModule, _scale: f64) -> (CircleSpec, Visual) {
             height: 250.0,
         },
         CircleModule::Tray => Size {
-            // The tray is a horizontal pill, not a grid panel.  The fixed
-            // viewport keeps hover/pin compact; overflow remains reachable
-            // through the host's horizontal scroller.
+            // Relayout replaces this fallback width with the measured tray
+            // row, bounded by its configured visible-icon limit.
             width: 144.0,
             height: 36.0,
         },

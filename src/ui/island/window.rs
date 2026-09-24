@@ -178,8 +178,15 @@ impl IslandWindow {
             0.0,
         );
 
+        let battery_waves =
+            BatteryWaves::new(config.battery, animations_enabled, shell.animation_ms);
+        let surface_shell = gtk::Overlay::new();
+        surface_shell.add_css_class("island-surface");
+        surface_shell.set_overflow(Overflow::Hidden);
+        surface_shell.set_child(Some(&battery_waves.area));
+
         let surface = gtk::ScrolledWindow::new();
-        surface.add_css_class("island-surface");
+        surface.add_css_class("island-content-surface");
         surface.set_overflow(Overflow::Hidden);
         surface.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
         surface.set_propagate_natural_width(false);
@@ -187,11 +194,15 @@ impl IslandWindow {
         surface.set_kinetic_scrolling(false);
         surface.set_has_frame(false);
         surface.set_can_target(true);
+        surface.set_hexpand(true);
+        surface.set_vexpand(true);
+        surface_shell.add_overlay(&surface);
         fixed.put(
-            &surface,
+            &surface_shell,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
             0.0,
         );
+        surface_shell.set_size_request(metrics.compact_width, metrics.compact_height);
         surface.set_size_request(metrics.compact_width, metrics.compact_height);
 
         let content = Fixed::new();
@@ -202,10 +213,8 @@ impl IslandWindow {
         content.set_size_request(metrics.window_width, metrics.window_height);
         surface.set_child(Some(&content));
 
-        let battery_waves =
-            BatteryWaves::new(config.battery, animations_enabled, shell.animation_ms);
         let (compact, compact_workspaces, compact_clock, compact_battery, compact_tray) =
-            compact_view(metrics, &battery_waves.compact);
+            compact_view(metrics);
         content.put(
             &compact,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -262,7 +271,7 @@ impl IslandWindow {
         search_surface.set_child(Some(&search_widgets.root));
         search_fixed.put(&search_surface, 0.0, 0.0);
 
-        let media_widgets = media_view(metrics, &battery_waves.media);
+        let media_widgets = media_view(metrics);
         content.put(
             &media_widgets.root,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -334,6 +343,7 @@ impl IslandWindow {
             dismiss_click: RefCell::new(None),
             fixed,
             content,
+            surface_shell,
             surface,
             compact: compact.upcast(),
             media: media_widgets.root,

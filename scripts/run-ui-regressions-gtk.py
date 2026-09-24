@@ -31,6 +31,7 @@ TESTS = [
     "ui::island::view::tests::finished_integrated_search_is_visible_and_targetable",
     "ui::island::tray::tracker_tests::broadway_popovers_share_global_lifetime_and_close_on_invalidation",
     "ui::island::media_circle::tests::gtk_update_selection_and_timer_lifecycle",
+    "ui::island::tray_circle::tests::gtk_tray_pages_have_visible_allocated_children_for_mixed_icons",
     "ui::island::media_circle::tests::compact_art_and_ring_fit_mapped_circle_at_runtime_scales",
     "ui::island::battery_wave::tests::playing_media_keeps_a_live_full_width_battery_background",
 ]

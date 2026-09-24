@@ -179,6 +179,7 @@ presentation = "independent"
 [tray]
 compact_style = "count"
 max_compact_icons = 4
+max_expanded_icons = 8 # visible icons; overflow icons remain scrollable
 
 [notifications]
 hover_preview_count = 3
@@ -208,7 +209,10 @@ The circle presentation contract is:
 * Tray circles count all tracked items. `compact_style = "count"` (the default)
   shows only the count; `"count-with-icons"` adds up to `max_compact_icons` tiny
   icons around it (default **4**). A limit of **0** is valid and leaves just the
-  count. Hover expansion must expose every item regardless of the compact limit.
+   count. Hover expansion must expose every item regardless of the compact limit.
+   The expanded tray fits its contents up to `max_expanded_icons` (default **8**
+   visible icons; **0** uses **1**). Its width follows icon size and shell scale.
+   Use the mouse wheel or horizontal scrolling to reach overflow icons.
   Disabled or empty trays have no circle; missing icons use a fallback.
 * Media circles remain available for a valid titled selected player, including
   paused and stopped players, so controls remain reachable. The compact view and

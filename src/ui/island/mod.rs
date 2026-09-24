@@ -185,6 +185,9 @@ pub struct IslandWindow {
     /// Stable, neutral hover hit target behind the moving pill. Its allocation
     /// does not change with tray width or depth motion.
     content: Fixed,
+    /// The outer rounded clip and fill. Its battery-wave child tracks its
+    /// animated bounds while the scroller overlays the foreground content.
+    surface_shell: gtk::Overlay,
     surface: gtk::ScrolledWindow,
     compact: gtk::Widget,
     media: gtk::Overlay,

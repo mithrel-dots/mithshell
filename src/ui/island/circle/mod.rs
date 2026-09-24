@@ -39,6 +39,34 @@ pub(crate) use geometry::{CircleRequest, CircleSpec, Frame, Rect, Size, Visual, 
 #[allow(unused_imports)]
 pub(crate) use widget::{CircleContent, CircleHost};
 
+/// Apply resolved-scale typography to new labels, including rebuilt snapshots.
+/// Widget-local providers avoid scale leaking between outputs.
+pub(crate) fn scale_text(root: &impl gtk::prelude::IsA<gtk::Widget>, scale: f64) {
+    use gtk::prelude::*;
+    let root = root.as_ref();
+    if root.is::<gtk::Label>()
+        && !root.has_css_class("circle-scaled-text")
+        && !root.has_css_class("notification-circle-bell")
+    {
+        let style = gtk::CssProvider::new();
+        let size = if root.has_css_class(crate::ui::icon::GLYPH_CLASS) {
+            16.0
+        } else {
+            14.0
+        };
+        style.load_from_string(&format!("* {{ font-size: {}px; }}", (size * scale).round()));
+        #[allow(deprecated)]
+        root.style_context()
+            .add_provider(&style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+        root.add_css_class("circle-scaled-text");
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        scale_text(&widget, scale);
+        child = widget.next_sibling();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Mode {
     #[default]
