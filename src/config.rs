@@ -137,6 +137,8 @@ pub enum LauncherPresentation {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
+    /// Show audio bars in the main island, independently of media placement.
+    pub visualizer: bool,
     /// Maximum media-pill width as a multiple of the compact width.
     pub max_width_factor: f64,
 }
@@ -144,6 +146,7 @@ pub struct MediaConfig {
 impl Default for MediaConfig {
     fn default() -> Self {
         Self {
+            visualizer: true,
             max_width_factor: 1.8,
         }
     }

@@ -23,6 +23,8 @@ right = "none"
 presentation = "independent"
 
 [media]
+# Show audio bars in the main island even when media is assigned to a circle.
+visualizer = true
 # Maximum media-pill width as a multiple of the compact pill width.
 max_width_factor = 1.8
 

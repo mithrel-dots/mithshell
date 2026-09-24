@@ -61,35 +61,7 @@ pub(super) fn media_view(metrics: Metrics) -> MediaWidgets {
     icon.set_visible(false);
 
     let levels = Rc::new(RefCell::new([0; VISUALIZER_BARS]));
-    let draw_levels = levels.clone();
-    let visualizer = gtk::DrawingArea::new();
-    visualizer.add_css_class("media-visualizer");
-    visualizer.set_content_width(metrics.spacing(31));
-    visualizer.set_content_height(metrics.spacing(18));
-    visualizer.set_valign(Align::Center);
-    visualizer.set_draw_func(move |area, context, width, height| {
-        let color = area.color();
-        context.set_source_rgba(
-            f64::from(color.red()),
-            f64::from(color.green()),
-            f64::from(color.blue()),
-            f64::from(color.alpha()),
-        );
-        context.set_line_cap(gtk::cairo::LineCap::Round);
-        let width = f64::from(width);
-        let height = f64::from(height);
-        let gap = width / (VISUALIZER_BARS as f64 * 2.2);
-        let bar_width = gap * 0.72;
-        let baseline = height * 0.5;
-        context.set_line_width(bar_width);
-        for (index, level) in draw_levels.borrow().iter().enumerate() {
-            let x = gap + index as f64 * gap * 2.0;
-            let half_height = ((height * 0.12) + (height * 0.67 * f64::from(*level) / 100.0)) / 2.0;
-            context.move_to(x, baseline - half_height);
-            context.line_to(x, baseline + half_height);
-            let _ = context.stroke();
-        }
-    });
+    let visualizer = visualizer_widget(metrics, levels.clone());
 
     let title = gtk::Label::new(None);
     title.add_css_class("media-title");
@@ -134,6 +106,41 @@ pub(super) fn media_view(metrics: Metrics) -> MediaWidgets {
         levels,
         tray,
     }
+}
+
+pub(super) fn visualizer_widget(
+    metrics: Metrics,
+    levels: Rc<RefCell<VisualizerLevels>>,
+) -> gtk::DrawingArea {
+    let visualizer = gtk::DrawingArea::new();
+    visualizer.add_css_class("media-visualizer");
+    visualizer.set_content_width(metrics.spacing(31));
+    visualizer.set_content_height(metrics.spacing(18));
+    visualizer.set_valign(Align::Center);
+    visualizer.set_can_target(false);
+    visualizer.set_draw_func(move |area, context, width, height| {
+        let color = area.color();
+        context.set_source_rgba(
+            f64::from(color.red()),
+            f64::from(color.green()),
+            f64::from(color.blue()),
+            f64::from(color.alpha()),
+        );
+        context.set_line_cap(gtk::cairo::LineCap::Round);
+        let width = f64::from(width);
+        let height = f64::from(height);
+        let gap = width / (VISUALIZER_BARS as f64 * 2.2);
+        let baseline = height * 0.5;
+        context.set_line_width(gap * 0.72);
+        for (index, level) in levels.borrow().iter().enumerate() {
+            let x = gap + index as f64 * gap * 2.0;
+            let half_height = ((height * 0.12) + (height * 0.67 * f64::from(*level) / 100.0)) / 2.0;
+            context.move_to(x, baseline - half_height);
+            context.line_to(x, baseline + half_height);
+            let _ = context.stroke();
+        }
+    });
+    visualizer
 }
 
 /// Formats a microsecond duration as `M:SS`, or `H:MM:SS` past one hour.
@@ -204,6 +211,9 @@ impl IslandWindow {
             .as_ref()
             .is_some_and(|c| c.owns(crate::config::CircleModule::Media));
         self.player_card.set_visible(!in_circle);
+        self.sync_compact_visualizer(
+            in_circle && state.is_some_and(|state| state.status == PlaybackStatus::Playing),
+        );
         let compact_state = (!in_circle)
             .then_some(state)
             .flatten()
@@ -362,7 +372,45 @@ impl IslandWindow {
 
     pub fn update_visualizer(&self, levels: VisualizerLevels) {
         *self.media_levels.borrow_mut() = levels;
-        self.media_visualizer.queue_draw();
+        for area in [&self.media_visualizer, &self.compact_visualizer] {
+            if self.visualizer_enabled && area.is_mapped() {
+                area.queue_draw();
+            }
+        }
+    }
+
+    fn sync_compact_visualizer(self: &Rc<Self>, playing: bool) {
+        let active = self.visualizer_enabled && playing;
+        if self.visualizer_active.replace(active) == active {
+            return;
+        }
+        let revision = self.visualizer_revision.get().wrapping_add(1);
+        self.visualizer_revision.set(revision);
+        if active {
+            self.reveal_compact_visualizer(true);
+        } else {
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                if let Some(island) = weak.upgrade() {
+                    if island.visualizer_revision.get() == revision {
+                        island.reveal_compact_visualizer(false);
+                    }
+                }
+            });
+        }
+    }
+
+    fn reveal_compact_visualizer(self: &Rc<Self>, reveal: bool) {
+        self.compact_visualizer_revealer.set_transition_duration(
+            if self.animations_enabled.get() {
+                self.animation_ms.get()
+            } else {
+                0
+            },
+        );
+        self.compact_visualizer_revealer.set_reveal_child(reveal);
+        self.resize_compact();
+        self.reconcile_pill_geometry();
     }
 
     pub(super) fn switch_media_player(&self, direction: i32) {

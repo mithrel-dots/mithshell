@@ -54,7 +54,11 @@ pub(super) fn compact_view(
     content.set_halign(Align::Fill);
     content.set_valign(Align::Fill);
     content.append(&workspaces);
-    content.append(&clock);
+    let clock_slot = gtk::Box::new(Orientation::Horizontal, 0);
+    clock_slot.set_hexpand(true);
+    clock_slot.set_halign(Align::Center);
+    clock_slot.append(&clock);
+    content.append(&clock_slot);
     content.append(&battery);
     content.append(&tray);
     root.add_overlay(&content);
@@ -73,7 +77,14 @@ impl IslandWindow {
             self.metrics.compact_workspaces_max_width,
         );
         let clock_width =
-            measure_clamped(&self.compact_clock, self.metrics.compact_clock_max_width);
+            measure_clamped(&self.compact_clock, self.metrics.compact_clock_max_width)
+                + if self.compact_visualizer_revealer.reveals_child() {
+                    self.compact_visualizer
+                        .measure(Orientation::Horizontal, -1)
+                        .1
+                } else {
+                    0
+                };
         let battery_width = if self.compact_battery.is_visible() {
             measure_clamped(
                 &self.compact_battery,

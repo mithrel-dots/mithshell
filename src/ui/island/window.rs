@@ -272,6 +272,25 @@ impl IslandWindow {
         search_fixed.put(&search_surface, 0.0, 0.0);
 
         let media_widgets = media_view(metrics);
+        media_widgets
+            .visualizer
+            .set_visible(config.media.visualizer);
+        let compact_visualizer =
+            super::media::visualizer_widget(metrics, media_widgets.levels.clone());
+        compact_visualizer.set_margin_start(metrics.spacing(10));
+        let compact_visualizer_revealer = gtk::Revealer::new();
+        compact_visualizer_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+        compact_visualizer_revealer.set_transition_duration(if animations_enabled {
+            shell.animation_ms
+        } else {
+            0
+        });
+        compact_visualizer_revealer.set_child(Some(&compact_visualizer));
+        compact_clock
+            .parent()
+            .and_downcast::<gtk::Box>()
+            .expect("compact clock slot")
+            .append(&compact_visualizer_revealer);
         content.put(
             &media_widgets.root,
             f64::from((metrics.window_width - metrics.compact_width) / 2),
@@ -371,6 +390,11 @@ impl IslandWindow {
             media_icon: media_widgets.icon,
             media_title: media_widgets.title,
             media_visualizer: media_widgets.visualizer,
+            compact_visualizer,
+            compact_visualizer_revealer,
+            visualizer_enabled: config.media.visualizer,
+            visualizer_active: Cell::new(false),
+            visualizer_revision: Cell::new(0),
             media_levels: media_widgets.levels,
             media_tray: media_widgets.tray,
             hero_time: dashboard_widgets.hero_time,

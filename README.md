@@ -103,6 +103,7 @@ Media width is content-driven and capped as a multiple of compact width:
 
 ```toml
 [media]
+visualizer = true # main-island audio bars, including when media is in a circle
 max_width_factor = 1.8
 ```
 

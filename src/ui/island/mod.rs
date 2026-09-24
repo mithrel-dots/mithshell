@@ -233,6 +233,11 @@ pub struct IslandWindow {
     media_icon: gtk::Image,
     media_title: gtk::Label,
     media_visualizer: gtk::DrawingArea,
+    compact_visualizer: gtk::DrawingArea,
+    compact_visualizer_revealer: gtk::Revealer,
+    visualizer_enabled: bool,
+    visualizer_active: Cell<bool>,
+    visualizer_revision: Cell<u64>,
     media_levels: Rc<RefCell<VisualizerLevels>>,
     media_tray: gtk::Box,
     hero_time: gtk::Label,
@@ -1023,6 +1028,46 @@ mod tests {
             timeout: NotificationTimeout::Never,
         };
         island.update_media(Some(&media));
+        assert!(island.compact_visualizer_revealer.reveals_child());
+        assert_eq!(island.current_view.get(), View::Compact);
+        let playing_width = island.compact_width.get();
+        let drain_visualizer = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(550);
+            while std::time::Instant::now() < deadline {
+                while gtk::glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        let mut paused = media.clone();
+        paused.status = PlaybackStatus::Paused;
+        island.update_media(Some(&paused));
+        assert!(
+            island.compact_visualizer_revealer.reveals_child(),
+            "pause has a grace period"
+        );
+        island.update_media(Some(&media));
+        drain_visualizer();
+        assert!(
+            island.compact_visualizer_revealer.reveals_child(),
+            "resume cancels stale collapse"
+        );
+        island.update_visualizer([75; crate::media::VISUALIZER_BARS]);
+        assert_eq!(
+            *island.media_levels.borrow(),
+            [75; crate::media::VISUALIZER_BARS]
+        );
+        island.update_media(Some(&paused));
+        drain_visualizer();
+        assert!(!island.compact_visualizer_revealer.reveals_child());
+        assert!(island.compact_width.get() <= playing_width);
+        assert_eq!(
+            island
+                .compact_visualizer_revealer
+                .measure(gtk::Orientation::Horizontal, -1)
+                .1,
+            0
+        );
+        island.update_media(Some(&media));
         island.update_tray(std::slice::from_ref(&tray));
         island.update_notification_history(std::slice::from_ref(&notification));
         island.update_notification_inhibition(true, Some(std::time::Duration::from_secs(65)));
@@ -1079,16 +1124,19 @@ mod tests {
 
         // Legacy content is suppressed by assignment; moving assignment back
         // to no circles is covered by constructing all three valid matrices.
-        for (left, right) in [
-            (CircleModule::None, CircleModule::None),
-            (CircleModule::Tray, CircleModule::None),
-            (CircleModule::None, CircleModule::Media),
+        for (left, right, visualizer) in [
+            (CircleModule::None, CircleModule::None, true),
+            (CircleModule::Tray, CircleModule::None, true),
+            (CircleModule::None, CircleModule::Media, true),
+            (CircleModule::None, CircleModule::Media, false),
+            (CircleModule::None, CircleModule::None, false),
         ] {
             let mut matrix = AppConfig::default();
             matrix.shell.animation_ms = 0;
             matrix.shell.scale = 1.0;
             matrix.circles.left = left;
             matrix.circles.right = right;
+            matrix.media.visualizer = visualizer;
             let test = IslandWindow::new_for_test(
                 &application,
                 &monitor,
@@ -1098,6 +1146,12 @@ mod tests {
                 false,
             );
             test.update_tray(std::slice::from_ref(&tray));
+            test.update_media(Some(&media));
+            assert_eq!(test.media_visualizer.get_visible(), visualizer);
+            assert_eq!(
+                test.compact_visualizer_revealer.reveals_child(),
+                visualizer && right == CircleModule::Media
+            );
             test.set_tray_hovered(true);
             test.relayout_circles();
             assert!(test.debug_state()["circles"]["slots"].is_array());
