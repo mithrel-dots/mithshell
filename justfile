@@ -37,6 +37,12 @@ install-binary: build
     ln -sfn {{ release_binary }} {{ bin_symlink }}
     @echo "Binary symlinked to {{ bin_symlink }}"
 
+[doc("Symlink the debug binary to ~/.local/bin/mithshell")]
+install-debug-binary: build-debug
+    mkdir -p {{ bin_dir }}
+    ln -sfn {{ debug_binary }} {{ bin_symlink }}
+    @echo "Debug binary symlinked to {{ bin_symlink }}"
+
 [doc("Generate the current Zsh completion script")]
 install-completions: build
     mkdir -p {{ zsh_completion_dir }}

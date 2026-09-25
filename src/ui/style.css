@@ -1119,6 +1119,7 @@ button.lock-power-button:disabled {
 /* GTK output scaling is often left at 1 on 4K Hyprland setups. These density
  * classes keep text and controls proportional to the scaled layer surface. */
 .scale-medium .island-surface {
+  border-width: 2px;
   border-radius: 34px;
   box-shadow: 0 20px 46px alpha(black, 0.5), inset 0 1px alpha(white, 0.055);
 }
@@ -1243,6 +1244,7 @@ button.lock-power-button:disabled {
 .scale-medium button.lock-power-button .icon-glyph { font-size: 22px; }
 
 .scale-large .island-surface {
+  border-width: 3px;
   border-radius: 41px;
   box-shadow: 0 23px 55px alpha(black, 0.52), inset 0 1px alpha(white, 0.055);
 }

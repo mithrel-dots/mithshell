@@ -75,6 +75,21 @@ fn interpolated_progress(progress: &Progress, now: Instant) -> f64 {
     progress_fraction(position, progress.length_us)
 }
 
+/// Center-crop to a square before downsampling so wide/tall artwork keeps the
+/// requested resolution instead of being enlarged from a narrow thumbnail.
+fn square_thumbnail(image: image::DynamicImage, size: u32) -> image::RgbaImage {
+    let edge = image.width().min(image.height());
+    image
+        .crop_imm(
+            (image.width() - edge) / 2,
+            (image.height() - edge) / 2,
+            edge,
+            edge,
+        )
+        .thumbnail(size, size)
+        .to_rgba8()
+}
+
 fn timer_needed(progress: &Progress) -> bool {
     progress.status == PlaybackStatus::Playing
         && progress.length_us.is_some_and(|length| length > 0)
@@ -120,16 +135,7 @@ fn load_cover(url: &str, size: u32) -> Option<Artwork> {
     if bytes.len() as u64 > MAX_BYTES {
         return None;
     }
-    let image = image::load_from_memory(&bytes).ok()?.thumbnail(size, size);
-    let edge = image.width().min(image.height());
-    let image = image
-        .crop_imm(
-            (image.width() - edge) / 2,
-            (image.height() - edge) / 2,
-            edge,
-            edge,
-        )
-        .to_rgba8();
+    let image = square_thumbnail(image::load_from_memory(&bytes).ok()?, size);
     let (width, height) = image.dimensions();
     Some(Artwork {
         width: width as i32,
@@ -237,7 +243,7 @@ impl MediaCircle {
             artwork_texture: RefCell::new(None),
             artwork_generation: Cell::new(0),
             fallback_icon: RefCell::new(None),
-            art_size: metrics.spacing(32).max(1) as u32,
+            art_size: media_art_diameter(metrics).max(1) as u32,
         });
         circle.connect_actions();
         super::circle::scale_text(circle.host.widget(), metrics.scale);
@@ -526,14 +532,11 @@ fn compact_page(
     metrics: Metrics,
     progress: Rc<RefCell<Progress>>,
 ) -> (gtk::Overlay, gtk::Image, gtk::DrawingArea) {
-    // CircleSpec's compact footprint is 32 design units. Keep every child's
-    // request within that footprint: the host clips to its rounded frame, so a
-    // larger overlay is both wasteful and risks clipping the artwork/ring.
-    const COMPACT_DIAMETER: i32 = 32;
+    // Keep artwork/ring inside the island surface's border, which consumes
+    // space from the Stack allocation on every side.
     let overlay = gtk::Overlay::new();
-    let diameter = metrics.spacing(COMPACT_DIAMETER);
-    let art_size = diameter;
-    overlay.set_size_request(diameter, diameter);
+    let art_size = media_art_diameter(metrics);
+    overlay.set_size_request(art_size, art_size);
     // The right-side circle expands from a fixed left edge. Its compact page
     // stays presented through the outgoing part of that animation; centering
     // this overlay in the growing Stack sends the cover to the right before
@@ -541,6 +544,8 @@ fn compact_page(
     overlay.set_halign(Align::Start);
     overlay.set_valign(Align::Center);
     overlay.add_css_class("media-circle-compact");
+    overlay.add_css_class("media-circle-art-tile");
+    overlay.set_overflow(gtk::Overflow::Hidden);
     let image = gtk::Image::new();
     image.set_pixel_size(art_size);
     image.set_size_request(art_size, art_size);
@@ -548,9 +553,9 @@ fn compact_page(
     image.set_valign(Align::Fill);
     overlay.set_child(Some(&image));
     let area = gtk::DrawingArea::new();
-    area.set_content_width(diameter);
-    area.set_content_height(diameter);
-    area.set_size_request(diameter, diameter);
+    area.set_content_width(art_size);
+    area.set_content_height(art_size);
+    area.set_size_request(art_size, art_size);
     area.add_css_class("media-circle-progress");
     let draw_progress = progress;
     area.set_draw_func(move |area, cr, width, height| {
@@ -583,16 +588,7 @@ fn set_compact_art(image: &gtk::Image, name: Option<&str>, style: crate::config:
     let art_size = image.pixel_size().max(1) as u32;
     if let Some(path) = name.map(str::trim).filter(|name| name.starts_with('/')) {
         if let Ok(source) = image::open(path) {
-            let source = source.thumbnail(art_size, art_size);
-            let edge = source.width().min(source.height());
-            let source = source
-                .crop_imm(
-                    (source.width() - edge) / 2,
-                    (source.height() - edge) / 2,
-                    edge,
-                    edge,
-                )
-                .to_rgba8();
+            let source = square_thumbnail(source, art_size);
             let (width, height) = source.dimensions();
             let texture = gtk::gdk::MemoryTexture::new(
                 width as i32,
@@ -610,6 +606,16 @@ fn set_compact_art(image: &gtk::Image, name: Option<&str>, style: crate::config:
     }
 }
 
+fn media_art_diameter(metrics: Metrics) -> i32 {
+    const COMPACT_DIAMETER: i32 = 32;
+    let border = match metrics.css_class() {
+        Some("scale-medium") => 2,
+        Some("scale-large") => 3,
+        _ => 1,
+    };
+    (metrics.spacing(COMPACT_DIAMETER) - border * 2).max(1)
+}
+
 fn hover_page(
     metrics: Metrics,
 ) -> (
@@ -625,13 +631,13 @@ fn hover_page(
     let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(1));
     root.set_margin_start(metrics.spacing(8));
     root.set_margin_end(metrics.spacing(8));
-    root.set_margin_top(metrics.spacing(2));
-    root.set_margin_bottom(metrics.spacing(2));
+    // The viewport centers the row; extra vertical margins would compete
+    // with the scaled border and two-line text for the fixed hover height.
     root.set_valign(Align::Center);
     root.set_vexpand(false);
     root.add_css_class("media-circle-hover");
 
-    let art_size = metrics.spacing(32);
+    let art_size = media_art_diameter(metrics);
     let art_tile = gtk::Overlay::new();
     art_tile.set_size_request(art_size, art_size);
     art_tile.set_halign(Align::Start);
@@ -730,6 +736,13 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn square_crop_happens_before_downsampling() {
+        let landscape = image::RgbaImage::from_pixel(320, 96, image::Rgba([0x42, 0x80, 0xc0, 255]));
+        let thumb = super::square_thumbnail(image::DynamicImage::ImageRgba8(landscape), 64);
+        assert_eq!(thumb.dimensions(), (64, 64));
+    }
+
     /// Runs under a private Broadway display. This is intentionally ignored in
     /// ordinary unit runs because GTK tests cannot share a display safely.
     /// `target/run-media-circle-gtk.py` supplies the isolated display.
@@ -785,6 +798,8 @@ mod tests {
     #[ignore = "requires the project-local Broadway runner"]
     fn compact_art_and_ring_fit_mapped_circle_at_runtime_scales() {
         gtk::init().expect("Broadway GTK display");
+        let palette = crate::theme::generate(&crate::config::ThemeConfig::default()).unwrap();
+        let _styles = crate::ui::install_styles(&palette);
         let display = gtk::gdk::Display::default().expect("Broadway display");
         let monitor = display
             .monitors()
@@ -792,7 +807,7 @@ mod tests {
             .expect("Broadway monitor")
             .downcast::<gtk::gdk::Monitor>()
             .expect("monitor type");
-        for scale in [1.0, 1.9] {
+        for scale in [1.0, 1.45, 1.9] {
             let metrics = super::Metrics::new(&monitor, scale, 1.0, IconStyle::Symbolic);
             let fixture = std::env::temp_dir().join(format!("media-circle-{scale}.png"));
             image::RgbaImage::from_fn(320, 96, |x, y| image::Rgba([x as u8, y as u8, 0x80, 255]))
@@ -811,6 +826,9 @@ mod tests {
             state.art_url = Some(gtk::gio::File::for_path(&fixture).uri().to_string());
             circle.update(Some(&state));
             let window = gtk::Window::new();
+            if let Some(class) = metrics.css_class() {
+                window.add_css_class(class);
+            }
             let fixed = gtk::Fixed::new();
             fixed.set_size_request(400, 200);
             fixed.put(circle.host.widget(), 0.0, 0.0);
@@ -842,19 +860,22 @@ mod tests {
             );
 
             let diameter = metrics.spacing(32);
-            let art_size = metrics.spacing(32);
-            let decode_size = metrics.spacing(32);
+            let art_size = super::media_art_diameter(metrics);
+            let decode_size = art_size;
             let image = &circle.compact_icon;
             let ring = &circle.progress_area;
-            assert_eq!(image.width(), diameter, "file art width at scale {scale}");
-            assert_eq!(image.height(), diameter, "file art height at scale {scale}");
-            assert_eq!(ring.width(), diameter, "ring width at scale {scale}");
-            assert_eq!(ring.height(), diameter, "ring height at scale {scale}");
-            assert!(image.width() <= art_size, "art width at scale {scale}");
-            assert!(image.height() <= art_size, "art height at scale {scale}");
+            assert_eq!(image.width(), art_size, "file art width at scale {scale}");
+            assert_eq!(image.height(), art_size, "file art height at scale {scale}");
+            assert_eq!(ring.width(), art_size, "ring width at scale {scale}");
+            assert_eq!(ring.height(), art_size, "ring height at scale {scale}");
             let bounds = image
                 .compute_bounds(circle.host.widget())
                 .expect("host-clipped artwork bounds");
+            assert!(
+                (bounds.x() * 2.0 + bounds.width() - diameter as f32).abs() <= 1.0
+                    && (bounds.y() * 2.0 + bounds.height() - diameter as f32).abs() <= 1.0,
+                "compact artwork must be centered inside the border: {bounds:?} at {scale}"
+            );
             assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
             assert!(
                 bounds.x() + bounds.width() <= diameter as f32,
@@ -963,6 +984,9 @@ mod tests {
                 .render(hover_circle.host.revision(), Some(expanded));
             hover_circle.host.commit_page(hover_circle.host.revision());
             let hover_window = gtk::Window::new();
+            if let Some(class) = metrics.css_class() {
+                hover_window.add_css_class(class);
+            }
             let hover_fixed = gtk::Fixed::new();
             hover_fixed.set_hexpand(true);
             hover_fixed.set_vexpand(true);
@@ -982,8 +1006,8 @@ mod tests {
                 .compute_bounds(hover_circle.host.widget())
                 .expect("circle-sized hover cover art bounds");
             assert!(
-                (expanded_art.x() - metrics.spacing(8) as f32).abs() <= 1.0,
-                "hover art should shift only into the pill's leading inset at scale {scale}: {expanded_art:?}"
+                (expanded_art.x() - bounds.x() - metrics.spacing(8) as f32).abs() <= 1.0,
+                "hover art should keep its leading inset inside the border at scale {scale}: {expanded_art:?}"
             );
             assert!(
                 (expanded_art.width() - art_size as f32).abs() <= 1.0
@@ -1048,6 +1072,14 @@ mod tests {
                 ancestor = widget.parent();
             }
             let scroller = scroller.expect("host media scroller");
+            assert_eq!(scroller.hscrollbar_policy(), gtk::PolicyType::External);
+            assert_eq!(scroller.vscrollbar_policy(), gtk::PolicyType::External);
+            assert!(
+                (expanded_art.y() * 2.0 + expanded_art.height() - expanded.rect.height as f32)
+                    .abs()
+                    <= 1.0,
+                "hover cover must be vertically centered: {expanded_art:?} at {scale}"
+            );
             assert!(
                 scroller.hadjustment().upper() <= scroller.hadjustment().page_size() + 1.0,
                 "unexpected horizontal media scroll at scale {scale}: upper={}, page={}",
@@ -1185,7 +1217,7 @@ mod tests {
             );
             assert_eq!(
                 hover_circle.progress_area.width(),
-                diameter,
+                art_size,
                 "ring after leave/update at {scale}"
             );
             hover_circle

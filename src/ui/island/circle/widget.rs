@@ -63,12 +63,12 @@ impl CircleHost {
         background.add_css_class("island-surface");
         background.add_css_class("circle-surface");
         let radius_style = gtk::CssProvider::new();
-        // GTK 4.14 has no replacement for widget-local providers. Keep radius
-        // overrides scoped to this surface instead of leaking display-wide CSS.
+        // Match the base stylesheet's priority so the local, animated radius
+        // wins over its density-tier radius. User overrides remain above both.
         #[allow(deprecated)]
         background
             .style_context()
-            .add_provider(&radius_style, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+            .add_provider(&radius_style, gtk::STYLE_PROVIDER_PRIORITY_USER + 1);
         stack.set_hexpand(true);
         stack.set_vexpand(true);
         background.append(&stack);
@@ -338,16 +338,28 @@ impl CircleHost {
 }
 
 fn scroll_page(child: &gtk::Widget) -> gtk::ScrolledWindow {
+    let media = child.has_css_class("media-circle-hover");
     child.set_hexpand(true);
-    child.set_vexpand(true);
+    child.set_vexpand(!media);
     child.set_halign(gtk::Align::Fill);
-    child.set_valign(gtk::Align::Fill);
+    child.set_valign(if media {
+        gtk::Align::Center
+    } else {
+        gtk::Align::Fill
+    });
+    // Media wheel events select a player, not a scroll position. External
+    // policy keeps the bounded viewport without reserving or drawing bars.
+    let policy = if media {
+        gtk::PolicyType::External
+    } else {
+        gtk::PolicyType::Automatic
+    };
     gtk::ScrolledWindow::builder()
         .child(child)
         .hexpand(true)
         .vexpand(true)
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .hscrollbar_policy(policy)
+        .vscrollbar_policy(policy)
         .propagate_natural_width(false)
         .propagate_natural_height(false)
         .has_frame(false)
