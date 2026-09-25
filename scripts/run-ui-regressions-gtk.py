@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every ignored GTK UI regression against one private Broadway display.
+"""Run every ignored GTK UI regression against a fresh private Broadway display.
 
 The runner deliberately builds into a project-local target directory and gives
 GTK, Chromium, and Broadway a disposable runtime.  GtkWindow layer warnings
@@ -10,7 +10,9 @@ import json
 import os
 import pathlib
 import re
+import signal
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,7 @@ TESTS = [
     "ui::island::tray_circle::tests::gtk_tray_pages_have_visible_allocated_children_for_mixed_icons",
     "ui::island::media_circle::tests::compact_art_and_ring_fit_mapped_circle_at_runtime_scales",
     "ui::island::battery_wave::tests::playing_media_keeps_a_live_full_width_battery_background",
+    "ui::island::tests::persistent_header_peek_open_geometry_input_and_reversal",
 ]
 if len(sys.argv) > 1:
     requested = sys.argv[1:]
@@ -47,14 +50,20 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def stop(process):
+def stop(process, group=False):
     if process is None or process.poll() is not None:
         return
-    process.terminate()
+    if group:
+        os.killpg(process.pid, signal.SIGTERM)
+    else:
+        process.terminate()
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        if group:
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
         process.wait()
 
 
@@ -62,6 +71,11 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
     runtime = pathlib.Path(name)
     for directory in ("tmp", "cache", "config", "data", "chromium"):
         (runtime / directory).mkdir(mode=0o700)
+    gtk_css = pathlib.Path.home() / ".config" / "gtk-4.0" / "gtk.css"
+    if gtk_css.is_file():
+        gtk_config = runtime / "config" / "gtk-4.0"
+        gtk_config.mkdir(mode=0o700)
+        shutil.copyfile(gtk_css, gtk_config / "gtk.css")
     env = os.environ.copy()
     env.update(
         CARGO_TARGET_DIR=str(TARGET),
@@ -121,22 +135,45 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
             + details
         )
 
-    server = None
-    try:
-        port = free_port()
-        with (runtime / "broadway.log").open("w") as log:
-            server = subprocess.Popen(
-                ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
-                cwd=ROOT,
-                env=env,
-                stdout=log,
-                stderr=log,
-            )
-            time.sleep(0.3)
-            if server.poll() is not None:
-                raise RuntimeError((runtime / "broadway.log").read_text())
-            result = 0
-            for test in TESTS:
+    # Each Rust test is a new GTK client. Reusing the Broadway/WebGL session
+    # across their disconnects can leave later clients waiting indefinitely
+    # for frame acknowledgements, with every widget stuck at an old allocation.
+    for index, test in enumerate(TESTS):
+        server = None
+        browser = None
+        # Chromium's Unix sockets need short paths in deeply nested worktrees.
+        with tempfile.TemporaryDirectory(prefix="ms-gtk-", ignore_cleanup_errors=True) as chrome_dir:
+            try:
+                port = free_port()
+                env["BROADWAY_DISPLAY"] = f":{os.getpid() * 100 + index}"
+                server_log = runtime / f"broadway-{index}.log"
+                browser_log = runtime / f"chromium-{index}.log"
+                with server_log.open("w") as log:
+                    server = subprocess.Popen(
+                        ["gtk4-broadwayd", "-a", "127.0.0.1", "-p", str(port), env["BROADWAY_DISPLAY"]],
+                        cwd=ROOT, env=env, stdout=log, stderr=log,
+                    )
+                time.sleep(0.3)
+                if server.poll() is not None:
+                    raise RuntimeError(server_log.read_text())
+                # Rendering is required for real frame-clock allocation.
+                chrome_env = env.copy()
+                chrome_env["TMPDIR"] = chrome_dir
+                with browser_log.open("w") as log:
+                    browser = subprocess.Popen(
+                        ["chromium", "--headless", "--no-sandbox", "--enable-webgl",
+                         "--use-gl=angle", "--use-angle=swiftshader", "--disable-dev-shm-usage",
+                         "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
+                         "--disable-backgrounding-occluded-windows",
+                         "--remote-debugging-port=0", "--window-size=3840,2160",
+                         "--user-data-dir=" + chrome_dir + "/profile",
+                         "http://127.0.0.1:" + str(port)],
+                        env=chrome_env, stdout=subprocess.DEVNULL, stderr=log,
+                        start_new_session=True,
+                    )
+                time.sleep(0.5)
+                if browser.poll() is not None:
+                    raise RuntimeError("Broadway rendering client exited: " + browser_log.read_text())
                 completed = subprocess.run(
                     [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"],
                     cwd=ROOT,
@@ -148,8 +185,10 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                 print(f"\n== {test} ==")
                 print(completed.stdout, end="")
                 if completed.returncode != 0:
+                    print(browser_log.read_text(), file=sys.stderr)
                     raise SystemExit(completed.returncode)
-    finally:
-        stop(server)
+            finally:
+                stop(browser, group=True)
+                stop(server)
 
-raise SystemExit(result)
+raise SystemExit(0)
