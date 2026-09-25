@@ -77,7 +77,6 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
     root.append(&forecast_row);
 
     let calendar = gtk::Calendar::new();
-    calendar.set_vexpand(false);
     calendar.add_css_class("weather-calendar");
     calendar.set_hexpand(true);
     calendar.set_vexpand(true);
@@ -298,7 +297,7 @@ fn weather_pixel_grid(condition: WeatherCondition) -> &'static PixelGrid {
 /// direct replacement for resolving a named color to RGBA outside of a
 /// stylesheet; it remains the only way to recolor custom Cairo drawing from
 /// the active theme, and continues to function correctly (see the same
-/// rationale in `theme::generate_gtk_from_style_context`).
+/// rationale on `theme::generate_gtk_from_style_context`).
 #[allow(deprecated)]
 pub(super) fn draw_weather_condition(area: &gtk::DrawingArea, condition: WeatherCondition) {
     area.set_draw_func(move |area, context, width, height| {

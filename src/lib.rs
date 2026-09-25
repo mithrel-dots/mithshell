@@ -13,6 +13,7 @@ pub mod setup;
 pub mod state;
 pub mod system;
 pub mod tarragon;
+pub mod telemetry;
 pub mod theme;
 pub mod tray;
 pub mod ui;

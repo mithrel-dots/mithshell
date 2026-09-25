@@ -77,6 +77,17 @@ pub struct SystemSnapshot {
     pub brightness: Option<BrightnessState>,
     pub battery: Option<BatteryState>,
     pub info: Option<SystemInfoState>,
+    pub hardware: HardwareSnapshot,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct HardwareSnapshot {
+    pub cpu_percent: Option<f64>,
+    pub cpu_temperature_celsius: Option<f64>,
+    pub memory_used_bytes: Option<u64>,
+    pub memory_total_bytes: Option<u64>,
+    pub network_receive_bytes_per_second: Option<f64>,
+    pub network_transmit_bytes_per_second: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -413,6 +424,8 @@ pub struct Notification {
     pub urgency: Urgency,
     pub actions: Vec<NotificationAction>,
     pub timeout: NotificationTimeout,
+    #[serde(skip_serializing)]
+    pub received_at_unix_seconds: u64,
 }
 
 impl Notification {

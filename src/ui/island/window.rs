@@ -59,6 +59,12 @@ impl IslandWindow {
             false,
         );
         let focus_window = gtk::Window::new();
+        // Reparenting must retain the production CSS ancestry, including the
+        // runtime density tier used by fonts, padding, and control minima.
+        focus_window.add_css_class("mithshell-window");
+        if let Some(class) = island.metrics.css_class() {
+            focus_window.add_css_class(class);
+        }
         island.window.set_child(None::<&gtk::Widget>);
         focus_window.set_child(Some(&island.fixed));
         focus_window.set_default_size(island.metrics.window_width, island.metrics.window_height);
@@ -178,12 +184,16 @@ impl IslandWindow {
             0.0,
         );
 
-        let battery_waves =
-            BatteryWaves::new(config.battery, animations_enabled, shell.animation_ms);
+        let battery_waves = BatteryWaves::new(
+            config.battery,
+            animations_enabled,
+            shell.animation_ms,
+            metrics.compact_height,
+        );
         let surface_shell = gtk::Overlay::new();
         surface_shell.add_css_class("island-surface");
         surface_shell.set_overflow(Overflow::Hidden);
-        surface_shell.set_child(Some(&battery_waves.area));
+        surface_shell.set_child(Some(&gtk::Box::new(Orientation::Vertical, 0)));
 
         let surface = gtk::ScrolledWindow::new();
         surface.add_css_class("island-content-surface");
@@ -213,20 +223,34 @@ impl IslandWindow {
         content.set_size_request(metrics.window_width, metrics.window_height);
         surface.set_child(Some(&content));
 
-        let (compact, compact_workspaces, compact_clock, compact_battery, compact_tray) =
-            compact_view(metrics);
-        content.put(
-            &compact,
-            f64::from((metrics.window_width - metrics.compact_width) / 2),
-            0.0,
-        );
+        let (
+            compact,
+            compact_workspaces,
+            compact_clock,
+            compact_battery,
+            compact_tray,
+            compact_date_day,
+            compact_date_rest,
+            compact_date,
+        ) = compact_view(metrics);
+        compact.set_halign(gtk::Align::Center);
+        compact.set_valign(gtk::Align::Start);
+        compact.set_can_target(true);
+        compact.set_overflow(Overflow::Hidden);
+        compact.set_child(Some(&battery_waves.area));
 
         let dashboard_widgets = dashboard_view(metrics);
-        content.put(
-            &dashboard_widgets.root,
-            f64::from((metrics.window_width - metrics.dashboard_width) / 2),
-            0.0,
-        );
+        let panel_scroll = gtk::ScrolledWindow::new();
+        panel_scroll.add_css_class("island-panel-viewport");
+        // Both axes clip independently of child minima while rolling shut.
+        // Never on the horizontal axis forces the hardware's minimum width
+        // onto the shrinking viewport and clips away its rounded right border.
+        panel_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+        panel_scroll.set_overflow(Overflow::Hidden);
+        panel_scroll.set_child(Some(&dashboard_widgets.root));
+        panel_scroll.set_visible(false);
+        surface_shell.add_overlay(&panel_scroll);
+        surface_shell.add_overlay(&compact);
         dashboard_widgets.root.set_opacity(0.0);
         dashboard_widgets.root.set_visible(false);
 
@@ -366,13 +390,21 @@ impl IslandWindow {
             surface,
             compact: compact.upcast(),
             media: media_widgets.root,
+            hardware: dashboard_widgets.hardware,
             dashboard: dashboard_widgets.root,
+            dashboard_sections: dashboard_widgets.sections,
+            dashboard_expansion: Cell::new(0.0),
+            dashboard_section_opacity: Cell::new(0.0),
+            panel_scroll,
             search: search_widgets.root,
             weather: weather_widgets.root,
             osd,
             notification,
             compact_workspaces,
             compact_clock,
+            compact_date_day,
+            compact_date_rest,
+            compact_date,
             compact_battery,
             battery_waves,
             compact_tray,
@@ -397,48 +429,19 @@ impl IslandWindow {
             visualizer_revision: Cell::new(0),
             media_levels: media_widgets.levels,
             media_tray: media_widgets.tray,
-            hero_time: dashboard_widgets.hero_time,
-            hero_date: dashboard_widgets.hero_date,
-            battery_chip: dashboard_widgets.battery_chip,
-            battery_icon: dashboard_widgets.battery_icon,
-            battery_label: dashboard_widgets.battery_label,
-            player_card: dashboard_widgets.player_card,
-            player_icon: dashboard_widgets.player_icon,
-            player_title: dashboard_widgets.player_title,
-            player_artist: dashboard_widgets.player_artist,
-            player_progress: dashboard_widgets.player_progress,
-            player_elapsed_label: dashboard_widgets.player_elapsed_label,
-            player_duration_label: dashboard_widgets.player_duration_label,
-            player_prev_button: dashboard_widgets.player_prev_button,
-            player_play_pause_button: dashboard_widgets.player_play_pause_button,
-            player_next_button: dashboard_widgets.player_next_button,
-            player_switch_row: dashboard_widgets.player_switch_row,
-            player_switch_label: dashboard_widgets.player_switch_label,
-            player_switch_prev: dashboard_widgets.player_switch_prev,
-            player_switch_next: dashboard_widgets.player_switch_next,
-            player_progress_base_us: Cell::new(0),
-            player_progress_started_at: Cell::new(None),
-            player_length_us: Cell::new(0),
-            player_active: Cell::new(false),
             latest_media: RefCell::new(None),
             selected_media_service: RefCell::new(None),
             active_eyebrow: dashboard_widgets.active_eyebrow,
             active_title: dashboard_widgets.active_title,
-            status_card: dashboard_widgets.status_card,
             workspace_row: dashboard_widgets.workspace_row,
-            controls_stack: dashboard_widgets.controls_stack,
             volume_scale: dashboard_widgets.volume_scale,
             volume_value: dashboard_widgets.volume_value,
-            brightness_row: dashboard_widgets.brightness_row,
-            brightness_scale: dashboard_widgets.brightness_scale,
-            brightness_value: dashboard_widgets.brightness_value,
+            mute_button: dashboard_widgets.mute_button,
             notification_count: dashboard_widgets.notification_count,
             notification_inhibit_remaining: dashboard_widgets.notification_inhibit_remaining,
             notification_clear_button: dashboard_widgets.notification_clear_button,
             notification_inhibit_button: dashboard_widgets.notification_inhibit_button,
-            notification_expand_button: dashboard_widgets.notification_expand_button,
             notification_list: dashboard_widgets.notification_list,
-            notifications_expanded: Cell::new(false),
             updating_notification_inhibit: Cell::new(false),
             search_entry: search_widgets.entry,
             search_results: search_widgets.results,
@@ -474,6 +477,7 @@ impl IslandWindow {
             latest_weather: RefCell::new(None),
             current_view: Cell::new(View::Compact),
             dashboard_open: Cell::new(false),
+            island_hovered: Cell::new(false),
             search_open: Cell::new(false),
             weather_open: Cell::new(false),
             search_connected: Cell::new(false),
@@ -507,13 +511,14 @@ impl IslandWindow {
             )),
             view_animation_generation: Cell::new(0),
             pill_animation_generation: Cell::new(0),
+            pill_animation_target: Cell::new(None),
+            view_animation_target: Cell::new(None),
             view_transition_active: Cell::new(false),
             animation_ms: Cell::new(shell.animation_ms),
             animations_enabled: Cell::new(animations_enabled),
             launcher_presentation: config.launcher.presentation,
             osd_generation: Cell::new(0),
             volume_generation: Cell::new(0),
-            brightness_generation: Cell::new(0),
             updating_controls: Cell::new(false),
             latest_hyprland: RefCell::new(HyprlandSnapshot::default()),
             notifications: config.notifications.clone(),
@@ -552,6 +557,7 @@ impl IslandWindow {
                 close_button: &dashboard_widgets.close_button,
                 search_button: &dashboard_widgets.search_button,
                 weather_button: &dashboard_widgets.weather_button,
+                mute_button: &island.mute_button,
                 search_back_button: &search_widgets.back_button,
                 search_reload_button: &search_widgets.reload_button,
                 weather_back_button: &weather_widgets.back_button,
@@ -562,7 +568,6 @@ impl IslandWindow {
         island.reconcile_pill_geometry();
         island.relayout_circles();
         island.start_clock();
-        island.start_player_progress_timer();
         let weak = Rc::downgrade(&island);
         island.window.connect_realize(move |_| {
             if let Some(island) = weak.upgrade() {
@@ -662,7 +667,6 @@ impl IslandWindow {
             "tray_menu_open": self.tray_menu_open.get(),
             "tray_visible": self.compact_tray.is_visible(),
             "tray_visible_media": self.media_tray.is_visible(),
-            "player_card_visible": self.player_card.is_visible(),
             "notification_history_visible": self.notification_list.is_visible(),
             "circles": self.circle_debug_state(),
         })
@@ -678,40 +682,23 @@ impl IslandWindow {
 
     pub fn open(self: &Rc<Self>) {
         self.clear_osd();
-        let integrated_search = self.launcher_presentation
-            == crate::config::LauncherPresentation::Integrated
-            && self
-                .surface
-                .child()
-                .is_some_and(|child| child == self.search.clone().upcast::<gtk::Widget>());
         self.search_open.set(false);
         self.weather_open.set(false);
         self.dashboard_open.set(true);
-        if integrated_search {
-            self.reconcile_view();
-            return;
-        }
         self.reconcile_view();
         self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }
 
     pub fn close(self: &Rc<Self>) {
+        if self.current_view.get() == View::Dashboard {
+            self.island_hovered.set(self.pointer_in_hover_region.get());
+        }
         self.dashboard_open.set(false);
         self.weather_open.set(false);
         self.search_action_generation
             .set(self.search_action_generation.get().wrapping_add(1));
         self.clear_osd();
-        let integrated_search = self.launcher_presentation
-            == crate::config::LauncherPresentation::Integrated
-            && self
-                .surface
-                .child()
-                .is_some_and(|child| child == self.search.clone().upcast::<gtk::Widget>());
         self.search_open.set(false);
-        if integrated_search {
-            self.reconcile_view();
-            return;
-        }
         self.reconcile_view();
         self.dismiss_search_window(self.geometry_for_view(self.current_view.get()));
     }
@@ -769,6 +756,10 @@ impl IslandWindow {
     }
 
     pub fn destroy(&self) {
+        #[cfg(test)]
+        if let Ok(window) = self.focus_root.borrow().clone().downcast::<gtk::Window>() {
+            window.close();
+        }
         self.dismiss_window.close();
         self.search_window.close();
         self.window.close();
@@ -852,10 +843,12 @@ impl IslandWindow {
             if let Ok(time) = now.format("%H:%M") {
                 self.compact_clock.set_label(&time);
                 self.media_clock.set_label(&time);
-                self.hero_time.set_label(&time);
             }
-            if let Ok(date) = now.format("%A, %d %B") {
-                self.hero_date.set_label(&date);
+            if let Ok(day) = now.format("%a") {
+                self.compact_date_day.set_label(&day);
+            }
+            if let Ok(rest) = now.format("%-d %b") {
+                self.compact_date_rest.set_label(&rest);
             }
         }
     }

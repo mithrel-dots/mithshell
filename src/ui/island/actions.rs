@@ -34,7 +34,7 @@ pub type TrayMenuEventAction = Rc<dyn Fn(String, String, i32)>;
 pub struct IslandActions {
     pub switch_workspace: WorkspaceAction,
     pub set_volume: ValueAction,
-    pub set_brightness: ValueAction,
+    pub toggle_mute: UnitAction,
     pub search: SearchAction,
     pub select: SelectionAction,
     pub tarragon_status: UnitAction,
@@ -63,6 +63,7 @@ pub(super) struct OverlayButtons<'a> {
     pub(super) close_button: &'a gtk::Button,
     pub(super) search_button: &'a gtk::Button,
     pub(super) weather_button: &'a gtk::Button,
+    pub(super) mute_button: &'a gtk::Button,
     pub(super) search_back_button: &'a gtk::Button,
     pub(super) search_reload_button: &'a gtk::Button,
     pub(super) weather_back_button: &'a gtk::Button,

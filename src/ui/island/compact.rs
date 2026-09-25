@@ -7,11 +7,20 @@ use std::rc::Rc;
 
 use gtk::{Align, Orientation};
 
-use super::{IslandWindow, Metrics, View, measure_clamped};
+use super::{IslandWindow, Metrics, View};
 
 pub(super) fn compact_view(
     metrics: Metrics,
-) -> (gtk::Overlay, gtk::Box, gtk::Label, gtk::Label, gtk::Box) {
+) -> (
+    gtk::Overlay,
+    gtk::Box,
+    gtk::Label,
+    gtk::Label,
+    gtk::Box,
+    gtk::Label,
+    gtk::Label,
+    gtk::Box,
+) {
     let root = gtk::Overlay::new();
     root.set_size_request(metrics.compact_width, metrics.compact_height);
     // Padding belongs to the foreground row only. Putting compact-content on
@@ -54,74 +63,92 @@ pub(super) fn compact_view(
     content.set_halign(Align::Fill);
     content.set_valign(Align::Fill);
     content.append(&workspaces);
-    let clock_slot = gtk::Box::new(Orientation::Horizontal, 0);
+    let clock_slot = gtk::Box::new(Orientation::Horizontal, metrics.spacing(18));
     clock_slot.set_hexpand(true);
     clock_slot.set_halign(Align::Center);
     clock_slot.append(&clock);
+    let date = gtk::Box::new(Orientation::Horizontal, metrics.spacing(2));
+    date.add_css_class("compact-date");
+    date.set_valign(Align::Center);
+    date.set_visible(false);
+    let day = gtk::Label::new(Some("---"));
+    day.add_css_class("compact-date-day");
+    day.set_valign(Align::Start);
+    let slash = gtk::DrawingArea::new();
+    slash.set_content_width(metrics.spacing(10));
+    slash.set_content_height(metrics.spacing(22));
+    slash.set_draw_func(|area, cr, w, h| {
+        let color = area.color();
+        cr.set_source_rgba(
+            color.red().into(),
+            color.green().into(),
+            color.blue().into(),
+            0.7,
+        );
+        cr.set_line_width(1.4 * f64::from(h) / 22.0);
+        cr.move_to(1.5, f64::from(h) - 1.0);
+        cr.line_to(f64::from(w) - 1.5, 1.0);
+        let _ = cr.stroke();
+    });
+    slash.set_valign(Align::Center);
+    let month_day = gtk::Label::new(Some("-- ---"));
+    month_day.add_css_class("compact-date-rest");
+    month_day.set_valign(Align::End);
+    date.append(&day);
+    date.append(&slash);
+    date.append(&month_day);
+    clock_slot.append(&date);
     content.append(&clock_slot);
     content.append(&battery);
     content.append(&tray);
     root.add_overlay(&content);
-    (root, workspaces, clock, battery, tray)
+    // The same date slot is revealed in hover/open presentations; it never
+    // replaces or shifts the clock's semantic position in the resting pill.
+    (root, workspaces, clock, battery, tray, day, month_day, date)
 }
 
 impl IslandWindow {
-    /// Recomputes the compact pill's width from the combined (individually
-    /// capped) natural width of its children, and repositions it within
-    /// `content` to match, the same way `resize_media` does for the media
-    /// pill. Called whenever a child's content changes (workspaces,
-    /// battery, tray) or the tray's hover-visibility toggles.
+    /// Recomputes the idle pill's width from its actual foreground layout,
+    /// including nested spacing, margins, padding, and the full audio reveal.
     pub(super) fn resize_compact(self: &Rc<Self>) {
-        let workspaces_width = measure_clamped(
-            &self.compact_workspaces,
-            self.metrics.compact_workspaces_max_width,
-        );
-        let clock_width =
-            measure_clamped(&self.compact_clock, self.metrics.compact_clock_max_width)
-                + if self.compact_visualizer_revealer.reveals_child() {
-                    self.compact_visualizer
-                        .measure(Orientation::Horizontal, -1)
-                        .1
-                } else {
-                    0
-                };
-        let battery_width = if self.compact_battery.is_visible() {
-            measure_clamped(
-                &self.compact_battery,
-                self.metrics.compact_battery_max_width,
-            )
-        } else {
-            0
-        };
-
         let tray_visible = self.tray_visible();
         self.compact_tray.set_visible(tray_visible);
-        let tray_width = if tray_visible {
-            measure_clamped(&self.compact_tray, self.metrics.compact_tray_max_width)
-        } else {
-            0
-        };
-
-        let segments = 2 + i32::from(battery_width > 0) + i32::from(tray_width > 0);
-        let spacing = self.metrics.spacing(10) * (segments - 1).max(0);
-        // Matches the compact content row's horizontal CSS padding.
-        let padding = self.metrics.spacing(30);
-        let natural =
-            workspaces_width + clock_width + battery_width + tray_width + spacing + padding;
+        let row = self
+            .compact_clock
+            .parent()
+            .and_then(|slot| slot.parent())
+            .expect("compact content row");
+        // Measure the actual idle row: the clock slot has its own spacing and
+        // the visualizer a margin, neither of which a sum of leaf widths sees.
+        let date_visible = self.compact_date.is_visible();
+        self.compact_date.set_visible(false);
+        let mut natural = row.measure(Orientation::Horizontal, -1).1;
+        self.compact_date.set_visible(date_visible);
+        if self.compact_visualizer_revealer.reveals_child() {
+            // Reserve its destination width throughout the reveal so the
+            // growing audio bars cannot push the percentage outside the pill.
+            natural += (self
+                .compact_visualizer
+                .measure(Orientation::Horizontal, -1)
+                .1
+                - self
+                    .compact_visualizer_revealer
+                    .measure(Orientation::Horizontal, -1)
+                    .1)
+                .max(0);
+        }
+        #[allow(deprecated)]
+        let border = self.compact.style_context().border();
+        natural += i32::from(border.left()) + i32::from(border.right());
         let width = natural.clamp(self.metrics.compact_min_width, self.metrics.media_max_width);
 
         self.compact
             .set_size_request(width, self.metrics.compact_height);
-        self.content.move_(
-            &self.compact,
-            f64::from((self.metrics.window_width - width) / 2),
-            0.0,
-        );
         self.compact_width.set(width);
         // Rebuilds can happen while hover is already rendered.  Repositioning
         // the root above must not erase its offset against the current
         // backdrop, even when the new width produces no new animation.
-        if self.current_view.get() == View::Compact {
+        if matches!(self.current_view.get(), View::Compact | View::Dashboard) {
             self.sync_pill_content_geometry(self.geometry.get());
         }
     }
@@ -160,6 +187,23 @@ impl IslandWindow {
 
     pub(super) fn set_pointer_in_hover_region(self: &Rc<Self>, inside: bool) {
         self.pointer_in_hover_region.set(inside);
+        if self.current_view.get() == View::Dashboard {
+            // An open dashboard is pinned until its explicit close affordance
+            // or the persistent header is clicked again.
+            self.island_hovered.set(true);
+            self.compact_date.set_visible(true);
+        } else if self.current_view.get() == View::Compact
+            && self.island_hovered.replace(inside) != inside
+        {
+            self.sync_island_surface_style();
+            if self.view_transition_active.get() {
+                // Leaving while Open is rolling back to Peek changes the
+                // destination to Idle; retarget from the rendered frame now.
+                self.set_view(View::Compact);
+            } else {
+                self.reconcile_pill_geometry();
+            }
+        }
         if matches!(self.current_view.get(), View::Compact | View::Media) {
             self.set_tray_hovered(inside);
         } else {
@@ -178,11 +222,21 @@ impl IslandWindow {
         }
         let target = self.presentation_target_geometry(view);
         let start = self.geometry.get();
-        if start == target {
+        // Telemetry, tray, and media refreshes often reconcile unchanged
+        // destinations while a frame is between its endpoints. Keep that
+        // track's clock instead of repeatedly restarting the easing at zero.
+        if self.pill_animation_target.get() == Some(target)
+            || (start == target && self.pill_animation_target.get().is_none())
+        {
             return;
         }
+        self.pill_animation_target.set(Some(target));
         let profile = profile_timing(
-            if self.tray_hovered.get() {
+            if self.island_hovered.get() && target.height >= start.height {
+                crate::ui::motion::Profile::ISLAND_EXPAND
+            } else if target.height < start.height || target.width < start.width {
+                crate::ui::motion::Profile::ISLAND_COLLAPSE
+            } else if self.tray_hovered.get() {
                 crate::ui::motion::Profile::HOVER_ENTER
             } else if target.width >= start.width {
                 crate::ui::motion::Profile::CONTAINER_EXPAND
@@ -194,30 +248,70 @@ impl IslandWindow {
         );
         let generation = self.pill_animation_generation.get().wrapping_add(1);
         self.pill_animation_generation.set(generation);
+        let entering_peek = view == View::Compact && self.island_hovered.get();
+        let date_start = if self.compact_date.is_visible() {
+            self.compact_date.opacity()
+        } else {
+            0.0
+        };
+        if entering_peek {
+            self.dashboard.set_visible(true);
+            self.dashboard.set_can_target(true);
+            // Peek is a physical rollout, not a delayed content entrance.
+            // Render hardware at full opacity before exposing its clipped
+            // viewport, so the first revealed pixels already contain it.
+            self.dashboard.set_opacity(1.0);
+            self.panel_scroll.set_visible(true);
+            self.compact_date.set_visible(true);
+            self.compact_date.set_opacity(date_start);
+        } else if view == View::Compact && start.height > target.height {
+            self.dashboard.set_can_target(false);
+        }
         if profile.duration.is_zero() {
+            self.pill_animation_target.set(None);
             self.apply_geometry(target);
             self.sync_pill_content_geometry(target);
+            self.dashboard
+                .set_opacity(if entering_peek { 1.0 } else { 0.0 });
+            self.dashboard.set_visible(entering_peek);
+            self.compact_date
+                .set_opacity(if entering_peek { 1.0 } else { 0.0 });
+            self.compact_date.set_visible(entering_peek);
             return;
         }
-        let started = Cell::new(None::<i64>);
+        let started = Instant::now();
         let weak = Rc::downgrade(self);
-        self.surface.add_tick_callback(move |_, clock| {
+        self.fixed.add_tick_callback(move |_, _| {
             let Some(island) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
             if island.pill_animation_generation.get() != generation {
                 return glib::ControlFlow::Break;
             }
-            let now = clock.frame_time();
-            let origin = started.get().unwrap_or_else(|| {
-                started.set(Some(now));
-                now
-            });
-            let progress = profile.progress(Duration::from_micros((now - origin).max(0) as u64));
+            let elapsed = started.elapsed();
+            let progress = profile.progress(elapsed);
             let geometry = start.interpolate(target, progress);
             island.apply_geometry(geometry);
             island.sync_pill_content_geometry(geometry);
-            if progress >= 1.0 {
+            let fade = island.island_fade_progress(entering_peek, elapsed, profile.duration);
+            // Keep the hardware painted while either rolling out or tucking
+            // away; the shared viewport controls how much is visible.
+            island.dashboard.set_opacity(1.0);
+            island.compact_date.set_opacity(lerp(
+                date_start,
+                if entering_peek { 1.0 } else { 0.0 },
+                fade,
+            ));
+            if profile.is_complete(elapsed) {
+                island.pill_animation_target.set(None);
+                island
+                    .dashboard
+                    .set_opacity(if entering_peek { 1.0 } else { 0.0 });
+                island.dashboard.set_visible(entering_peek);
+                island
+                    .compact_date
+                    .set_opacity(if entering_peek { 1.0 } else { 0.0 });
+                island.compact_date.set_visible(entering_peek);
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
@@ -225,18 +319,11 @@ impl IslandWindow {
         });
     }
 
-    /// Keeps the fixed-size foreground centered in the animated pill surface.
-    ///
-    /// `surface` is the animated backdrop and grows symmetrically for hover,
-    /// while the compact/media roots deliberately retain their natural size so
-    /// labels and icons do not scale with the chrome.  Without this correction
-    /// the roots stay at the surface's old top edge: the backdrop moves down
-    /// and grows, but its contents do not.  Positioning the unchanged content
-    /// in the animated surface preserves both visual alignment and GTK's real
-    /// descendant pick coordinates.
+    /// The persistent header shares the panel's width track. Legacy media
+    /// content stays centered within its own animated backdrop.
     pub(super) fn sync_pill_content_geometry(&self, geometry: Geometry) {
         let (widget, base_width, base_height) = match self.current_view.get() {
-            View::Compact => (
+            View::Compact | View::Dashboard => (
                 &self.compact,
                 self.compact_width.get(),
                 self.metrics.compact_height,
@@ -248,9 +335,18 @@ impl IslandWindow {
             ),
             _ => return,
         };
-        let (x, y) =
-            pill_content_offset(geometry, self.metrics.window_width, base_width, base_height);
-        self.content.move_(widget, x, y);
+        if matches!(self.current_view.get(), View::Compact | View::Dashboard) {
+            // Compact is an overlay sibling of the scrolling page surface so
+            // it stays above the rolling panel and retains its GTK pick path.
+            let width = geometry.width.round() as i32;
+            self.compact
+                .set_size_request(width, self.persistent_header_height(geometry));
+            self.compact.set_margin_top(0);
+        } else {
+            let (x, y) =
+                pill_content_offset(geometry, self.metrics.window_width, base_width, base_height);
+            self.content.move_(widget, x, y);
+        }
     }
 }
 
@@ -272,6 +368,7 @@ fn pill_content_offset(
 #[cfg(test)]
 mod tests {
     use super::{Geometry, pill_content_offset};
+    use std::cell::Cell;
 
     #[test]
     fn content_stays_centered_at_every_hover_frame_without_scaling() {
@@ -336,7 +433,7 @@ mod tests {
         let actions = IslandActions {
             switch_workspace: Rc::new(|_, _| {}),
             set_volume: Rc::new(|_| {}),
-            set_brightness: Rc::new(|_| {}),
+            toggle_mute: Rc::new(|| {}),
             search: Rc::new(|_| {}),
             select: Rc::new(|_: TarragonSelection| {}),
             tarragon_status: Rc::new(|| {}),
@@ -390,7 +487,6 @@ mod tests {
         };
         drain(Duration::from_millis(50));
         island.battery_waves.update(Some(50));
-        let base_height = f64::from(island.metrics.compact_height);
         let assert_hover_hitbox = |island: &Rc<super::super::IslandWindow>| {
             let pill = match island.current_view.get() {
                 super::super::View::Compact => island.compact.clone().upcast::<gtk::Widget>(),
@@ -405,12 +501,19 @@ mod tests {
                 island.pointer_in_hover_region.get(),
                 "pill center must hover"
             );
-            let outside_x = center_x + f64::from(bounds.width()) / 2.0 + 40.0;
+            let outside_x = f64::from(bounds.x()) - 40.0;
+            let outside_y = center_y;
             assert!(outside_x < f64::from(island.fixed.width()));
-            island.update_pointer_from_root(outside_x, center_y);
+            assert!(outside_y < f64::from(island.fixed.height()));
+            island.update_pointer_from_root(outside_x, outside_y);
             assert!(
                 !island.pointer_in_hover_region.get(),
-                "point outside visible pill triggered hover: bounds={bounds:?}"
+                "point outside visible island content triggered hover: pill={bounds:?} panel={:?} point=({outside_x}, {outside_y}) geometry={:?} view={:?} island_hovered={} tray_hovered={}",
+                island.dashboard.compute_bounds(&island.fixed),
+                island.geometry.get(),
+                island.current_view.get(),
+                island.island_hovered.get(),
+                island.tray_hovered.get(),
             );
             island.update_pointer_from_root(center_x, center_y);
             assert!(island.pointer_in_hover_region.get(), "re-entry must hover");
@@ -420,20 +523,23 @@ mod tests {
         let sample_tick = |island: &Rc<super::super::IslandWindow>, samples: &Samples| {
             let geometry = island.geometry.get();
             let allocation = island.compact.allocation();
-            let bounds = island.compact.compute_bounds(&island.surface).unwrap();
+            let bounds = island
+                .compact
+                .compute_bounds(&island.surface_shell)
+                .unwrap();
             assert!(island.battery_waves.area.is_visible());
             assert_eq!(island.battery_waves.area.opacity(), 1.0);
             assert!(
-                (island.battery_waves.area.width() - island.surface_shell.width()).abs() <= 2,
-                "wave width {} must follow shell width {}",
+                (island.battery_waves.area.width() - island.compact.width()).abs() <= 2,
+                "wave width {} must follow header width {}",
                 island.battery_waves.area.width(),
-                island.surface_shell.width()
+                island.compact.width()
             );
             assert!(
-                (island.battery_waves.area.height() - island.surface_shell.height()).abs() <= 2,
-                "wave height {} must follow shell height {}",
+                (island.battery_waves.area.height() - island.compact.height()).abs() <= 2,
+                "wave height {} must follow header height {}",
                 island.battery_waves.area.height(),
-                island.surface_shell.height()
+                island.compact.height()
             );
             samples.borrow_mut().push((
                 geometry.height,
@@ -450,10 +556,10 @@ mod tests {
         let sampled = samples.borrow();
         assert!(sampled.len() >= 4);
         for (height, local_y, surface_y) in sampled.iter() {
-            let expected = ((height - base_height) / 2.0).max(0.0);
+            let expected = 0.0;
             assert!(
                 (local_y - expected).abs() <= 2.0,
-                "content y={local_y} expected {expected}"
+                "persistent header y={local_y} expected top anchoring in {height}px surface"
             );
             assert!(
                 *surface_y >= -1.0 && *surface_y <= 80.0,
@@ -525,10 +631,13 @@ mod tests {
                 let surface_bounds = island.surface.compute_bounds(&island.fixed).unwrap();
                 let root_bounds = island.media.compute_bounds(&island.fixed).unwrap();
                 let local_y = f64::from(root_bounds.y());
-                let expected = f64::from(surface_bounds.y());
+                let expected = f64::from(surface_bounds.y())
+                    + (f64::from(surface_bounds.height()) - f64::from(island.metrics.media_height))
+                        .max(0.0)
+                        / 2.0;
                 assert!(
                     (local_y - expected).abs() <= 2.0,
-                    "media close content y={local_y} expected {expected} at backdrop height {} view={:?}",
+                    "media content y={local_y} expected {expected} at backdrop height {} view={:?}",
                     geometry.height,
                     island.current_view.get()
                 );
@@ -544,23 +653,81 @@ mod tests {
                 && !island.view_transition_active.get()
         });
         assert_hover_hitbox(&island);
-        drain(Duration::from_millis(30));
+        island.set_pointer_in_hover_region(false);
+        island.set_tray_hovered(false);
+        island.reconcile_pill_geometry();
+        settle(&|| {
+            let geometry = island.geometry.get();
+            let target = island.presentation_target_geometry(super::super::View::Media);
+            !island.view_transition_active.get()
+                && (geometry.width - target.width).abs() <= 1.0
+                && (geometry.height - target.height).abs() <= 1.0
+        });
+        let stable_media_layout = Cell::new(0_u8);
+        let last_media_layout = Cell::new(None::<(i32, i32, i32)>);
+        let media_is_allocated_at_rest = || {
+            let allocation = island.media.allocation();
+            let bounds = island.media.compute_bounds(&island.fixed).unwrap();
+            let geometry = island.geometry.get();
+            let target = island.presentation_target_geometry(super::super::View::Media);
+            let current = (
+                bounds.y().round() as i32,
+                allocation.width(),
+                allocation.height(),
+            );
+            if allocation.width() > 0 && allocation.height() > 0 {
+                if last_media_layout.get() == Some(current) {
+                    stable_media_layout.set(stable_media_layout.get().saturating_add(1));
+                } else {
+                    last_media_layout.set(Some(current));
+                    stable_media_layout.set(0);
+                }
+            }
+            allocation.width() > 0
+                && allocation.height() > 0
+                && !island.view_transition_active.get()
+                && (geometry.width - target.width).abs() <= 1.0
+                && (geometry.height - target.height).abs() <= 1.0
+                && stable_media_layout.get() >= 2
+        };
+        let settle_media_layout = || {
+            for _ in 0..188 {
+                if media_is_allocated_at_rest() {
+                    return;
+                }
+                drain(Duration::from_millis(16));
+            }
+            let allocation = island.media.allocation();
+            panic!(
+                "media layout did not settle: allocation={allocation:?} bounds={:?} geometry={:?} target={:?} stable={} last={:?}",
+                island.media.compute_bounds(&island.fixed).unwrap(),
+                island.geometry.get(),
+                island.presentation_target_geometry(super::super::View::Media),
+                stable_media_layout.get(),
+                last_media_layout.get(),
+            );
+        };
+        settle_media_layout();
         let media_y_before = f64::from(island.media.compute_bounds(&island.fixed).unwrap().y());
+        let media_before = island.media.allocation();
+        let geometry_before = island.geometry.get();
+        let fixed_before = island.fixed.allocation();
+        let surface_before = island.surface.allocation();
         island.update_media(Some(&media));
+        settle_media_layout();
         drain(Duration::from_millis(20));
         let media_y_after_update =
             f64::from(island.media.compute_bounds(&island.fixed).unwrap().y());
-        assert!((media_y_after_update - media_y_before).abs() <= 2.0);
+        let media_after = island.media.allocation();
+        let geometry_after = island.geometry.get();
+        let fixed_after = island.fixed.allocation();
+        let surface_after = island.surface.allocation();
         assert!(
-            island
-                .media
-                .pick(
-                    f64::from(island.media.width()) / 2.0,
-                    f64::from(island.media.height()) / 2.0,
-                    gtk::PickFlags::DEFAULT,
-                )
-                .is_some()
+            (media_y_after_update - media_y_before).abs() <= 2.0,
+            "media y moved after allocated, settled media update: before={media_y_before} after={media_y_after_update}; media={media_before:?}->{media_after:?}; fixed={fixed_before:?}->{fixed_after:?}; surface={surface_before:?}->{surface_after:?}; geometry={geometry_before:?}->{geometry_after:?}; active={}",
+            island.view_transition_active.get()
         );
+        assert!(island.media.is_visible() && island.media.can_target());
         island.update_media(None);
         let mut media_close_samples = 0;
         for _ in 0..5 {
@@ -568,7 +735,7 @@ mod tests {
             if island.view_transition_active.get() {
                 media_close_samples += 1;
                 let geometry = island.geometry.get();
-                let surface_bounds = island.surface.compute_bounds(&island.fixed).unwrap();
+                let surface_bounds = island.surface_shell.compute_bounds(&island.fixed).unwrap();
                 let root_bounds = island.compact.compute_bounds(&island.fixed).unwrap();
                 let local_y = f64::from(root_bounds.y());
                 let expected = f64::from(surface_bounds.y());
@@ -620,7 +787,7 @@ mod tests {
             if island.view_transition_active.get() {
                 close_samples += 1;
                 let geometry = island.geometry.get();
-                let surface_bounds = island.surface.compute_bounds(&island.fixed).unwrap();
+                let surface_bounds = island.surface_shell.compute_bounds(&island.fixed).unwrap();
                 let root_bounds = island.compact.compute_bounds(&island.fixed).unwrap();
                 let local_y = f64::from(root_bounds.y());
                 let expected = f64::from(surface_bounds.y());

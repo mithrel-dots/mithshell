@@ -28,10 +28,9 @@ available, media metadata still works and the visualizer remains at rest.
 wallpaper it blurs. Without it the lock still works and falls back to a solid
 black backdrop.
 
-`brightnessctl` is optional. The example Hyprland keybinds use it, and the
-dashboard also probes for it: without the binary the brightness control stays
-hidden entirely, while with it the level is read from and written to
-`/sys/class/backlight` directly.
+`brightnessctl` is optional. The example Hyprland keybinds use it. When it is
+available, the daemon reads `/sys/class/backlight` for brightness state and OSD
+feedback.
 
 [TarraGon](https://github.com/iMithrellas/tarragon) is optional. When its user
 service is running, Mithshell exposes its configured search plugins through an
@@ -231,11 +230,15 @@ surface with the island still present) or `"integrated"` (a launcher replacing t
 island, emerging from it and merging back when closed).
 
 The production GTK integration path is covered by the project-local Broadway
-test runner (`scripts/run-circle-integration-gtk.py`), including page commits,
+test runner (`scripts/run-ui-regressions-gtk.py`), including page commits,
 snapshot invalidation, media selection, notification inhibition, and legacy
 visibility. Broadway does not implement the compositor's layer-shell protocol;
 final monitor placement, shell input-region forwarding, and multi-monitor
 compositor behavior still require a real compositor session.
+
+Run the complete GTK suite with `python3 scripts/run-ui-regressions-gtk.py`.
+To run selected regressions, pass their fully qualified Rust test names as
+arguments. The runner requires `gtk4-broadwayd` and `chromium`.
 
 ### Automatic OSD and media
 

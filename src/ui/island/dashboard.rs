@@ -1,6 +1,5 @@
-//! The expanded dashboard: a compact header band, the output/workspace
-//! strip, the player panel, thin system control rows, and the notification
-//! history panel that takes whatever vertical space is left over.
+//! The expanded dashboard: system statistics, output/workspace, volume, and
+//! notification history.
 
 use super::*;
 
@@ -13,60 +12,274 @@ use crate::state::{HyprlandSnapshot, SystemSnapshot};
 
 pub(super) struct DashboardWidgets {
     pub(super) root: gtk::Box,
-    pub(super) hero_time: gtk::Label,
-    pub(super) hero_date: gtk::Label,
-    pub(super) battery_chip: gtk::Box,
-    pub(super) battery_icon: gtk::Widget,
-    pub(super) battery_label: gtk::Label,
-    pub(super) player_card: gtk::Box,
-    pub(super) player_icon: gtk::Image,
-    pub(super) player_title: gtk::Label,
-    pub(super) player_artist: gtk::Label,
-    pub(super) player_progress: gtk::ProgressBar,
-    pub(super) player_elapsed_label: gtk::Label,
-    pub(super) player_duration_label: gtk::Label,
-    pub(super) player_prev_button: gtk::Button,
-    pub(super) player_play_pause_button: gtk::Button,
-    pub(super) player_next_button: gtk::Button,
-    pub(super) player_switch_row: gtk::Box,
-    pub(super) player_switch_label: gtk::Label,
-    pub(super) player_switch_prev: gtk::Button,
-    pub(super) player_switch_next: gtk::Button,
+    pub(super) sections: Vec<DashboardSection>,
+    pub(super) hardware: HardwarePanel,
     pub(super) active_eyebrow: gtk::Label,
     pub(super) active_title: gtk::Label,
-    pub(super) status_card: gtk::Box,
     pub(super) workspace_row: gtk::FlowBox,
-    pub(super) controls_stack: gtk::Box,
     pub(super) volume_scale: gtk::Scale,
     pub(super) volume_value: gtk::Label,
-    pub(super) brightness_row: gtk::Box,
-    pub(super) brightness_scale: gtk::Scale,
-    pub(super) brightness_value: gtk::Label,
     pub(super) notification_count: gtk::Label,
     pub(super) notification_inhibit_remaining: gtk::Label,
     pub(super) notification_clear_button: gtk::Button,
     pub(super) notification_inhibit_button: gtk::ToggleButton,
-    pub(super) notification_expand_button: gtk::ToggleButton,
     pub(super) notification_list: gtk::Box,
     pub(super) weather_button: gtk::Button,
     pub(super) search_button: gtk::Button,
     pub(super) close_button: gtk::Button,
+    pub(super) mute_button: gtk::Button,
+}
+
+pub(super) struct DashboardSection {
+    pub(super) viewport: gtk::ScrolledWindow,
+    pub(super) content: gtk::Box,
+    pub(super) trailing_gap: bool,
+}
+
+fn dashboard_section(root: &gtk::Box, content: &gtk::Box, trailing_gap: bool) -> DashboardSection {
+    let viewport = gtk::ScrolledWindow::new();
+    viewport.add_css_class("island-dashboard-section");
+    viewport.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+    viewport.set_has_frame(false);
+    viewport.set_overflow(gtk::Overflow::Hidden);
+    viewport.set_valign(Align::Start);
+    viewport.set_child(Some(content));
+    viewport.set_visible(false);
+    root.append(&viewport);
+    DashboardSection {
+        viewport,
+        content: content.clone(),
+        trailing_gap,
+    }
+}
+
+pub(super) struct HardwarePanel {
+    pub(super) root: gtk::Box,
+    pub(super) cpu: gtk::Label,
+    pub(super) temperature: gtk::Label,
+    pub(super) memory: gtk::Label,
+    pub(super) memory_total: gtk::Label,
+    pub(super) receive: gtk::Label,
+    pub(super) transmit: gtk::Label,
+    pub(super) cpu_progress: gtk::ProgressBar,
+    pub(super) memory_progress: gtk::ProgressBar,
+}
+
+impl HardwarePanel {
+    pub(super) fn update(&self, hardware: &crate::state::HardwareSnapshot) {
+        self.cpu.set_label(
+            &hardware
+                .cpu_percent
+                .map_or_else(|| "--%".to_owned(), |value| format!("{value:.0}%")),
+        );
+        self.temperature.set_label(
+            &hardware
+                .cpu_temperature_celsius
+                .map_or_else(|| "--°C".to_owned(), |value| format!("{value:.0}°C")),
+        );
+        self.cpu_progress
+            .set_fraction(hardware.cpu_percent.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0);
+        match (hardware.memory_used_bytes, hardware.memory_total_bytes) {
+            (Some(used), Some(total)) if total > 0 => {
+                self.memory.set_label(&format_gib(used));
+                self.memory_total
+                    .set_label(&format!("/ {} GiB", format_gib(total)));
+                self.memory_progress
+                    .set_fraction((used as f64 / total as f64).clamp(0.0, 1.0));
+            }
+            _ => {
+                self.memory.set_label("-- GiB");
+                self.memory_total.set_label("/ -- GiB");
+                self.memory_progress.set_fraction(0.0);
+            }
+        }
+        self.receive
+            .set_label(&format_rate(hardware.network_receive_bytes_per_second));
+        self.transmit
+            .set_label(&format_rate(hardware.network_transmit_bytes_per_second));
+    }
+}
+
+fn format_gib(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1_073_741_824.0)
+}
+
+pub(super) fn hardware_panel(metrics: Metrics) -> HardwarePanel {
+    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
+    root.add_css_class("hardware-panel");
+    let stats = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    stats.set_homogeneous(true);
+    stats.add_css_class("hardware-stats");
+    let cpu_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(7));
+    cpu_card.add_css_class("hardware-stat");
+    cpu_card.set_hexpand(true);
+    let ram_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(7));
+    ram_card.add_css_class("hardware-stat");
+    ram_card.set_hexpand(true);
+
+    let cpu_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    let cpu_icon = hardware_icon("cpu");
+    let cpu_name = hardware_name("CPU");
+    let cpu = hardware_value("--%");
+    let temperature = hardware_secondary("--°C");
+    cpu_row.append(&cpu_icon);
+    let cpu_text = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
+    cpu_name.set_xalign(0.0);
+    cpu_text.append(&cpu_name);
+    let cpu_values = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
+    cpu_values.append(&cpu);
+    cpu_values.append(&gtk::Separator::new(Orientation::Vertical));
+    cpu_values.append(&temperature);
+    cpu_text.append(&cpu_values);
+    cpu_row.append(&cpu_text);
+    let cpu_progress = hardware_progress();
+    cpu_card.append(&cpu_row);
+    cpu_card.append(&cpu_progress);
+
+    let ram_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    let ram_icon = hardware_icon("ram");
+    let ram_name = hardware_name("RAM");
+    let memory = hardware_value("-- GiB");
+    let memory_total = hardware_secondary("/ -- GiB");
+    ram_row.append(&ram_icon);
+    let ram_text = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
+    ram_name.set_xalign(0.0);
+    ram_text.append(&ram_name);
+    let ram_values = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
+    ram_values.append(&memory);
+    ram_values.append(&memory_total);
+    ram_text.append(&ram_values);
+    ram_row.append(&ram_text);
+    let memory_progress = hardware_progress();
+    ram_card.append(&ram_row);
+    ram_card.append(&memory_progress);
+    stats.append(&cpu_card);
+    stats.append(&ram_card);
+
+    let network = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
+    network.add_css_class("hardware-network");
+    let net_name = hardware_name("NET");
+    net_name.set_hexpand(true);
+    let receive = hardware_value("--/s");
+    let transmit = hardware_value("--/s");
+    let down = gtk::Box::new(Orientation::Horizontal, metrics.spacing(5));
+    down.set_hexpand(true);
+    down.set_halign(Align::Center);
+    down.add_css_class("hardware-rate");
+    down.append(&hardware_icon("↓"));
+    down.append(&receive);
+    let up = gtk::Box::new(Orientation::Horizontal, metrics.spacing(5));
+    up.set_hexpand(true);
+    up.set_halign(Align::Center);
+    up.add_css_class("hardware-rate");
+    up.append(&hardware_icon("↑"));
+    up.append(&transmit);
+    network.append(&hardware_icon("⇅"));
+    network.append(&net_name);
+    network.append(&gtk::Separator::new(Orientation::Vertical));
+    network.append(&down);
+    network.append(&gtk::Separator::new(Orientation::Vertical));
+    network.append(&up);
+    root.append(&stats);
+    root.append(&network);
+    HardwarePanel {
+        root,
+        cpu,
+        temperature,
+        memory,
+        memory_total,
+        receive,
+        transmit,
+        cpu_progress,
+        memory_progress,
+    }
+}
+
+fn hardware_icon(kind: &str) -> gtk::Widget {
+    if !matches!(kind, "cpu" | "ram") {
+        let label = gtk::Label::new(Some(kind));
+        label.add_css_class("hardware-icon");
+        return label.upcast();
+    }
+    let cpu = kind == "cpu";
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("hardware-icon");
+    area.set_content_width(28);
+    area.set_content_height(28);
+    area.set_valign(Align::Center);
+    area.set_draw_func(move |area, cr, w, h| {
+        cr.scale(f64::from(w) / 24.0, f64::from(h) / 24.0);
+        let color = area.color();
+        cr.set_source_rgba(
+            color.red().into(),
+            color.green().into(),
+            color.blue().into(),
+            1.0,
+        );
+        cr.set_line_width(1.6);
+        if cpu {
+            cr.rectangle(6.0, 6.0, 12.0, 12.0);
+            cr.rectangle(9.0, 9.0, 6.0, 6.0);
+            for p in [9.0, 12.0, 15.0] {
+                for (x1, y1, x2, y2) in [
+                    (p, 2.0, p, 6.0),
+                    (p, 18.0, p, 22.0),
+                    (2.0, p, 6.0, p),
+                    (18.0, p, 22.0, p),
+                ] {
+                    cr.move_to(x1, y1);
+                    cr.line_to(x2, y2);
+                }
+            }
+        } else {
+            cr.rectangle(2.0, 7.0, 20.0, 10.0);
+            for x in [6.0, 10.0, 14.0, 18.0] {
+                cr.move_to(x, 9.0);
+                cr.line_to(x, 12.0);
+                cr.move_to(x, 15.0);
+                cr.line_to(x, 19.0);
+            }
+        }
+        let _ = cr.stroke();
+    });
+    area.upcast()
+}
+
+fn hardware_name(name: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(name));
+    label.add_css_class("hardware-name");
+    label
+}
+
+fn hardware_value(value: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(value));
+    label.add_css_class("hardware-value");
+    label
+}
+
+fn hardware_secondary(value: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(value));
+    label.add_css_class("hardware-secondary");
+    label
+}
+
+fn hardware_progress() -> gtk::ProgressBar {
+    let progress = gtk::ProgressBar::new();
+    progress.add_css_class("hardware-progress");
+    progress
 }
 
 pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
-    let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
-    root.set_size_request(metrics.dashboard_width, metrics.dashboard_height);
+    // Section gaps roll away with their clipped content, rather than remaining
+    // fixed until a disappearing child is abruptly removed from the box.
+    let root = gtk::Box::new(Orientation::Vertical, 0);
+    root.set_size_request(-1, -1);
     root.add_css_class("dashboard-content");
     root.set_valign(Align::Start);
 
-    // The clock leads the header band and the identity/date pair stacks
-    // beside it rather than under it, so the window controls share one row
-    // with the time instead of facing an empty gap across the panel.
+    // The identity label fills the header beside its navigation controls.
     let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
-    let time = gtk::Label::new(Some("--:--"));
-    time.add_css_class("hero-time");
-    time.set_halign(Align::Start);
-    time.set_valign(Align::Center);
+    header.add_css_class("island-drop-header");
     let heading = gtk::Box::new(Orientation::Vertical, 0);
     heading.set_hexpand(true);
     heading.set_valign(Align::Center);
@@ -78,28 +291,7 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     eyebrow.add_css_class("eyebrow");
     eyebrow.set_ellipsize(gtk::pango::EllipsizeMode::End);
     eyebrow.set_xalign(0.0);
-    let date = gtk::Label::new(None);
-    date.add_css_class("hero-date");
-    date.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    date.set_xalign(0.0);
     heading.append(&eyebrow);
-    heading.append(&date);
-
-    let battery_chip = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
-    battery_chip.add_css_class("battery-chip");
-    battery_chip.set_valign(Align::Center);
-    battery_chip.set_visible(false);
-    let battery_icon = icon::icon_widget(
-        Icon::Battery {
-            percent: 100,
-            charging: false,
-        },
-        metrics.icons,
-    );
-    battery_icon.add_css_class("battery-icon");
-    battery_chip.append(&battery_icon);
-    let battery_label = gtk::Label::new(None);
-    battery_chip.append(&battery_label);
 
     let close_button = icon::icon_button(Icon::Close, metrics.icons);
     close_button.add_css_class("close-button");
@@ -112,13 +304,14 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     weather_button.add_css_class("close-button");
     weather_button.set_tooltip_text(Some("Weather forecast"));
     weather_button.set_valign(Align::Center);
-    header.append(&time);
     header.append(&heading);
-    header.append(&battery_chip);
     header.append(&weather_button);
     header.append(&search_button);
     header.append(&close_button);
-    root.append(&header);
+    let header_section = dashboard_section(&root, &header, true);
+
+    let hardware = hardware_panel(metrics);
+    root.append(&hardware.root);
 
     // Output identity and the workspace grid share a single panel. The grid
     // asks for exactly the width its buttons need and the window title
@@ -162,114 +355,32 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
 
     status_card.append(&active_column);
     status_card.append(&workspace_row);
-    root.append(&status_card);
+    let status_section = dashboard_section(&root, &status_card, true);
 
-    let player_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(6));
-    player_card.add_css_class("player-card");
-    player_card.add_css_class("unavailable");
-
-    let player_top = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
-    let player_icon = gtk::Image::new();
-    player_icon.add_css_class("player-icon");
-    player_icon.set_valign(Align::Center);
-    player_icon.set_visible(false);
-
-    let player_text = gtk::Box::new(Orientation::Vertical, 0);
-    player_text.set_hexpand(true);
-    player_text.set_valign(Align::Center);
-    // Same bounded-natural-width treatment as the status strip, so a long
-    // track title ellipsizes inside the panel instead of shoving the
-    // transport buttons off the edge of the surface.
-    let player_title = gtk::Label::new(Some("Nothing playing"));
-    player_title.add_css_class("player-title");
-    player_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    player_title.set_xalign(0.0);
-    player_title.set_max_width_chars(18);
-    let player_artist = gtk::Label::new(None);
-    player_artist.add_css_class("player-artist");
-    player_artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    player_artist.set_xalign(0.0);
-    player_artist.set_max_width_chars(18);
-    player_artist.set_visible(false);
-    player_text.append(&player_title);
-    player_text.append(&player_artist);
-
-    let player_prev_button = icon::icon_button(Icon::Previous, metrics.icons);
-    player_prev_button.add_css_class("player-button");
-    player_prev_button.set_tooltip_text(Some("Previous track"));
-    player_prev_button.set_valign(Align::Center);
-    player_prev_button.set_sensitive(false);
-    let player_play_pause_button = icon::icon_button(Icon::Pause, metrics.icons);
-    player_play_pause_button.add_css_class("player-button");
-    player_play_pause_button.add_css_class("player-play");
-    player_play_pause_button.set_tooltip_text(Some("Play/Pause"));
-    player_play_pause_button.set_valign(Align::Center);
-    player_play_pause_button.set_sensitive(false);
-    let player_next_button = icon::icon_button(Icon::Next, metrics.icons);
-    player_next_button.add_css_class("player-button");
-    player_next_button.set_tooltip_text(Some("Next track"));
-    player_next_button.set_valign(Align::Center);
-    player_next_button.set_sensitive(false);
-
-    player_top.append(&player_icon);
-    player_top.append(&player_text);
-    player_top.append(&player_prev_button);
-    player_top.append(&player_play_pause_button);
-    player_top.append(&player_next_button);
-    player_card.append(&player_top);
-
-    // Elapsed/remaining sit on the progress line instead of below it, which
-    // drops a whole row from the panel and reads as one scrubber.
-    let player_time_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
-    let player_elapsed_label = gtk::Label::new(Some("--:--"));
-    player_elapsed_label.add_css_class("player-time");
-    player_elapsed_label.set_halign(Align::Start);
-    player_elapsed_label.set_valign(Align::Center);
-    let player_progress = gtk::ProgressBar::new();
-    player_progress.set_hexpand(true);
-    player_progress.set_valign(Align::Center);
-    player_progress.add_css_class("player-progress");
-    let player_duration_label = gtk::Label::new(Some("--:--"));
-    player_duration_label.add_css_class("player-time");
-    player_duration_label.set_halign(Align::End);
-    player_duration_label.set_valign(Align::Center);
-    player_time_row.append(&player_elapsed_label);
-    player_time_row.append(&player_progress);
-    player_time_row.append(&player_duration_label);
-    player_card.append(&player_time_row);
-    let player_switch_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
-    player_switch_row.add_css_class("player-switch-row");
-    let player_switch_prev = icon::icon_button(Icon::Back, metrics.icons);
-    player_switch_prev.add_css_class("player-switch-button");
-    let player_switch_label = gtk::Label::new(Some("1 player"));
-    player_switch_label.add_css_class("player-switch-label");
-    player_switch_label.set_hexpand(true);
-    player_switch_label.set_xalign(0.5);
-    let player_switch_next = icon::icon_button(Icon::Forward, metrics.icons);
-    player_switch_next.add_css_class("player-switch-button");
-    player_switch_row.append(&player_switch_prev);
-    player_switch_row.append(&player_switch_label);
-    player_switch_row.append(&player_switch_next);
-    player_card.append(&player_switch_row);
-    root.append(&player_card);
-
-    // Volume and brightness are single sliders: they ride directly on the
-    // dashboard as thin rows instead of inside a panel that would give them
-    // the same weight as the content above and below.
+    // Volume rides directly on the dashboard as a thin row.
     let controls_stack = gtk::Box::new(Orientation::Vertical, 0);
     controls_stack.add_css_class("control-stack");
-    let (volume_row, volume_scale, volume_value) = control_row(Icon::VolumeHigh, "Volume", metrics);
-    let (brightness_row, brightness_scale, brightness_value) =
-        control_row(Icon::Brightness, "Brightness", metrics);
+    let volume_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    volume_row.add_css_class("control-row");
+    let mute_button = icon::icon_button(Icon::VolumeHigh, metrics.icons);
+    mute_button.add_css_class("close-button");
+    mute_button.set_tooltip_text(Some("Mute or unmute audio"));
+    let volume_scale = gtk::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
+    volume_scale.set_draw_value(false);
+    volume_scale.set_hexpand(true);
+    volume_scale.add_css_class("control-scale");
+    let volume_value = gtk::Label::new(Some("--"));
+    volume_value.add_css_class("control-value");
+    volume_row.append(&mute_button);
+    volume_row.append(&volume_scale);
+    volume_row.append(&volume_value);
     controls_stack.append(&volume_row);
-    controls_stack.append(&brightness_row);
-    root.append(&controls_stack);
+    let controls_section = dashboard_section(&root, &controls_stack, true);
 
     // The densest section, and the only one that grows: it absorbs whatever
     // the fixed-height dashboard has left after the rows above.
     let notification_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(6));
     notification_card.add_css_class("notification-card");
-    notification_card.set_vexpand(true);
 
     let notification_header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(6));
     let notification_title = gtk::Label::new(Some("NOTIFICATIONS"));
@@ -291,141 +402,54 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     icon::set_button_icon(&notification_inhibit_button, Icon::BellOff, metrics.icons);
     notification_inhibit_button.add_css_class("close-button");
     notification_inhibit_button.set_tooltip_text(Some("Inhibit notifications"));
-    // Flips the dashboard into a notifications-only layout: the status
-    // strip, player, and sliders hide and the history takes their place.
-    let notification_expand_button = gtk::ToggleButton::new();
-    icon::set_button_icon(&notification_expand_button, Icon::Expand, metrics.icons);
-    notification_expand_button.add_css_class("close-button");
-    notification_expand_button.set_tooltip_text(Some("Notifications only"));
     notification_header.append(&notification_title);
     notification_header.append(&notification_clear_button);
     notification_header.append(&notification_inhibit_remaining);
     notification_header.append(&notification_inhibit_button);
-    notification_header.append(&notification_expand_button);
     notification_header.append(&notification_count);
     notification_card.append(&notification_header);
 
     let notification_list = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
     notification_list.add_css_class("notification-list");
-    notification_list.set_vexpand(true);
+    notification_list.set_vexpand(false);
     // Replaced by `update_notification_history` as soon as the controller
     // pushes its first (possibly empty) history snapshot.
-    let notification_placeholder = gtk::Label::new(Some("No notifications yet"));
+    let notification_placeholder = gtk::Label::new(Some("All caught up"));
     notification_placeholder.add_css_class("muted-label");
     notification_placeholder.add_css_class("notification-empty");
-    notification_placeholder.set_halign(Align::Start);
+    notification_placeholder.set_halign(Align::Center);
     notification_placeholder.set_wrap(true);
     notification_list.append(&notification_placeholder);
-    let notification_scroll = gtk::ScrolledWindow::new();
-    notification_scroll.add_css_class("notification-history-scroll");
-    notification_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    notification_scroll.set_has_frame(false);
-    notification_scroll.set_propagate_natural_height(false);
-    notification_scroll.set_vexpand(true);
-    notification_scroll.set_child(Some(&notification_list));
-    notification_card.append(&notification_scroll);
-    root.append(&notification_card);
+    notification_card.append(&notification_list);
+    let notification_section = dashboard_section(&root, &notification_card, false);
 
     DashboardWidgets {
         root,
-        hero_time: time,
-        hero_date: date,
-        battery_chip,
-        battery_icon,
-        battery_label,
-        player_card,
-        player_icon,
-        player_title,
-        player_artist,
-        player_progress,
-        player_elapsed_label,
-        player_duration_label,
-        player_prev_button,
-        player_play_pause_button,
-        player_next_button,
-        player_switch_row,
-        player_switch_label,
-        player_switch_prev,
-        player_switch_next,
+        sections: vec![
+            header_section,
+            status_section,
+            controls_section,
+            notification_section,
+        ],
+        hardware,
         active_eyebrow,
         active_title,
-        status_card,
         workspace_row,
-        controls_stack,
         volume_scale,
         volume_value,
-        brightness_row,
-        brightness_scale,
-        brightness_value,
         notification_count,
         notification_inhibit_remaining,
         notification_clear_button,
         notification_inhibit_button,
-        notification_expand_button,
         notification_list,
         weather_button,
         search_button,
         close_button,
-    }
-}
-
-fn control_row(icon: Icon, label: &str, metrics: Metrics) -> (gtk::Box, gtk::Scale, gtk::Label) {
-    let row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
-    row.add_css_class("control-row");
-    let image = icon::icon_widget(icon, metrics.icons);
-    image.add_css_class("control-icon");
-    image.set_tooltip_text(Some(label));
-    let scale = gtk::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-    scale.set_draw_value(false);
-    scale.set_hexpand(true);
-    scale.add_css_class("control-scale");
-    let value = gtk::Label::new(Some("--"));
-    value.add_css_class("control-value");
-    value.set_xalign(1.0);
-    row.append(&image);
-    row.append(&scale);
-    row.append(&value);
-    (row, scale, value)
-}
-
-/// The battery icon for a charge level and upower status string.
-pub(super) fn battery_icon(percent: u8, status: &str) -> Icon {
-    Icon::Battery {
-        percent: percent.min(100),
-        charging: status.eq_ignore_ascii_case("charging"),
+        mute_button,
     }
 }
 
 impl IslandWindow {
-    /// Gives notification history the dashboard's content area while
-    /// keeping the header and its window controls available.
-    pub(super) fn apply_notification_takeover(&self) {
-        let expanded = self.notifications_expanded.get();
-        self.status_card.set_visible(!expanded);
-        let media_in_circle = self
-            .circles
-            .borrow()
-            .as_ref()
-            .is_some_and(|circles| circles.owns(crate::config::CircleModule::Media));
-        self.player_card.set_visible(!expanded && !media_in_circle);
-        self.controls_stack.set_visible(!expanded);
-        icon::set_button_icon(
-            &self.notification_expand_button,
-            if expanded {
-                Icon::Restore
-            } else {
-                Icon::Expand
-            },
-            self.metrics.icons,
-        );
-        self.notification_expand_button
-            .set_tooltip_text(Some(if expanded {
-                "Show all panels"
-            } else {
-                "Notifications only"
-            }));
-    }
-
     pub fn update_hyprland(self: &Rc<Self>, snapshot: &HyprlandSnapshot) {
         *self.latest_hyprland.borrow_mut() = snapshot.clone();
         self.reconcile_notification_toasts();
@@ -493,7 +517,15 @@ impl IslandWindow {
         self.workspace_row.set_min_children_per_line(per_line);
         self.workspace_row.set_max_children_per_line(per_line);
 
-        for workspace in workspaces.into_iter().take(10) {
+        for (index, workspace) in workspaces.into_iter().take(10).enumerate() {
+            if index == 5 && shown == 9 {
+                let spacer = gtk::Button::new();
+                spacer.add_css_class("workspace-button");
+                spacer.set_opacity(0.0);
+                spacer.set_can_target(false);
+                spacer.set_focusable(false);
+                self.workspace_row.insert(&spacer, -1);
+            }
             let button = gtk::Button::with_label(&workspace.name);
             button.add_css_class("workspace-button");
             if workspace.windows > 0 {
@@ -515,51 +547,57 @@ impl IslandWindow {
 
     pub fn update_system(self: &Rc<Self>, snapshot: &SystemSnapshot) {
         self.updating_controls.set(true);
+        let hardware = &snapshot.hardware;
+        self.hardware.update(hardware);
         if let Some(audio) = snapshot.audio {
             self.volume_scale.set_value(f64::from(audio.percent));
-            self.volume_value.set_label(&format!("{}%", audio.percent));
+            self.volume_value.set_label(&if audio.muted {
+                "Muted".into()
+            } else {
+                format!("{}%", audio.percent)
+            });
+            icon::set_button_icon(
+                &self.mute_button,
+                if audio.muted {
+                    Icon::VolumeMuted
+                } else {
+                    Icon::VolumeHigh
+                },
+                self.metrics.icons,
+            );
+            self.mute_button.set_tooltip_text(Some(if audio.muted {
+                "Unmute audio"
+            } else {
+                "Mute audio"
+            }));
+            self.mute_button.set_sensitive(true);
             self.volume_scale.set_sensitive(true);
         } else {
             self.volume_value.set_label("--");
+            self.mute_button.set_sensitive(false);
             self.volume_scale.set_sensitive(false);
         }
 
-        if let Some(brightness) = &snapshot.brightness {
-            self.brightness_scale
-                .set_value(f64::from(brightness.percent));
-            self.brightness_value
-                .set_label(&format!("{}%", brightness.percent));
-            self.brightness_row.set_visible(true);
-            self.brightness_row.remove_css_class("unavailable");
-            self.brightness_scale.set_sensitive(true);
-        } else {
-            self.brightness_value.set_label("--");
-            self.brightness_row.set_visible(false);
-            self.brightness_scale.set_sensitive(false);
-        }
-
         if let Some(battery) = &snapshot.battery {
-            // let battery = crate::state::BatteryState {
-            //     percent: 25,
-            //     ..battery.clone()
-            // }; // TEST OVERRIDE
-            //
-            let icon = battery_icon(battery.percent, &battery.status);
-            icon::set_icon(&self.battery_icon, icon, self.metrics.icons);
-            self.battery_label
-                .set_label(&format!("{}%", battery.percent));
             self.compact_battery
                 .set_label(&format!("{}%", battery.percent));
-            self.battery_chip.set_visible(true);
             self.compact_battery.set_visible(true);
             self.update_battery_wave(Some(battery.percent));
         } else {
-            self.battery_chip.set_visible(false);
             self.compact_battery.set_visible(false);
             self.update_battery_wave(None);
         }
         self.updating_controls.set(false);
         self.resize_compact();
         self.reconcile_pill_geometry();
+    }
+}
+
+fn format_rate(rate: Option<f64>) -> String {
+    match rate {
+        Some(rate) if rate >= 1_048_576.0 => format!("{:.1} MiB/s", rate / 1_048_576.0),
+        Some(rate) if rate >= 1024.0 => format!("{:.0} KiB/s", rate / 1024.0),
+        Some(rate) => format!("{rate:.0} B/s"),
+        None => "--".to_owned(),
     }
 }

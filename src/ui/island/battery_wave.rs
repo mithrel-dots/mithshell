@@ -10,6 +10,8 @@ use crate::config::{BatteryConfig, BatteryOrientation};
 
 pub(super) struct BatteryWaves {
     pub(super) area: gtk::DrawingArea,
+    #[cfg(test)]
+    pub(super) header_height: i32,
     percent: Rc<Cell<u8>>,
     present: Cell<bool>,
     phase: Rc<Cell<f64>>,
@@ -20,11 +22,18 @@ pub(super) struct BatteryWaves {
 }
 
 impl BatteryWaves {
-    pub(super) fn new(config: BatteryConfig, animations_enabled: bool, animation_ms: u32) -> Self {
+    pub(super) fn new(
+        config: BatteryConfig,
+        animations_enabled: bool,
+        animation_ms: u32,
+        header_height: i32,
+    ) -> Self {
         let percent = Rc::new(Cell::new(0));
         let phase = Rc::new(Cell::new(0.0));
         Self {
-            area: wave_widget(config, percent.clone(), phase.clone()),
+            area: wave_widget(config, percent.clone(), phase.clone(), header_height),
+            #[cfg(test)]
+            header_height,
             percent,
             present: Cell::new(false),
             phase,
@@ -112,6 +121,7 @@ fn wave_widget(
     config: BatteryConfig,
     percent: Rc<Cell<u8>>,
     phase: Rc<Cell<f64>>,
+    header_height: i32,
 ) -> gtk::DrawingArea {
     let wave = gtk::DrawingArea::new();
     wave.add_css_class("compact-battery-wave");
@@ -125,9 +135,23 @@ fn wave_widget(
     wave.set_opacity(0.0);
     wave.set_draw_func(move |area, context, width, height| {
         let accent = area.color();
+        let in_header = area
+            .parent()
+            .is_some_and(|parent| parent.has_css_class("compact-pill"));
+        let height = f64::from(
+            if in_header {
+                height
+            } else {
+                height.min(header_height)
+            }
+            .max(0),
+        );
+        let _ = context.save();
+        context.rectangle(0.0, 0.0, f64::from(width), height);
+        context.clip();
         let _ = draw_battery_wave(
             context,
-            (f64::from(width), f64::from(height)),
+            (f64::from(width), height),
             percent.get(),
             phase.get(),
             config,
@@ -137,6 +161,7 @@ fn wave_widget(
                 f64::from(accent.blue()),
             ),
         );
+        let _ = context.restore();
     });
     wave
 }
@@ -303,9 +328,9 @@ mod tests {
                         tint,
                         orientation,
                     };
-                    let waves = BatteryWaves::new(config, true, 0);
                     let metrics = Metrics::new(&monitor, scale, 1.5, IconStyle::default());
-                    let (compact, _, _, _, _) = compact_view(metrics);
+                    let waves = BatteryWaves::new(config, true, 0, metrics.compact_height);
+                    let (compact, _, _, _, _, _, _, _) = compact_view(metrics);
                     let media = media_view(metrics);
                     let shell = gtk::Overlay::new();
                     shell.set_size_request(metrics.media_max_width, metrics.media_height);
@@ -404,6 +429,7 @@ mod tests {
                 },
                 flag,
                 duration,
+                32,
             );
             static_waves.update(Some(50));
             assert!(static_waves.tick.borrow().is_none());
@@ -415,6 +441,7 @@ mod tests {
             },
             true,
             280,
+            32,
         );
         for percent in [None, Some(0), Some(50), Some(100)] {
             disabled.update(percent);

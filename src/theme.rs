@@ -135,11 +135,13 @@ fn generate_gtk_from_file(mode: ThemeMode) -> Option<Palette> {
     }))
 }
 
+/// Reads the current theme's palette from a live `StyleContext`.
+///
 /// `StyleContext::lookup_color` has been deprecated since GTK 4.10 with no
 /// direct replacement for resolving a named color to RGBA outside of a
-/// stylesheet; it remains the only way to read the current theme's palette
-/// when there's no `gtk.css` to parse directly, and continues to function
-/// correctly.
+/// stylesheet; it remains the only way to do this when there's no `gtk.css` to
+/// parse directly, and continues to function correctly. `ui::island::weather`
+/// relies on the same call.
 #[allow(deprecated)]
 fn generate_gtk_from_style_context(mode: ThemeMode) -> Palette {
     let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);

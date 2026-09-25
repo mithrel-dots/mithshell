@@ -343,10 +343,10 @@ impl CircleIntegration {
             .map(|(index, slot)| {
                 slot.as_ref().and_then(|slot| {
                     let mut spec = slot.spec;
-                    if slot.module == CircleModule::Tray {
-                        if let Some(tray) = &self.tray {
-                            spec.hover.width = tray.expanded_width();
-                        }
+                    if slot.module == CircleModule::Tray
+                        && let Some(tray) = &self.tray
+                    {
+                        spec.hover.width = tray.expanded_width();
                     }
                     let mode = slot.host.mode();
                     if mode == circle::Mode::Absent {
@@ -573,9 +573,12 @@ impl IslandWindow {
         let geometry = self.geometry.get();
         Rect {
             x: (f64::from(self.metrics.window_width) - geometry.width) / 2.0,
-            y: geometry.y,
+            // The pill translates/scales visually in its own surface, but
+            // side modules remain level with the resting bar and only follow
+            // its changing horizontal footprint.
+            y: 0.0,
             width: geometry.width,
-            height: geometry.height,
+            height: f64::from(self.metrics.compact_height),
         }
     }
 

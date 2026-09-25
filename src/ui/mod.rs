@@ -1,8 +1,6 @@
 pub(crate) mod icon;
 mod island;
 mod lock;
-// Staged motion contract; remove this allowance when call sites are integrated.
-#[allow(dead_code)]
 pub(crate) mod motion;
 
 use std::{fs, path::Path};
@@ -61,7 +59,12 @@ const BASE_CSS: &str = include_str!("style.css");
 /// The palette, the glyph font rule, and the baked stylesheet, in the order
 /// `style.css` expects to be able to override them.
 fn stylesheet(palette: &Palette) -> String {
-    format!("{}\n{}\n{BASE_CSS}", palette.css(), icon::glyph_font_css())
+    format!(
+        "{}\n{}\n{BASE_CSS}\n{}",
+        palette.css(),
+        icon::glyph_font_css(),
+        include_str!("island.css")
+    )
 }
 
 pub fn install_styles(palette: &Palette) -> CssProvider {

@@ -908,14 +908,13 @@ impl IslandWindow {
         let animate = !profile.duration.is_zero();
         let target = self.search_target_geometry();
         if integrated {
-            // The launcher owns the real island surface in this mode.  The
-            // fixed-size layer canvas is retained; only its clipped child is
-            // replaced, avoiding the stale opaque rectangles caused by layer
-            // window resizing in the original implementation.
-            // `ensure_integrated_search_host` already mounted search in the
-            // shared Fixed. Reparenting it again during allocation triggers
-            // gtk_widget_insert_after criticals and can invalidate a later
-            // callback; the surface remains parented to content.
+            // The launcher owns the real island surface in this mode, so the
+            // fixed-size layer canvas is retained and only its clipped child is
+            // replaced; resizing the layer window would leave stale opaque
+            // rectangles behind. `ensure_integrated_search_host` already mounted
+            // search in the shared Fixed, and reparenting it again during
+            // allocation triggers gtk_widget_insert_after criticals that can
+            // invalidate a later callback.
             self.search_window.set_visible(false);
         }
         self.search.set_opacity(if animate { 0.0 } else { 1.0 });
@@ -1305,7 +1304,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires an isolated GTK display; run with run-island-presentation-gtk.py"]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
     fn integrated_search_host_is_idempotent_on_real_widgets() {
         gtk::init().expect("GTK display");
         let search_surface = gtk::ScrolledWindow::new();
@@ -1332,7 +1331,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an isolated GTK display; run scripts/run-island-presentation-gtk.py"]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
     fn integrated_return_focus_guard_handles_reparent_and_stale_close() {
         gtk::init().expect("GTK display");
         let window = gtk::Window::new();

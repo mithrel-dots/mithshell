@@ -1,12 +1,8 @@
-//! The media pill and the dashboard's player card, fed by MPRIS state.
+//! The legacy media pill and side-circle media state, fed by MPRIS.
 
 use super::*;
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use gtk::{Align, Orientation, glib};
 
@@ -143,21 +139,8 @@ pub(super) fn visualizer_widget(
     visualizer
 }
 
-/// Formats a microsecond duration as `M:SS`, or `H:MM:SS` past one hour.
-pub(super) fn format_media_time(microseconds: i64) -> String {
-    let total_seconds = (microseconds.max(0) / 1_000_000) as u64;
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
 /// Returns the same discovery snapshot with one player promoted into the
-/// top-level fields consumed by the dashboard controls. Selection is purely
+/// top-level fields consumed by the media circle. Selection is purely
 /// presentational: it never invokes Play/PlayPause and therefore cannot
 /// disturb another player's playback.
 pub(super) fn media_state_for_player(state: &MediaState, service: Option<&str>) -> MediaState {
@@ -210,7 +193,6 @@ impl IslandWindow {
             .borrow()
             .as_ref()
             .is_some_and(|c| c.owns(crate::config::CircleModule::Media));
-        self.player_card.set_visible(!in_circle);
         self.sync_compact_visualizer(
             in_circle && state.is_some_and(|state| state.status == PlaybackStatus::Playing),
         );
@@ -260,114 +242,7 @@ impl IslandWindow {
         if let Some(circles) = self.circles.borrow().as_ref() {
             circles.update_media(selected.as_ref());
         }
-        self.update_player_card((!in_circle).then_some(selected.as_ref()).flatten());
         *self.latest_media.borrow_mut() = selected;
-    }
-
-    /// Updates the always-visible media player card in the dashboard. Unlike
-    /// the compact pill above (`update_media`'s first half, gated on
-    /// `media_playing`), this card is part of the dashboard layout and shows
-    /// an idle placeholder when nothing is playing instead of disappearing.
-    fn update_player_card(&self, state: Option<&MediaState>) {
-        match state {
-            Some(state) => {
-                self.player_card.remove_css_class("unavailable");
-                self.player_title.set_label(&state.title);
-                self.player_artist
-                    .set_label(state.artist.as_deref().unwrap_or_default());
-                self.player_artist.set_visible(state.artist.is_some());
-                if let Some(name) = state.app_icon.as_deref() {
-                    icon::set_foreign_image(&self.player_icon, Some(name), Icon::Executable);
-                    self.player_icon.set_visible(true);
-                } else {
-                    self.player_icon.set_visible(false);
-                }
-                self.player_prev_button.set_sensitive(state.can_go_previous);
-                self.player_play_pause_button
-                    .set_sensitive(state.can_play || state.can_pause);
-                self.player_next_button.set_sensitive(state.can_go_next);
-                self.player_switch_row.set_visible(state.players.len() > 1);
-                let selected = state
-                    .players
-                    .iter()
-                    .position(|player| player.service == state.service)
-                    .unwrap_or(0);
-                self.player_switch_label.set_label(&format!(
-                    "{} / {}  //  {}",
-                    selected + 1,
-                    state.players.len(),
-                    state.player.replace('.', " ")
-                ));
-                self.player_progress_base_us.set(state.position_us);
-                self.player_length_us.set(state.length_us.unwrap_or(0));
-                self.player_progress_started_at
-                    .set((state.status == PlaybackStatus::Playing).then(Instant::now));
-                self.player_active
-                    .set(state.status == PlaybackStatus::Playing);
-                icon::set_button_icon(
-                    &self.player_play_pause_button,
-                    if state.status == PlaybackStatus::Playing {
-                        Icon::Pause
-                    } else {
-                        Icon::Play
-                    },
-                    self.metrics.icons,
-                );
-                self.tick_player_progress();
-            }
-            None => {
-                self.player_card.add_css_class("unavailable");
-                self.player_title.set_label("Nothing playing");
-                self.player_artist.set_label("");
-                self.player_artist.set_visible(false);
-                self.player_icon.set_visible(false);
-                self.player_prev_button.set_sensitive(false);
-                self.player_play_pause_button.set_sensitive(false);
-                self.player_next_button.set_sensitive(false);
-                self.player_switch_row.set_visible(false);
-                self.player_progress.set_fraction(0.0);
-                self.player_elapsed_label.set_label("--:--");
-                self.player_duration_label.set_label("--:--");
-                self.player_active.set(false);
-                self.player_progress_started_at.set(None);
-            }
-        }
-    }
-
-    /// Advances the player card's progress bar between MPRIS updates by
-    /// interpolating from the last known position using a local clock,
-    /// rather than polling MPRIS for `Position` on a timer.
-    fn tick_player_progress(&self) {
-        let elapsed_us = self
-            .player_progress_started_at
-            .get()
-            .filter(|_| self.player_active.get())
-            .map_or(0, |started| started.elapsed().as_micros() as i64);
-        let position_us = (self.player_progress_base_us.get() + elapsed_us).max(0);
-        let length_us = self.player_length_us.get();
-        if length_us > 0 {
-            let position_us = position_us.min(length_us);
-            self.player_progress
-                .set_fraction((position_us as f64 / length_us as f64).clamp(0.0, 1.0));
-            self.player_duration_label
-                .set_label(&format_media_time(length_us));
-        } else {
-            self.player_progress.set_fraction(0.0);
-            self.player_duration_label.set_label("--:--");
-        }
-        self.player_elapsed_label
-            .set_label(&format_media_time(position_us));
-    }
-
-    pub(super) fn start_player_progress_timer(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_millis(500), move || {
-            let Some(island) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            island.tick_player_progress();
-            glib::ControlFlow::Continue
-        });
     }
 
     pub fn update_visualizer(&self, levels: VisualizerLevels) {
@@ -391,10 +266,10 @@ impl IslandWindow {
         } else {
             let weak = Rc::downgrade(self);
             glib::timeout_add_local_once(Duration::from_millis(500), move || {
-                if let Some(island) = weak.upgrade() {
-                    if island.visualizer_revision.get() == revision {
-                        island.reveal_compact_visualizer(false);
-                    }
+                if let Some(island) = weak.upgrade()
+                    && island.visualizer_revision.get() == revision
+                {
+                    island.reveal_compact_visualizer(false);
                 }
             });
         }
@@ -411,25 +286,6 @@ impl IslandWindow {
         self.compact_visualizer_revealer.set_reveal_child(reveal);
         self.resize_compact();
         self.reconcile_pill_geometry();
-    }
-
-    pub(super) fn switch_media_player(&self, direction: i32) {
-        let Some(state) = self.latest_media.borrow().clone() else {
-            return;
-        };
-        if state.players.len() < 2 {
-            return;
-        }
-        let current = state
-            .players
-            .iter()
-            .position(|player| player.service == state.service)
-            .unwrap_or(0);
-        let next = (current as i32 + direction).rem_euclid(state.players.len() as i32) as usize;
-        let selected_state = media_state_for_player(&state, Some(&state.players[next].service));
-        *self.selected_media_service.borrow_mut() = Some(selected_state.service.clone());
-        self.update_player_card(Some(&selected_state));
-        *self.latest_media.borrow_mut() = Some(selected_state);
     }
 
     pub(super) fn resize_media(self: &Rc<Self>) {

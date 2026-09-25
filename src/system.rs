@@ -12,7 +12,9 @@ use anyhow::{Context, Result, bail};
 use async_channel::Sender;
 use log::{debug, warn};
 
-use crate::state::{AudioState, BatteryState, BrightnessState, SystemInfoState, SystemSnapshot};
+use crate::state::{
+    AudioState, BatteryState, BrightnessState, HardwareSnapshot, SystemInfoState, SystemSnapshot,
+};
 
 /// Controller-owned cache replayed to new windows and IPC status readers.
 /// The launch-only override survives hardware samples and UI/config rebuilds.
@@ -32,6 +34,7 @@ impl SystemState {
     }
 
     pub(crate) fn update(&mut self, mut snapshot: SystemSnapshot) {
+        snapshot.hardware = self.snapshot.hardware.clone();
         if let Some(percent) = self.test_battery {
             snapshot.battery = Some(BatteryState {
                 percent,
@@ -48,6 +51,10 @@ impl SystemState {
 
     pub(crate) fn update_audio(&mut self, audio: AudioState) {
         self.snapshot.audio = Some(audio);
+    }
+
+    pub(crate) fn update_hardware(&mut self, hardware: HardwareSnapshot) {
+        self.snapshot.hardware = hardware;
     }
 
     pub(crate) fn snapshot(&self) -> &SystemSnapshot {
@@ -78,6 +85,7 @@ pub fn snapshot() -> SystemSnapshot {
         brightness: query_brightness().ok().flatten(),
         battery: query_battery().ok().flatten(),
         info: query_system_info().ok(),
+        hardware: HardwareSnapshot::default(),
     }
 }
 
@@ -166,10 +174,86 @@ pub fn set_volume(percent: u8) -> Result<()> {
     Ok(())
 }
 
+pub fn toggle_mute() -> Result<()> {
+    let status = Command::new("wpctl")
+        .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+        .status()
+        .context("failed to run wpctl")?;
+    if !status.success() {
+        bail!("wpctl set-mute failed");
+    }
+    Ok(())
+}
+
+pub fn unmute() -> Result<()> {
+    let status = Command::new("wpctl")
+        .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
+        .status()
+        .context("failed to run wpctl")?;
+    if !status.success() {
+        bail!("wpctl set-mute failed");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioMutation {
+    SetVolume(u8),
+    ToggleMute,
+}
+
+/// Execute queued user mutations serially so a slider's unmute/set sequence
+/// cannot race a later or earlier mute toggle.
+pub fn start_audio_mutation_worker(
+    receiver: async_channel::Receiver<AudioMutation>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || run_audio_mutations(receiver, &mut WpctlAudioBackend))
+}
+
+trait AudioMutationBackend {
+    fn apply(&mut self, operation: AudioOperation) -> Result<()>;
+}
+struct WpctlAudioBackend;
+impl AudioMutationBackend for WpctlAudioBackend {
+    fn apply(&mut self, operation: AudioOperation) -> Result<()> {
+        match operation {
+            AudioOperation::Unmute => unmute(),
+            AudioOperation::SetVolume(value) => set_volume(value),
+            AudioOperation::ToggleMute => toggle_mute(),
+        }
+    }
+}
+fn run_audio_mutations(
+    receiver: async_channel::Receiver<AudioMutation>,
+    backend: &mut impl AudioMutationBackend,
+) {
+    while let Ok(mutation) = receiver.recv_blocking() {
+        for operation in audio_mutation_operations(mutation) {
+            if let Err(error) = backend.apply(operation) {
+                warn!("audio mutation failed: {error:#}");
+                break;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioOperation {
+    Unmute,
+    SetVolume(u8),
+    ToggleMute,
+}
+fn audio_mutation_operations(mutation: AudioMutation) -> Vec<AudioOperation> {
+    match mutation {
+        AudioMutation::SetVolume(value) => vec![
+            AudioOperation::Unmute,
+            AudioOperation::SetVolume(value.min(100)),
+        ],
+        AudioMutation::ToggleMute => vec![AudioOperation::ToggleMute],
+    }
+}
+
 pub fn query_brightness() -> Result<Option<BrightnessState>> {
-    // Probe once per process rather than per poll; installing
-    // brightnessctl while the daemon is running therefore needs a reload
-    // or restart before the row appears.
     if !brightnessctl_available() {
         return Ok(None);
     }
@@ -185,17 +269,6 @@ pub fn query_brightness() -> Result<Option<BrightnessState>> {
         percent: ((current * 100) / maximum).min(100) as u8,
         device: device.to_string_lossy().into_owned(),
     }))
-}
-
-pub fn set_brightness(percent: u8) -> Result<()> {
-    let device = backlight_devices()?
-        .into_iter()
-        .next()
-        .context("no backlight device is available")?;
-    let maximum = read_u64(&device.join("max_brightness"))?;
-    let value = (maximum * u64::from(percent.min(100))) / 100;
-    fs::write(device.join("brightness"), value.to_string())
-        .context("failed to write backlight brightness; check device permissions")
 }
 
 pub fn query_battery() -> Result<Option<BatteryState>> {
@@ -272,8 +345,8 @@ pub fn request_power(action: PowerAction) -> Result<()> {
     Ok(())
 }
 
-/// Whether `brightnessctl` can be run at all, probed once per process:
-/// the dashboard uses it as the visibility gate for its brightness row.
+/// Whether `brightnessctl` can be run at all, probed once per process before
+/// reading the current backlight state.
 fn brightnessctl_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
@@ -354,6 +427,7 @@ mod tests {
     fn device_sample(battery: Option<BatteryState>) -> SystemSnapshot {
         SystemSnapshot {
             battery,
+            hardware: HardwareSnapshot::default(),
             audio: Some(AudioState {
                 percent: 23,
                 muted: true,
@@ -429,6 +503,24 @@ mod tests {
     }
 
     #[test]
+    fn hardware_samples_survive_ten_second_system_refreshes() {
+        let mut state = SystemState::new(None);
+        let hardware = HardwareSnapshot {
+            cpu_percent: Some(37.5),
+            memory_used_bytes: Some(10),
+            ..HardwareSnapshot::default()
+        };
+        state.update_hardware(hardware.clone());
+        state.update(device_sample(None));
+        assert_eq!(state.snapshot().hardware, hardware);
+        state.update_audio(AudioState {
+            percent: 50,
+            muted: false,
+        });
+        assert_eq!(state.snapshot().hardware.cpu_percent, Some(37.5));
+    }
+
+    #[test]
     fn ordinary_system_state_preserves_hardware_and_does_not_inherit_simulation() {
         let simulated = SystemState::new(Some(42));
         assert!(simulated.snapshot().battery.is_some());
@@ -462,6 +554,63 @@ mod tests {
         let muted = parse_wpctl("Volume: 0.75 [MUTED]").unwrap();
         assert_eq!(muted.percent, 75);
         assert!(muted.muted);
+    }
+
+    #[test]
+    fn audio_mutation_queue_preserves_slider_and_mute_intent_order() {
+        assert_eq!(
+            audio_mutation_operations(AudioMutation::SetVolume(121)),
+            vec![AudioOperation::Unmute, AudioOperation::SetVolume(100)]
+        );
+        assert_eq!(
+            audio_mutation_operations(AudioMutation::ToggleMute),
+            vec![AudioOperation::ToggleMute]
+        );
+        let ordered = [
+            AudioMutation::ToggleMute,
+            AudioMutation::SetVolume(25),
+            AudioMutation::ToggleMute,
+        ]
+        .into_iter()
+        .flat_map(audio_mutation_operations)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                AudioOperation::ToggleMute,
+                AudioOperation::Unmute,
+                AudioOperation::SetVolume(25),
+                AudioOperation::ToggleMute
+            ]
+        );
+    }
+
+    #[test]
+    fn audio_worker_dispatches_fifo_mutations_to_its_backend() {
+        #[derive(Default)]
+        struct FakeBackend(Vec<AudioOperation>);
+        impl AudioMutationBackend for FakeBackend {
+            fn apply(&mut self, operation: AudioOperation) -> Result<()> {
+                self.0.push(operation);
+                Ok(())
+            }
+        }
+        let (sender, receiver) = async_channel::unbounded();
+        sender.send_blocking(AudioMutation::ToggleMute).unwrap();
+        sender.send_blocking(AudioMutation::SetVolume(30)).unwrap();
+        sender.send_blocking(AudioMutation::ToggleMute).unwrap();
+        drop(sender);
+        let mut backend = FakeBackend::default();
+        run_audio_mutations(receiver, &mut backend);
+        assert_eq!(
+            backend.0,
+            vec![
+                AudioOperation::ToggleMute,
+                AudioOperation::Unmute,
+                AudioOperation::SetVolume(30),
+                AudioOperation::ToggleMute
+            ]
+        );
     }
 
     #[test]

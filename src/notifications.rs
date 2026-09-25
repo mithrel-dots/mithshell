@@ -312,6 +312,10 @@ fn handle_notify(
         urgency,
         actions: parse_actions(&raw_actions),
         timeout,
+        received_at_unix_seconds: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
     };
 
     invocation.return_value(Some(&(id,).to_variant()));

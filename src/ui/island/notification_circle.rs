@@ -1,10 +1,9 @@
 //! Notification history content for the optional island circle.
 //!
-//! This module owns widgets only.  The notification controller remains the
-//! source of truth: callers replace the retained history with [`update`], and
-//! the callbacks perform the existing dismiss/action/clear operations.
-
-#![allow(dead_code)]
+//! This module owns widgets only. The notification controller remains the
+//! source of truth: callers replace history with
+//! [`NotificationCircle::update`], and the callbacks perform the existing
+//! dismiss/action/clear operations.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -30,15 +29,17 @@ pub(crate) struct NotificationCircleCallbacks {
 
 pub(crate) struct NotificationCircle {
     pub(crate) host: Rc<CircleHost>,
+    #[cfg(test)]
     compact: gtk::Box,
+    #[cfg(test)]
     compact_click: GestureClick,
-    compact_style: gtk::CssProvider,
     compact_count: gtk::Label,
+    #[cfg(test)]
     hover: gtk::Box,
     hover_list: gtk::Box,
+    #[cfg(test)]
     full: gtk::Box,
     full_list: gtk::Box,
-    hover_open: gtk::Button,
     hover_count: usize,
     style: IconStyle,
     ui_scale: f64,
@@ -159,15 +160,17 @@ impl NotificationCircle {
         let circle = Rc::new(Self {
             ui_scale,
             host,
+            #[cfg(test)]
             compact,
+            #[cfg(test)]
             compact_click: click,
-            compact_style,
             compact_count: count,
+            #[cfg(test)]
             hover,
             hover_list,
+            #[cfg(test)]
             full,
             full_list,
-            hover_open,
             hover_count: config.hover_preview_count,
             style,
             callbacks,
@@ -338,6 +341,7 @@ mod tests {
     fn notification(id: u32, body: &str) -> Notification {
         Notification {
             id,
+            received_at_unix_seconds: 0,
             app_name: format!("app-{id}"),
             app_icon: None,
             summary: format!("summary-{id}"),

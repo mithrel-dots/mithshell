@@ -28,7 +28,6 @@ pub(crate) mod notification_circle;
 mod osd;
 mod search;
 mod tray;
-#[allow(dead_code)] // consumed by central circle integration
 pub(crate) mod tray_circle;
 mod view;
 mod weather;
@@ -57,12 +56,7 @@ const COMPACT_HEIGHT: i32 = 32;
 /// never shrinks to an oddly narrow sliver when nothing but the clock is
 /// showing.
 const COMPACT_MIN_WIDTH: i32 = 128;
-/// Per-element caps `resize_compact` clamps each compact-pill child to
-/// before summing them into the pill's width. Kept separate from a single
-/// shared cap so a long workspace list can't crowd out the clock, etc.
-const COMPACT_WORKSPACES_MAX_WIDTH: i32 = 110;
-const COMPACT_CLOCK_MAX_WIDTH: i32 = 70;
-const COMPACT_BATTERY_MAX_WIDTH: i32 = 50;
+/// Maximum tray contribution to the legacy media pill's width solver.
 const COMPACT_TRAY_MAX_WIDTH: i32 = 120;
 /// Rendered size of each tray icon, independent of `COMPACT_TRAY_MAX_WIDTH`
 /// (which instead bounds how many icons fit before the row stops growing
@@ -90,7 +84,6 @@ const SEARCH_HEIGHT: i32 = 620;
 /// Transparent room around the independent search surface for its CSS shadow.
 /// Without it, the layer window clips the blur into faint square corner bands.
 const SEARCH_SHADOW_MARGIN: i32 = 56;
-// Kept comfortably under the main island canvas dimensions.
 const WEATHER_WIDTH: i32 = 380;
 const WEATHER_HEIGHT: i32 = 390;
 
@@ -192,6 +185,10 @@ pub struct IslandWindow {
     compact: gtk::Widget,
     media: gtk::Overlay,
     dashboard: gtk::Box,
+    dashboard_sections: Vec<dashboard::DashboardSection>,
+    dashboard_expansion: Cell<f64>,
+    dashboard_section_opacity: Cell<f64>,
+    panel_scroll: gtk::ScrolledWindow,
     search: gtk::Box,
     weather: gtk::Box,
     osd: gtk::Box,
@@ -200,12 +197,15 @@ pub struct IslandWindow {
     notification: gtk::Box,
     compact_workspaces: gtk::Box,
     compact_clock: gtk::Label,
+    compact_date_day: gtk::Label,
+    compact_date_rest: gtk::Label,
+    compact_date: gtk::Box,
+    hardware: dashboard::HardwarePanel,
     compact_battery: gtk::Label,
     battery_waves: battery_wave::BatteryWaves,
     compact_tray: gtk::Box,
-    /// Current animated/target width of the compact pill, recomputed by
-    /// `resize_compact` from the combined width of its (individually
-    /// capped) children -- the `View::Compact` analogue of `media_width`.
+    /// Natural idle width, including the foreground row's nested spacing and
+    /// CSS padding. Expanded width is owned by the shared geometry track.
     compact_width: Cell<i32>,
     /// `true` while the pointer is over the compact pill; the tray row is
     /// only shown (and only then counted into `resize_compact`) while this
@@ -240,44 +240,14 @@ pub struct IslandWindow {
     visualizer_revision: Cell<u64>,
     media_levels: Rc<RefCell<VisualizerLevels>>,
     media_tray: gtk::Box,
-    hero_time: gtk::Label,
-    hero_date: gtk::Label,
-    battery_chip: gtk::Box,
-    battery_icon: gtk::Widget,
-    battery_label: gtk::Label,
-    player_card: gtk::Box,
-    player_icon: gtk::Image,
-    player_title: gtk::Label,
-    player_artist: gtk::Label,
-    player_progress: gtk::ProgressBar,
-    player_elapsed_label: gtk::Label,
-    player_duration_label: gtk::Label,
-    player_prev_button: gtk::Button,
-    player_play_pause_button: gtk::Button,
-    player_next_button: gtk::Button,
-    player_switch_row: gtk::Box,
-    player_switch_label: gtk::Label,
-    player_switch_prev: gtk::Button,
-    player_switch_next: gtk::Button,
-    /// Position reported by the last MPRIS update, in microseconds. Since
-    /// `MediaState` only ever represents a `Playing` player, the progress
-    /// bar advances this locally between updates instead of polling MPRIS.
-    player_progress_base_us: Cell<i64>,
-    player_progress_started_at: Cell<Option<Instant>>,
-    player_length_us: Cell<i64>,
-    player_active: Cell<bool>,
     latest_media: RefCell<Option<MediaState>>,
     selected_media_service: RefCell<Option<String>>,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
-    status_card: gtk::Box,
     workspace_row: gtk::FlowBox,
-    controls_stack: gtk::Box,
     volume_scale: gtk::Scale,
     volume_value: gtk::Label,
-    brightness_row: gtk::Box,
-    brightness_scale: gtk::Scale,
-    brightness_value: gtk::Label,
+    mute_button: gtk::Button,
     /// Dashboard notification-history widgets: the count badge and the
     /// vertical list of recent notifications, rebuilt by
     /// `update_notification_history` from the controller's bounded history.
@@ -285,9 +255,7 @@ pub struct IslandWindow {
     notification_inhibit_remaining: gtk::Label,
     notification_clear_button: gtk::Button,
     notification_inhibit_button: gtk::ToggleButton,
-    notification_expand_button: gtk::ToggleButton,
     notification_list: gtk::Box,
-    notifications_expanded: Cell<bool>,
     updating_notification_inhibit: Cell<bool>,
     search_entry: gtk::SearchEntry,
     search_results: gtk::ListBox,
@@ -329,6 +297,7 @@ pub struct IslandWindow {
     latest_weather: RefCell<Option<WeatherState>>,
     current_view: Cell<View>,
     dashboard_open: Cell<bool>,
+    island_hovered: Cell<bool>,
     search_open: Cell<bool>,
     weather_open: Cell<bool>,
     search_connected: Cell<bool>,
@@ -364,6 +333,8 @@ pub struct IslandWindow {
     view_animation_generation: Cell<u64>,
     /// Generation for compact/media geometry reconciliation.
     pill_animation_generation: Cell<u64>,
+    pill_animation_target: Cell<Option<Geometry>>,
+    view_animation_target: Cell<Option<Geometry>>,
     /// Prevents a pill track from competing with a page transition for the
     /// shared surface geometry. The terminal page state is authoritative;
     /// `finish_view` samples the current pill target before committing it.
@@ -373,7 +344,6 @@ pub struct IslandWindow {
     launcher_presentation: LauncherPresentation,
     osd_generation: Cell<u64>,
     volume_generation: Cell<u64>,
-    brightness_generation: Cell<u64>,
     updating_controls: Cell<bool>,
     latest_hyprland: RefCell<HyprlandSnapshot>,
     notifications: NotificationConfig,
@@ -455,12 +425,9 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::dashboard::battery_icon;
-    use super::media::{format_media_time, media_state_for_player};
+    use super::media::media_state_for_player;
     use super::weather::weather_provider_label;
-    use super::{
-        Geometry, Icon, IslandActions, IslandWindow, View, hover_geometry, profile_timing,
-    };
+    use super::{Geometry, IslandActions, IslandWindow, View, hover_geometry, profile_timing};
     use crate::config::{AppConfig, CircleModule, LauncherPresentation};
     use crate::state::{
         MediaPlayer, MediaState, Notification, NotificationAction, NotificationTimeout,
@@ -542,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an isolated GTK display; run scripts/run-island-presentation-gtk.py"]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
     #[allow(deprecated)]
     fn integrated_search_return_uses_real_finish_and_scheduler_path() {
         gtk::init().expect("GTK display");
@@ -563,7 +530,7 @@ mod tests {
         let actions = IslandActions {
             switch_workspace: Rc::new(|_, _| {}),
             set_volume: Rc::new(|_| {}),
-            set_brightness: Rc::new(|_| {}),
+            toggle_mute: Rc::new(|| {}),
             search: Rc::new(|_| {}),
             select: Rc::new(|_: TarragonSelection| {}),
             tarragon_status: Rc::new(|| {}),
@@ -861,7 +828,9 @@ mod tests {
         // eligibility before the stale idle callback is drained.
         island.search_entry.set_can_focus(false);
         let button = gtk::Button::with_label("deliberate focus");
-        island.content.put(&button, 0.0, 0.0);
+        // The legacy page canvas is hidden while the persistent header is
+        // active. Focus must belong to a mapped sibling, not that hidden page.
+        island.fixed.put(&button, 0.0, 0.0);
         button.set_can_focus(true);
         button.set_can_target(true);
         focus_window.present();
@@ -875,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an isolated GTK display; run scripts/run-circle-integration-gtk.py"]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
     fn circle_integration_real_widgets_and_callbacks() {
         gtk::init().expect("GTK display");
         let application = gtk::Application::new(
@@ -907,7 +876,7 @@ mod tests {
         let mut actions = IslandActions {
             switch_workspace: Rc::new(|_, _| {}),
             set_volume: Rc::new(|_| {}),
-            set_brightness: Rc::new(|_| {}),
+            toggle_mute: Rc::new(|| {}),
             search: Rc::new(|_| {}),
             select: Rc::new(|_| {}),
             tarragon_status: Rc::new(|| {}),
@@ -1016,6 +985,7 @@ mod tests {
         };
         let notification = Notification {
             id: 1,
+            received_at_unix_seconds: 0,
             app_name: "Test".into(),
             app_icon: None,
             summary: "Hello".into(),
@@ -1104,17 +1074,17 @@ mod tests {
                 .test_host(0)
                 .expect("media slot")
         };
-        assert_eq!(media_host.target_page(), Some(super::circle::Mode::Compact));
+        assert_eq!(media_host.mode(), super::circle::Mode::Compact);
         assert_eq!(
             media_host.presented_page(),
             Some(super::circle::Mode::Compact)
         );
         let revision = media_host.revision();
         media_host.dispatch(super::circle::Event::Pointer(true));
-        assert!(media_host.target_page().is_some());
+        assert_ne!(media_host.mode(), super::circle::Mode::Absent);
         assert!(!media_host.commit_page(revision));
         media_host.dispatch(super::circle::Event::Content(false));
-        assert_eq!(media_host.target_page(), None);
+        assert_eq!(media_host.mode(), super::circle::Mode::Absent);
         assert!(media_host.frame().is_none());
         island.relayout_circles();
         assert_eq!(
@@ -1147,6 +1117,13 @@ mod tests {
             );
             test.update_tray(std::slice::from_ref(&tray));
             test.update_media(Some(&media));
+            let legacy_media = left != CircleModule::Media && right != CircleModule::Media;
+            assert_eq!(
+                test.media_title.label().as_str(),
+                if legacy_media { "Track" } else { "" },
+                "legacy media title should be populated only without a media circle"
+            );
+            assert_eq!(test.media.is_visible(), legacy_media);
             assert_eq!(test.media_visualizer.get_visible(), visualizer);
             assert_eq!(
                 test.compact_visualizer_revealer.reveals_child(),
@@ -1242,7 +1219,6 @@ mod tests {
                 .as_deref(),
             Some("org.test.Second")
         );
-        assert_eq!(island.debug_state()["player_card_visible"], false);
         assert_eq!(island.debug_state()["notification_history_visible"], false);
         assert_eq!(
             island
@@ -1696,7 +1672,7 @@ mod tests {
                 let actions = IslandActions {
                     switch_workspace: Rc::new(|_, _| {}),
                     set_volume: Rc::new(|_| {}),
-                    set_brightness: Rc::new(|_| {}),
+                    toggle_mute: Rc::new(|| {}),
                     search: Rc::new(|_| {}),
                     select: Rc::new(|_| {}),
                     tarragon_status: Rc::new(|| {}),
@@ -1806,7 +1782,6 @@ mod tests {
                 assert!(island.pointer_in_hover_region.get());
                 assert!(island.tray_hovered.get());
                 assert_eq!(tray_host.mode(), super::circle::Mode::Compact);
-                assert_eq!(tray_host.target_page(), Some(super::circle::Mode::Compact));
                 assert!(tray_host.frame().is_some_and(|frame| {
                     (frame.rect.width - expected as f64).abs() < f64::EPSILON
                 }));
@@ -1817,10 +1792,7 @@ mod tests {
                 drain();
                 island.relayout_circles();
                 assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
-                assert_eq!(
-                    tray_host.target_page(),
-                    Some(super::circle::Mode::HoverExpanded)
-                );
+                assert_eq!(tray_host.mode(), super::circle::Mode::HoverExpanded);
                 // Animation remains enabled in this production-flow test.
                 // Repeated frame reallocations must not manufacture a leave
                 // and collapse a stationary pointer.
@@ -2027,51 +1999,6 @@ mod tests {
     }
 
     #[test]
-    fn formats_media_time_below_and_above_an_hour() {
-        assert_eq!(format_media_time(0), "0:00");
-        assert_eq!(format_media_time(65_000_000), "1:05");
-        assert_eq!(format_media_time(3_661_000_000), "1:01:01");
-        assert_eq!(format_media_time(-5_000_000), "0:00");
-    }
-
-    #[test]
-    fn picks_battery_icons_for_level_and_charge_state() {
-        assert_eq!(
-            battery_icon(12, "Discharging"),
-            Icon::Battery {
-                percent: 12,
-                charging: false,
-            }
-        );
-        assert_eq!(
-            battery_icon(87, "Charging"),
-            Icon::Battery {
-                percent: 87,
-                charging: true,
-            }
-        );
-        // upower reports capitalised status strings; matching is case-insensitive.
-        assert_eq!(
-            battery_icon(50, "charging"),
-            Icon::Battery {
-                percent: 50,
-                charging: true,
-            }
-        );
-    }
-
-    #[test]
-    fn battery_icons_clamp_impossible_percentages() {
-        assert_eq!(
-            battery_icon(200, "Full"),
-            Icon::Battery {
-                percent: 100,
-                charging: false,
-            }
-        );
-    }
-
-    #[test]
     fn labels_the_selected_weather_provider() {
         assert_eq!(
             weather_provider_label("WEATHER", WeatherProvider::Wttr),
@@ -2109,5 +2036,542 @@ mod tests {
         assert_eq!(selected.service, "paused");
         assert_eq!(selected.status, PlaybackStatus::Paused);
         assert_eq!(selected.players.len(), 2);
+    }
+
+    #[test]
+    #[ignore = "requires the project-local Broadway GTK runner"]
+    fn persistent_header_peek_open_geometry_input_and_reversal() {
+        use crate::state::{HardwareSnapshot, SystemSnapshot};
+        use std::time::{Duration, Instant};
+
+        gtk::init().expect("Broadway GTK display");
+        let _styles = crate::ui::install_styles(&crate::theme::generate_gtk());
+        let app = gtk::Application::new(
+            Some("org.mithshell.persistent-island-test"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        app.connect_activate(|_| {});
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("register GTK application");
+        let monitor = gtk::gdk::Display::default()
+            .expect("Broadway display")
+            .monitors()
+            .item(0)
+            .and_downcast::<gtk::gdk::Monitor>()
+            .expect("Broadway monitor");
+        let actions = IslandActions {
+            switch_workspace: Rc::new(|_, _| {}),
+            set_volume: Rc::new(|_| {}),
+            toggle_mute: Rc::new(|| {}),
+            search: Rc::new(|_| {}),
+            select: Rc::new(|_| {}),
+            tarragon_status: Rc::new(|| {}),
+            tarragon_reload: Rc::new(|| {}),
+            load_preview: Rc::new(|_, _| {}),
+            media_play_pause: Rc::new(|_| {}),
+            media_next: Rc::new(|_| {}),
+            media_previous: Rc::new(|_| {}),
+            notification_expired: Rc::new(|_, _| {}),
+            notification_dismiss: Rc::new(|_| {}),
+            notification_invoke: Rc::new(|_, _| {}),
+            notification_clear_all: Rc::new(|| {}),
+            notification_inhibit: Rc::new(|_| {}),
+            tray_activate: Rc::new(|_, _, _, _| {}),
+            tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+            tray_context_menu: Rc::new(|_, _, _, _| {}),
+            tray_scroll: Rc::new(|_, _, _, _| {}),
+            tray_menu_event: Rc::new(|_, _, _| {}),
+        };
+        let pump = |duration: Duration| {
+            let main_loop = gtk::glib::MainLoop::new(None, false);
+            let quit = main_loop.clone();
+            gtk::glib::timeout_add_local_once(duration, move || quit.quit());
+            main_loop.run();
+            while gtk::glib::MainContext::default().pending() {
+                gtk::glib::MainContext::default().iteration(false);
+            }
+        };
+        let await_allocation = |ready: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !ready() && Instant::now() < deadline {
+                pump(Duration::from_millis(16));
+            }
+        };
+
+        // Disabled motion still resolves the date, hardware panel, and input
+        // regions synchronously. Use the same scale as the user's live shell.
+        for scale in [1.0, 1.9] {
+            let mut config = AppConfig::default();
+            config.shell.scale = scale;
+            config.shell.animation_ms = 0;
+            config.launcher.presentation = LauncherPresentation::Integrated;
+            config.battery.wave = true;
+            config.theme.engine = crate::config::PaletteEngine::Gtk;
+            let island = IslandWindow::new_for_test(
+                &app,
+                &monitor,
+                "broadway-island".into(),
+                &config,
+                actions.clone(),
+                false,
+            );
+            app.activate();
+            pump(Duration::from_millis(40));
+            island.update_system(&SystemSnapshot {
+                battery: Some(crate::state::BatteryState {
+                    percent: 63,
+                    status: "Discharging".into(),
+                }),
+                hardware: HardwareSnapshot {
+                    cpu_percent: Some(38.0),
+                    cpu_temperature_celsius: Some(61.0),
+                    memory_used_bytes: Some(9_395_240_960),
+                    memory_total_bytes: Some(34_359_738_368),
+                    network_receive_bytes_per_second: Some(12_400_000.0),
+                    network_transmit_bytes_per_second: Some(1_800_000.0),
+                },
+                ..SystemSnapshot::default()
+            });
+            assert_eq!(island.battery_waves.area.opacity(), 1.0);
+            assert!(
+                island
+                    .compact
+                    .parent()
+                    .is_some_and(|parent| parent == island.surface_shell)
+            );
+
+            island.set_pointer_in_hover_region(true);
+            assert!(island.dashboard.is_visible());
+            assert!(island.dashboard.can_target());
+            assert_eq!(island.hardware.cpu.label(), "38%");
+            assert_eq!(island.hardware.temperature.label(), "61°C");
+            assert_eq!(island.hardware.memory.label(), "8.8");
+            assert_eq!(island.hardware.memory_total.label(), "/ 32.0 GiB");
+            assert_eq!(island.hardware.receive.label(), "11.8 MiB/s");
+            assert_eq!(island.hardware.transmit.label(), "1.7 MiB/s");
+            assert!((island.hardware.cpu_progress.fraction() - 0.38).abs() < 0.01);
+            assert!((island.hardware.memory_progress.fraction() - 0.273).abs() < 0.01);
+            assert!(island.compact_date.is_visible());
+            assert!(!island.compact_date_day.label().is_empty());
+            assert!(!island.compact_date_rest.label().is_empty());
+            let peek = island.geometry.get();
+            assert!(
+                peek.width
+                    >= f64::from(
+                        island.dashboard.measure(gtk::Orientation::Horizontal, -1).0
+                            + island.metrics.spacing(44)
+                    ),
+                "peek must contain the hardware minimum width"
+            );
+            assert!(peek.height > f64::from(island.metrics.compact_height * 2));
+            let peek_region = island.island_input_region(peek);
+            assert!(
+                peek_region.contains_point(island.metrics.window_width / 2, 2),
+                "the hover lift must retain the original resting hit area"
+            );
+            let inset = island.metrics.spacing(22);
+            let panel_x = ((island.metrics.window_width - peek.width.round() as i32) / 2) + inset;
+            let panel_y = peek.y.round() as i32 + island.metrics.compact_height / 2;
+            let panel_height = peek.height.round() as i32 - island.metrics.compact_height / 2;
+            assert!(peek_region.contains_point(panel_x + inset, panel_y + panel_height / 2));
+            assert!(!peek_region.contains_point(panel_x, panel_y + panel_height - 1));
+            let circle_rest = island.central_circle_rect();
+            assert_eq!(circle_rest.y, 0.0);
+            assert_eq!(circle_rest.height, f64::from(island.metrics.compact_height));
+            pump(Duration::from_millis(40));
+
+            island.open();
+            assert_eq!(island.current_view.get(), View::Dashboard);
+            pump(Duration::from_millis(40));
+            assert!(island.compact.is_visible() && island.compact.can_target());
+            assert!(island.dashboard.is_visible() && island.dashboard.can_target());
+            assert!(island.battery_waves.area.opacity() > 0.0);
+            assert_eq!(
+                island.battery_waves.header_height,
+                island.metrics.compact_height
+            );
+            assert!(island.geometry.get().width > peek.width);
+            assert_eq!(island.hardware.cpu.label(), "38%");
+            assert_eq!(island.hardware.temperature.label(), "61°C");
+            assert_eq!(island.hardware.memory.label(), "8.8");
+            assert_eq!(island.hardware.memory_total.label(), "/ 32.0 GiB");
+            assert_eq!(island.hardware.receive.label(), "11.8 MiB/s");
+            assert_eq!(island.hardware.transmit.label(), "1.7 MiB/s");
+            assert!((island.hardware.cpu_progress.fraction() - 0.38).abs() < 0.01);
+            assert!((island.hardware.memory_progress.fraction() - 0.273).abs() < 0.01);
+            let panel_content_width = island.geometry.get().width.round() as i32 - inset * 2;
+            assert!(
+                island
+                    .workspace_row
+                    .measure(gtk::Orientation::Horizontal, -1)
+                    .1
+                    <= panel_content_width
+            );
+            assert!(
+                island
+                    .volume_value
+                    .measure(gtk::Orientation::Horizontal, -1)
+                    .1
+                    > 0
+            );
+            assert!(
+                island
+                    .notification_list
+                    .measure(gtk::Orientation::Horizontal, -1)
+                    .1
+                    <= panel_content_width
+            );
+            assert!(
+                island
+                    .compact
+                    .pick(
+                        f64::from(island.compact.width()) / 2.0,
+                        f64::from(island.compact.height()) / 2.0,
+                        gtk::PickFlags::DEFAULT,
+                    )
+                    .is_some()
+            );
+            let open_region = island.island_input_region(island.geometry.get());
+            let open_panel_x =
+                ((island.metrics.window_width - island.geometry.get().width.round() as i32) / 2)
+                    + inset;
+            let open_panel_y =
+                island.geometry.get().y.round() as i32 + island.metrics.compact_height / 2;
+            assert!(open_region.contains_point(
+                open_panel_x + island.metrics.spacing(50),
+                open_panel_y + island.metrics.spacing(100),
+            ));
+            assert!(island.compact_date.is_visible());
+
+            // A hardware refresh or pointer leave must never reset the pinned
+            // header to its content-driven idle allocation.
+            let open_width = island.geometry.get().width;
+            island.set_pointer_in_hover_region(false);
+            island.resize_compact();
+            // Broadway's ordinary windows cannot express the layer-shell
+            // ordering of the dismiss catcher. Present the actual fixture
+            // root so an empty test window cannot occlude its frame clock.
+            let fixture_window = island
+                .focus_root
+                .borrow()
+                .clone()
+                .downcast::<gtk::Window>()
+                .unwrap();
+            fixture_window.present();
+            await_allocation(&|| (f64::from(island.compact.width()) - open_width).abs() <= 4.0);
+            assert_eq!(island.current_view.get(), View::Dashboard);
+            assert!(
+                (f64::from(island.compact.width()) - open_width).abs() <= 6.0,
+                "pinned header width={} requested={} open={} shell={} scale={}",
+                island.compact.width(),
+                island.compact.width_request(),
+                open_width,
+                island.surface_shell.width(),
+                island.metrics.scale
+            );
+            let scroll = island.panel_scroll.vadjustment();
+            scroll.set_value(scroll.upper());
+            pump(Duration::from_millis(40));
+            let last = island
+                .notification_list
+                .last_child()
+                .expect("notification content");
+            let bounds = last
+                .compute_bounds(&island.panel_scroll)
+                .expect("notification allocation");
+            assert!(
+                bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 2.0,
+                "last notification must be reachable at the bottom of the panel"
+            );
+            let history: Vec<_> = (0..8).map(|id| crate::state::Notification {
+            id,
+            received_at_unix_seconds: 0,
+            app_name: "GTK fixture".into(),
+            app_icon: None,
+            summary: "Saved screenshot".into(),
+            body: "A wrapped notification body with a long /home/test/Pictures/Screenshots/file.png path. ".repeat(12),
+            urgency: crate::state::Urgency::Normal,
+            actions: vec![],
+            timeout: crate::state::NotificationTimeout::Never,
+        }).collect();
+            let mut representative = history[..2].to_vec();
+            for notification in &mut representative {
+                notification.received_at_unix_seconds = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .saturating_sub(120);
+            }
+            representative[0].body =
+                "Saved to /home/test/Pictures/Screenshots/2026-09-25_19-45-00.png".into();
+            representative[1].app_name = "Build runner".into();
+            representative[1].summary = "Build finished".into();
+            representative[1].body = "Release candidate compiled successfully.".into();
+            island.update_notification_history(&representative);
+            fixture_window.present();
+            let row = island.notification_list.first_child().unwrap();
+            let mut pending = vec![row];
+            let mut rendered_text = Vec::new();
+            while let Some(widget) = pending.pop() {
+                if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                    rendered_text.push(label.label().to_string());
+                }
+                let mut child = widget.first_child();
+                while let Some(widget) = child {
+                    child = widget.next_sibling();
+                    pending.push(widget);
+                }
+            }
+            for expected in [
+                &representative[0].app_name,
+                &representative[0].summary,
+                &representative[0].body,
+            ] {
+                assert!(
+                    rendered_text.contains(expected),
+                    "notification lost {expected:?}"
+                );
+            }
+            pump(Duration::from_millis(150));
+            capture_island_fixture(&island, "notifications");
+
+            island.update_notification_history(&history);
+            fixture_window.present();
+            let scroll = island.panel_scroll.vadjustment();
+            await_allocation(&|| scroll.upper() > scroll.page_size());
+            assert!(
+                scroll.upper() > scroll.page_size(),
+                "long history must scroll: scale={scale} upper={} page={} geometry={:?} panel={} dashboard={} list={} visible={}",
+                scroll.upper(),
+                scroll.page_size(),
+                island.geometry.get(),
+                island.panel_scroll.height(),
+                island.dashboard.height(),
+                island.notification_list.height(),
+                island.notification_list.is_visible()
+            );
+            scroll.set_value(scroll.upper());
+            let last = island.notification_list.last_child().unwrap();
+            await_allocation(&|| {
+                last.compute_bounds(&island.panel_scroll)
+                    .is_some_and(|bounds| {
+                        bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 4.0
+                    })
+            });
+            let bounds = last.compute_bounds(&island.panel_scroll).unwrap();
+            assert!(
+                bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 4.0,
+                "wrapped history remains reachable at scale {scale}"
+            );
+
+            // Existing alternate views temporarily replace the center, then
+            // return to the persistent compact header through the production path.
+            island.open_weather();
+            assert_eq!(island.current_view.get(), View::Weather);
+            island.close();
+            assert_eq!(island.current_view.get(), View::Compact);
+            island.open_search();
+            assert_eq!(island.current_view.get(), View::Search);
+            island.close();
+            assert_eq!(island.current_view.get(), View::Compact);
+            assert!(island.compact.is_visible());
+            island
+                .compact_visualizer_revealer
+                .set_transition_duration(0);
+            island.compact_visualizer_revealer.set_reveal_child(true);
+            island.compact_battery.set_visible(true);
+            island.compact_battery.set_label("100%");
+            island.resize_compact();
+            island.reconcile_pill_geometry();
+            fixture_window.present();
+            await_allocation(&|| (island.compact.width() - island.compact_width.get()).abs() <= 4);
+            let battery = island
+                .compact_battery
+                .compute_bounds(&island.compact)
+                .unwrap();
+            assert!(
+                battery.x() + battery.width() <= island.compact.width() as f32 - 10.0,
+                "idle battery and visualizer must fit with right padding at scale {scale}: {battery:?}, width={}",
+                island.compact.width()
+            );
+            island.destroy();
+        }
+
+        // Real frame-clock sampling and reversal: interrupt both the hover
+        // expand and its collapse, then promote that same rendered geometry to
+        // the click-open path without a one-frame jump.
+        let mut animated_config = AppConfig::default();
+        animated_config.shell.scale = 1.0;
+        animated_config.shell.animation_ms = 280;
+        let animated = IslandWindow::new_for_test(
+            &app,
+            &monitor,
+            "broadway-island-motion".into(),
+            &animated_config,
+            actions,
+            true,
+        );
+        pump(Duration::from_millis(520));
+        let resting = animated.geometry.get();
+        animated.set_pointer_in_hover_region(true);
+        assert!(animated.dashboard.is_visible());
+        assert_eq!(
+            animated.dashboard.opacity(),
+            1.0,
+            "Peek content must be ready before expansion"
+        );
+        assert!(animated.compact_date.is_visible());
+        assert_eq!(animated.compact_date.opacity(), 0.0);
+        await_allocation(&|| animated.geometry.get().height > resting.height + 1.0);
+        pump(Duration::from_millis(150));
+        let date_midway = animated.compact_date.opacity();
+        assert!(
+            date_midway > 0.0 && date_midway < 1.0,
+            "date must fade in, got {date_midway}"
+        );
+        let expanded_part = animated.geometry.get();
+        assert_eq!(animated.dashboard.opacity(), 1.0);
+        assert!(
+            expanded_part.height > resting.height,
+            "resting={resting:?} sampled={expanded_part:?} target={:?} active={} mapped={} hovered={} enabled={} ms={} generation={}",
+            animated.presentation_target_geometry(View::Compact),
+            animated.view_transition_active.get(),
+            animated.surface.is_mapped(),
+            animated.island_hovered.get(),
+            animated.animations_enabled.get(),
+            animated.animation_ms.get(),
+            animated.pill_animation_generation.get()
+        );
+        assert!(expanded_part.height < animated.presentation_target_geometry(View::Compact).height);
+        animated.set_pointer_in_hover_region(false);
+        assert_eq!(animated.geometry.get(), expanded_part);
+        assert_eq!(animated.compact_date.opacity(), date_midway);
+        assert!(animated.compact_date.is_visible());
+        pump(Duration::from_millis(72));
+        let collapsing_part = animated.geometry.get();
+        assert!(collapsing_part.height < expanded_part.height);
+        animated.set_pointer_in_hover_region(true);
+        assert_eq!(animated.geometry.get(), collapsing_part);
+        pump(Duration::from_millis(72));
+        let expanding_again = animated.geometry.get();
+        animated.open();
+        assert_eq!(animated.geometry.get(), expanding_again);
+        assert!(animated.view_transition_active.get());
+        animated.close();
+        assert_eq!(animated.geometry.get(), expanding_again);
+        pump(Duration::from_millis(520));
+        animated.set_pointer_in_hover_region(false);
+        pump(Duration::from_millis(520));
+        assert!(!animated.compact_date.is_visible());
+        assert_eq!(animated.compact_date.opacity(), 0.0);
+        assert!(!animated.panel_scroll.is_visible());
+        // Only the actual capsule draws a border at idle or during collapse.
+        assert!(animated.surface_shell.has_css_class("island-persistent"));
+
+        // Frequent unchanged telemetry/media refreshes must not reset the
+        // hover clock. Both directions still finish within their own duration.
+        for hovered in [true, false] {
+            animated.set_pointer_in_hover_region(hovered);
+            let destination = animated.presentation_target_geometry(View::Compact);
+            for _ in 0..12 {
+                pump(Duration::from_millis(50));
+                animated.update_system(&SystemSnapshot::default());
+                animated.reconcile_view();
+            }
+            assert!(
+                (animated.geometry.get().height - destination.height).abs() < 1.0,
+                "refreshes extended the hover transition: {:?} -> {destination:?}",
+                animated.geometry.get()
+            );
+            assert!(!animated.view_transition_active.get());
+        }
+
+        // Direct IPC/click opening from Idle must measure the hidden panel
+        // before starting, rather than grow only the header then pop the page
+        // to full height in finish_view.
+        let open_target = animated.presentation_target_geometry(View::Dashboard);
+        assert!(!animated.dashboard.is_visible());
+        assert!(open_target.height > f64::from(animated.metrics.compact_height * 4));
+        animated.open();
+        assert_eq!(animated.dashboard.opacity(), 1.0);
+        assert_eq!(animated.dashboard_section_opacity.get(), 1.0);
+        assert!(
+            animated
+                .dashboard_sections
+                .iter()
+                .all(|section| section.viewport.is_visible())
+        );
+        pump(Duration::from_millis(300));
+        assert!(animated.geometry.get().height > open_target.height * 0.7);
+        pump(Duration::from_millis(260));
+        assert!((animated.geometry.get().height - open_target.height).abs() < 1.0);
+
+        animated.set_pointer_in_hover_region(true);
+        animated.close();
+        assert!(
+            animated
+                .dashboard_sections
+                .iter()
+                .all(|section| section.viewport.is_visible())
+        );
+        assert_eq!(animated.dashboard_section_opacity.get(), 1.0);
+        pump(Duration::from_millis(80));
+        let fading = animated.dashboard_section_opacity.get();
+        let contracting = animated.dashboard_expansion.get();
+        assert!(
+            fading > 0.0 && fading < 1.0,
+            "Open-only content must fade, got {fading}"
+        );
+        assert!(contracting > 0.0 && contracting < 1.0);
+        assert!(
+            animated
+                .dashboard_sections
+                .iter()
+                .all(|section| section.viewport.is_visible())
+        );
+        animated.open();
+        assert_eq!(animated.dashboard_section_opacity.get(), fading);
+        assert_eq!(animated.dashboard_expansion.get(), contracting);
+        pump(Duration::from_millis(560));
+        animated.close();
+        pump(Duration::from_millis(460));
+        assert!(
+            animated
+                .dashboard_sections
+                .iter()
+                .all(|section| !section.viewport.is_visible())
+        );
+        assert!(animated.hardware.root.is_visible());
+        assert!(animated.dashboard.is_visible());
+        animated.destroy();
+    }
+
+    /// Optional artifact from the mapped GTK widget tree, using the installed
+    /// production stylesheet and its actual allocations rather than a mock UI.
+    fn capture_island_fixture(island: &IslandWindow, state: &str) {
+        let Ok(directory) = std::env::var("MITHSHELL_UI_CAPTURE_DIR") else {
+            return;
+        };
+        let paintable = gtk::WidgetPaintable::new(Some(&island.surface_shell));
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(
+            &snapshot,
+            f64::from(island.surface_shell.width()),
+            f64::from(island.surface_shell.height()),
+        );
+        let node = snapshot.to_node().expect("mapped island render node");
+        let renderer = gtk::gsk::CairoRenderer::new();
+        renderer
+            .realize(None::<&gtk::gdk::Surface>)
+            .expect("offscreen GTK renderer");
+        let texture = renderer.render_texture(&node, None);
+        std::fs::create_dir_all(&directory).expect("capture directory");
+        texture
+            .save_to_png(
+                std::path::Path::new(&directory)
+                    .join(format!("island-{}-{state}.png", island.metrics.scale)),
+            )
+            .expect("save GTK fixture");
+        renderer.unrealize();
     }
 }

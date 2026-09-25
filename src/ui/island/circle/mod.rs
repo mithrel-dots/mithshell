@@ -28,15 +28,10 @@
 //! or outside dismissal dispatches `Dismiss`. Keyboard/layer-shell routing and
 //! popover input regions are the central integrator's responsibility.
 
-// Staged contract: remove this allowance when the central integration consumes it.
-#![allow(dead_code)]
-
 mod geometry;
 mod widget;
 
-#[allow(unused_imports)] // Public handoff, consumed by the pending module workers.
 pub(crate) use geometry::{CircleRequest, CircleSpec, Frame, Rect, Size, Visual, layout};
-#[allow(unused_imports)]
 pub(crate) use widget::{CircleContent, CircleHost};
 
 /// Apply resolved-scale typography to new labels, including rebuilt snapshots.

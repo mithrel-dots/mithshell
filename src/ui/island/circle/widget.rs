@@ -201,15 +201,6 @@ impl CircleHost {
         }
     }
 
-    /// The page requested by the current state.  The presented page remains
-    /// unchanged until `commit_page`, allowing an outgoing fade to finish.
-    pub(crate) fn target_page(&self) -> Option<Mode> {
-        match self.state.get().mode() {
-            Mode::Absent => None,
-            mode => Some(mode),
-        }
-    }
-
     /// The page currently visible in the stack, if any.
     pub(crate) fn presented_page(&self) -> Option<Mode> {
         self.presented_page.get()

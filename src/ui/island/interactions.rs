@@ -17,21 +17,42 @@ impl IslandWindow {
         // trigger hover from hundreds of pixels away. A small logical-pixel
         // slop keeps edge crossings stable while the pill animates.
         const HOVER_SLOP: f64 = 4.0;
+        let rect_contains = |widget: &gtk::Widget| {
+            widget.compute_bounds(&self.fixed).is_some_and(|bounds| {
+                x >= f64::from(bounds.x()) - HOVER_SLOP
+                    && x < f64::from(bounds.x() + bounds.width()) + HOVER_SLOP
+                    && y >= f64::from(bounds.y()) - HOVER_SLOP
+                    && y < f64::from(bounds.y() + bounds.height()) + HOVER_SLOP
+            })
+        };
         let pill = match self.current_view.get() {
-            View::Compact => Some(self.compact.clone().upcast::<gtk::Widget>()),
+            View::Compact | View::Dashboard => Some(self.compact.clone().upcast::<gtk::Widget>()),
             View::Media => Some(self.media.clone().upcast::<gtk::Widget>()),
             _ => None,
         };
-        let inside = pill
-            .and_then(|pill| pill.compute_bounds(&self.fixed))
-            .is_some_and(|bounds| {
-                let left = f64::from(bounds.x()) - HOVER_SLOP;
-                let top = f64::from(bounds.y()) - HOVER_SLOP;
-                x >= left
-                    && x < left + f64::from(bounds.width()) + HOVER_SLOP * 2.0
-                    && y >= top
-                    && y < top + f64::from(bounds.height()) + HOVER_SLOP * 2.0
-            });
+        let pill_inside = pill.as_ref().is_some_and(&rect_contains);
+        let panel_inside = self.current_view.get() == View::Compact
+            && self.island_hovered.get()
+            && rect_contains(&self.dashboard.clone().upcast::<gtk::Widget>());
+        let dashboard_panel_inside = self.current_view.get() == View::Dashboard
+            && rect_contains(&self.dashboard.clone().upcast::<gtk::Widget>());
+        // Invisible hover bridge immediately above the resting pill prevents
+        // the pointer from losing the island during its downward translation.
+        let bridge_inside = if self.current_view.get() == View::Compact && self.island_hovered.get()
+        {
+            self.compact
+                .compute_bounds(&self.fixed)
+                .is_some_and(|bounds| {
+                    let lift = f64::from(self.metrics.spacing(20));
+                    x >= f64::from(bounds.x())
+                        && x < f64::from(bounds.x() + bounds.width())
+                        && y >= f64::from(bounds.y()) - lift
+                        && y < f64::from(bounds.y())
+                })
+        } else {
+            false
+        };
+        let inside = pill_inside || panel_inside || dashboard_panel_inside || bridge_inside;
         self.set_pointer_in_hover_region(inside);
         if let Some(circles) = self.circles.borrow().as_ref() {
             circles.update_pointer(x, y);
@@ -55,6 +76,7 @@ impl IslandWindow {
             close_button,
             search_button,
             weather_button,
+            mute_button,
             search_back_button,
             search_reload_button,
             weather_back_button,
@@ -212,6 +234,19 @@ impl IslandWindow {
         weather_button.connect_clicked(move |_| {
             if let Some(island) = weak.upgrade() {
                 island.open_weather();
+            }
+        });
+
+        let weak = Rc::downgrade(self);
+        mute_button.connect_clicked(move |_| {
+            if let Some(island) = weak.upgrade() {
+                // A later mute gesture supersedes any slider value still in
+                // the debounce window. Otherwise that older value could run
+                // afterward and unmute audio on the worker queue.
+                island
+                    .volume_generation
+                    .set(island.volume_generation.get().wrapping_add(1));
+                (island.actions.toggle_mute)();
             }
         });
 
@@ -512,15 +547,6 @@ impl IslandWindow {
             });
 
         let weak = Rc::downgrade(self);
-        self.notification_expand_button
-            .connect_toggled(move |button| {
-                if let Some(island) = weak.upgrade() {
-                    island.notifications_expanded.set(button.is_active());
-                    island.apply_notification_takeover();
-                }
-            });
-
-        let weak = Rc::downgrade(self);
         self.volume_scale.connect_value_changed(move |scale| {
             if let Some(island) = weak.upgrade()
                 && !island.updating_controls.get()
@@ -537,79 +563,6 @@ impl IslandWindow {
                         (island.actions.set_volume)(value);
                     }
                 });
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        self.brightness_scale.connect_value_changed(move |scale| {
-            if let Some(island) = weak.upgrade()
-                && !island.updating_controls.get()
-            {
-                let value = scale.value().round().clamp(0.0, 100.0) as u8;
-                island.brightness_value.set_label(&format!("{value}%"));
-                let generation = island.brightness_generation.get().wrapping_add(1);
-                island.brightness_generation.set(generation);
-                let weak = Rc::downgrade(&island);
-                glib::timeout_add_local_once(Duration::from_millis(70), move || {
-                    if let Some(island) = weak.upgrade()
-                        && island.brightness_generation.get() == generation
-                    {
-                        (island.actions.set_brightness)(value);
-                    }
-                });
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        self.player_prev_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade()
-                && let Some(service) = island
-                    .latest_media
-                    .borrow()
-                    .as_ref()
-                    .map(|state| state.service.clone())
-            {
-                (island.actions.media_previous)(service);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        self.player_play_pause_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade()
-                && let Some(service) = island
-                    .latest_media
-                    .borrow()
-                    .as_ref()
-                    .map(|state| state.service.clone())
-            {
-                (island.actions.media_play_pause)(service);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        self.player_next_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade()
-                && let Some(service) = island
-                    .latest_media
-                    .borrow()
-                    .as_ref()
-                    .map(|state| state.service.clone())
-            {
-                (island.actions.media_next)(service);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        self.player_switch_prev.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.switch_media_player(-1);
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        self.player_switch_next.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.switch_media_player(1);
             }
         });
     }

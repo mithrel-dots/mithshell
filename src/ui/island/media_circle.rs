@@ -4,7 +4,6 @@
 //! circle.  The central island supplies the already-selected `MediaState` and
 //! actions; it does not create another MPRIS listener or media store.
 
-#![allow(dead_code)]
 use std::{
     cell::{Cell, RefCell},
     io::Read,

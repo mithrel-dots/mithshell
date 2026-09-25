@@ -69,6 +69,7 @@ pub(super) fn notification_view(
     let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(12));
     root.set_size_request(metrics.notification_width, metrics.notification_height);
     root.add_css_class("notification-content");
+    root.set_cursor_from_name(Some("pointer"));
     root.set_valign(Align::Center);
 
     let icon = icon::foreign_image(None, Icon::Bell);
@@ -280,16 +281,8 @@ impl IslandWindow {
     /// Rebuilds the dashboard's notification history list and count badge
     /// from the controller's bounded history, most recent first.
     pub fn update_notification_history(&self, history: &[Notification]) {
-        let in_circle = self
-            .circles
-            .borrow()
-            .as_ref()
-            .is_some_and(|c| c.owns(crate::config::CircleModule::Notifications));
         if let Some(circles) = self.circles.borrow().as_ref() {
             circles.update_notifications(history);
-        }
-        if in_circle {
-            self.notification_list.set_visible(false);
         }
         self.notification_count
             .set_label(&history.len().to_string());
@@ -297,17 +290,23 @@ impl IslandWindow {
             .set_sensitive(!history.is_empty());
         clear_box(&self.notification_list);
         if history.is_empty() {
-            let placeholder = gtk::Label::new(Some("No notifications yet"));
+            let placeholder = gtk::Label::new(Some("All caught up"));
             placeholder.add_css_class("muted-label");
             placeholder.add_css_class("notification-empty");
-            placeholder.set_halign(Align::Start);
+            placeholder.set_halign(Align::Center);
             placeholder.set_wrap(true);
             self.notification_list.append(&placeholder);
+            if self.current_view.get() == View::Dashboard {
+                self.apply_geometry(self.presentation_target_geometry(View::Dashboard));
+            }
             return;
         }
         for notification in history {
             self.notification_list
                 .append(&self.notification_history_row(notification));
+        }
+        if self.current_view.get() == View::Dashboard {
+            self.apply_geometry(self.presentation_target_geometry(View::Dashboard));
         }
     }
 
@@ -348,25 +347,49 @@ impl IslandWindow {
 
         let text = gtk::Box::new(Orientation::Vertical, self.metrics.spacing(2));
         text.set_hexpand(true);
-        let summary = gtk::Label::new(Some(&notification.summary));
-        summary.add_css_class("notification-row-summary");
-        summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let app = gtk::Label::new(Some(&notification.app_name));
+        app.add_css_class("notification-row-app");
+        app.set_ellipsize(gtk::pango::EllipsizeMode::End);
         // Filled to the row rather than sized to the text: the dashboard is
         // laid out at its natural width inside a fixed-width surface, so an
         // unbounded row would push its own dismiss button outside the panel
         // instead of wrapping and ellipsizing within it.
-        summary.set_xalign(0.0);
-        summary.set_max_width_chars(20);
-        text.append(&summary);
-        if !notification.body.is_empty() {
-            let body = gtk::Label::new(Some(&notification.body));
-            body.add_css_class("notification-row-body");
-            body.set_wrap(true);
-            body.set_lines(2);
-            body.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            body.set_xalign(0.0);
-            body.set_max_width_chars(24);
-            text.append(&body);
+        app.set_xalign(0.0);
+        app.set_max_width_chars(20);
+        app.set_hexpand(true);
+        let heading = gtk::Box::new(Orientation::Horizontal, self.metrics.spacing(5));
+        let time = gtk::Label::new(Some(&relative_notification_time(
+            notification.received_at_unix_seconds,
+            unix_now(),
+        )));
+        time.add_css_class("notification-row-time");
+        time.set_valign(Align::Center);
+        let weak_time = time.downgrade();
+        let received_at = notification.received_at_unix_seconds;
+        glib::timeout_add_seconds_local(30, move || {
+            let Some(label) = weak_time.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            label.set_label(&relative_notification_time(received_at, unix_now()));
+            glib::ControlFlow::Continue
+        });
+        heading.append(&app);
+        heading.append(&time);
+        text.append(&heading);
+        for (message, class) in [
+            (&notification.summary, "notification-row-summary"),
+            (&notification.body, "notification-row-body"),
+        ] {
+            if message.is_empty() {
+                continue;
+            }
+            let label = gtk::Label::new(Some(message));
+            label.add_css_class(class);
+            label.set_wrap(true);
+            label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            label.set_xalign(0.0);
+            label.set_max_width_chars(24);
+            text.append(&label);
         }
 
         // Keep the gesture on the expanding content column rather than the
@@ -653,6 +676,7 @@ impl IslandWindow {
 
         if notification.default_action().is_some() {
             row.add_css_class("notification-toast-clickable");
+            row.set_cursor_from_name(Some("pointer"));
             let invoke_action = self.actions.notification_invoke.clone();
             let click = GestureClick::new();
             click.connect_released(move |gesture, _, _, _| {
@@ -778,9 +802,27 @@ fn format_inhibition_remaining(duration: Duration) -> String {
     }
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn relative_notification_time(received: u64, now: u64) -> String {
+    let age = now.saturating_sub(received);
+    match age {
+        0..=59 => "now".to_owned(),
+        60..=3_599 => format!("{}m", age / 60),
+        3_600..=86_399 => format!("{}h", age / 3_600),
+        _ => format!("{}d", age / 86_400),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_inhibition_remaining;
+    use super::relative_notification_time;
     use std::time::Duration;
 
     #[test]
@@ -805,5 +847,14 @@ mod tests {
             format_inhibition_remaining(Duration::from_secs(89_940)),
             "1d 1h"
         );
+    }
+
+    #[test]
+    fn notification_age_uses_received_unix_timestamp() {
+        assert_eq!(relative_notification_time(100, 100), "now");
+        assert_eq!(relative_notification_time(40, 100), "1m");
+        assert_eq!(relative_notification_time(100, 3_700), "1h");
+        assert_eq!(relative_notification_time(100, 86_500), "1d");
+        assert_eq!(relative_notification_time(101, 100), "now");
     }
 }

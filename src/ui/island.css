@@ -1,0 +1,52 @@
+/* Persistent header and its shared, clipped dashboard container. */
+.island-surface.island-persistent { border-radius: 0; background: transparent; border: none; box-shadow: none; }
+.island-surface .compact-pill { background: @ms_surface; border-width: 2px; }
+.island-panel-viewport, .island-panel-viewport > viewport {
+  background: transparent; border: none; box-shadow: none;
+}
+.island-panel-viewport {
+  border-radius: 0 0 30px 30px;
+  background: @ms_surface;
+  border: 2px solid alpha(@ms_primary, 0.35);
+  border-top: none;
+}
+.island-panel-viewport .dashboard-content {
+  padding: 28px 12px 12px;
+  border-radius: 0 0 22px 22px;
+  background: @ms_surface;
+  border: none;
+  box-shadow: none;
+}
+.island-panel-viewport label { font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace; }
+.island-dashboard-section, .island-dashboard-section > viewport {
+  background: transparent; border: none; box-shadow: none; padding: 0;
+}
+.island-panel-viewport .hardware-stat { min-height: 0; padding: 12px 14px; }
+.island-panel-viewport .hardware-network { min-height: 0; padding: 10px 14px; }
+.island-panel-viewport .hardware-value { color: @ms_primary; font-size: 14px; }
+.island-panel-viewport .hardware-secondary { font-size: 12px; }
+.island-panel-viewport .hardware-icon { font-family: "Symbols Nerd Font", "Font Awesome 6 Free", sans-serif; font-size: 22px; }
+.island-panel-viewport .hardware-name { font-size: 12px; font-weight: 500; }
+.island-panel-viewport .status-card { padding: 16px; }
+.island-panel-viewport .active-title { font-size: 19px; }
+.island-panel-viewport .workspace-button { min-width: 34px; min-height: 34px; padding: 0; }
+.island-panel-viewport .workspace-grid flowboxchild { padding: 0; margin: 0; }
+.island-panel-viewport .notification-card { padding: 14px; }
+.island-panel-viewport .notification-empty { padding: 20px 0; }
+.island-panel-viewport .notification-row-app { color: @ms_primary; font-size: 11px; font-weight: 600; }
+.island-expanded .compact-date { min-height: 22px; }
+.island-expanded .compact-date label { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.island-expanded .compact-clock { font-size: 15px; }
+.scale-large .island-panel-viewport .dashboard-content { padding: 48px 18px 18px; }
+.scale-large .island-panel-viewport .hardware-stat { padding: 16px 18px; }
+.scale-large .island-panel-viewport .hardware-network { padding: 14px 18px; }
+.scale-large .island-panel-viewport .hardware-value { font-size: 19px; }
+.scale-large .island-panel-viewport .hardware-secondary { font-size: 16px; }
+.scale-large .island-panel-viewport .hardware-name { font-size: 15px; }
+.scale-large .island-panel-viewport .hardware-icon { font-size: 28px; }
+.scale-large .island-panel-viewport .status-card { padding: 20px; }
+.scale-large .island-panel-viewport .workspace-button { min-width: 44px; min-height: 44px; }
+.scale-large .island-panel-viewport .active-title { font-size: 24px; }
+.scale-large .island-panel-viewport .notification-row-app { font-size: 14px; }
+.scale-large .island-expanded .compact-clock { font-size: 21px; }
+.scale-large .island-expanded .compact-date label { font-size: 16px; }

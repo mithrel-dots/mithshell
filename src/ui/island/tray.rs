@@ -655,7 +655,7 @@ mod tracker_tests {
     /// This deliberately uses a plain GTK window: layer-shell keyboard mode
     /// is an integration concern, while manager/lease/anchor lifecycle is not.
     #[test]
-    #[ignore = "requires an isolated GTK display; run with target/run-tray-circle-gtk.py"]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
     fn broadway_popovers_share_global_lifetime_and_close_on_invalidation() {
         use gtk::prelude::*;
         gtk::init().expect("initialize private Broadway display");

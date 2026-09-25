@@ -22,6 +22,31 @@ window.mithshell-notifications > contents {
   box-shadow: none;
 }
 
+.compact-pill {
+  background: transparent;
+  border: 1px solid alpha(@ms_outline_variant, 0.72);
+  border-radius: 999px;
+  box-shadow: 0 3px 10px alpha(black, 0.35), inset 0 1px alpha(white, 0.04);
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.island-expanded .compact-pill {
+  background: transparent;
+  border-color: alpha(@ms_primary, 0.42);
+  box-shadow: 0 18px 34px alpha(black, 0.55), inset 0 1px alpha(white, 0.05);
+}
+
+.island-expanded.island-surface {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.island-drop-header {
+  min-height: 40px;
+  padding: 0 4px 10px;
+}
+
 .media-circle-art-tile {
   border-radius: 50%;
 }
@@ -43,10 +68,6 @@ window.mithshell-notifications > contents {
 
 .notification-toast.urgency-critical {
   border-color: alpha(@ms_error, 0.6);
-}
-
-.notification-toast-clickable {
-  cursor: pointer;
 }
 
 .notification-toast-icon {
@@ -100,8 +121,68 @@ window.mithshell-notifications > contents {
   font-feature-settings: "tnum";
 }
 
-.compact-battery,
-.compact-workspace {
+.compact-date {
+  min-height: 22px;
+}
+
+.compact-date-day,
+.compact-date-rest {
+  color: @ms_on_surface_variant;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.hardware-value {
+  color: @ms_on_surface;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hardware-stat,
+.hardware-network {
+  background: alpha(@ms_surface_container_low, 0.82);
+  border: 1px solid alpha(@ms_outline_variant, 0.48);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.hardware-stat { min-height: 58px; }
+.hardware-network { min-height: 38px; }
+.hardware-icon {
+  color: @ms_primary;
+  font-size: 18px;
+  min-width: 24px;
+}
+.hardware-name {
+  color: @ms_on_surface_variant;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+.hardware-secondary {
+  color: @ms_on_surface_variant;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10px;
+}
+.hardware-rate { padding: 0 5px; }
+.hardware-network separator { background: alpha(@ms_outline_variant, 0.7); }
+.hardware-progress {
+  min-height: 5px;
+  border-radius: 99px;
+  background: alpha(@ms_on_surface, 0.1);
+}
+.hardware-progress trough { min-height: 5px; border-radius: 99px; background: alpha(@ms_on_surface, 0.1); }
+.hardware-progress progress { min-height: 5px; border-radius: 99px; background: @ms_primary; }
+.scale-medium .hardware-stat { min-height: 64px; padding: 11px 14px; }
+.scale-medium .hardware-network { min-height: 42px; }
+.scale-large .hardware-stat { min-height: 68px; padding: 12px 16px; }
+.scale-large .hardware-network { min-height: 46px; }
+.scale-large .hardware-value { font-size: 14px; }
+.scale-large .hardware-name { font-size: 12px; }
+.scale-large .hardware-secondary { font-size: 11px; }
+
+.compact-battery {
   color: @ms_on_surface_variant;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
   font-size: 11px;
@@ -218,10 +299,6 @@ window.mithshell-notifications > contents {
   background: alpha(@window_fg_color, 0.12);
 }
 
-.dashboard-content {
-  padding: 12px 14px 12px 14px;
-}
-
 .eyebrow {
   color: @ms_primary;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
@@ -246,40 +323,10 @@ window.mithshell-notifications > contents {
   font-size: 11px;
 }
 
-/* Sized to the header buttons it sits next to, so the whole control
-   cluster shares one height and corner radius. */
-.battery-chip {
-  min-height: 26px;
-  padding: 0 9px;
-  border-radius: 8px;
-  background: alpha(@ms_surface_container, 0.9);
-  border: 1px solid alpha(@ms_outline_variant, 0.3);
-}
-
-.battery-icon {
-  color: @ms_on_surface_variant;
-  -gtk-icon-size: 14px;
-  font-size: 18px;
-}
-
-/* Font Awesome has no charging-battery glyph, so charge state is a color
-   rather than a different icon. Applies to the themed fallback too. */
-.battery-icon.charging {
-  color: @ms_primary;
-}
-
-.battery-chip label {
-  color: @ms_secondary;
-  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-/* The dashboard's three content panels. Everything else in the view --
-   header, sliders -- sits directly on the surface, so panels read as
-   content rather than as a stack of independent cards. */
+/* The status and notification panels. Everything else in the view -- header,
+   sliders -- sits directly on the surface, so panels read as content rather
+   than as a stack of independent cards. */
 .status-card,
-.player-card,
 .notification-card {
   background: alpha(@ms_surface_low, 0.92);
   border: 1px solid alpha(@ms_outline_variant, 0.3);
@@ -316,11 +363,6 @@ window.mithshell-notifications > contents {
   font-feature-settings: "tnum";
 }
 
-.notification-history-scroll,
-.notification-history-scroll > viewport {
-  background: transparent;
-}
-
 .notification-empty {
   color: alpha(@ms_on_surface_variant, 0.7);
   font-size: 11px;
@@ -353,6 +395,13 @@ window.mithshell-notifications > contents {
   font-weight: 700;
 }
 
+.notification-row-time {
+  color: alpha(@ms_on_surface_variant, 0.82);
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 9px;
+  font-weight: 600;
+}
+
 .notification-row-body {
   color: alpha(@ms_on_surface_variant, 0.85);
   font-size: 12px;
@@ -379,98 +428,6 @@ window.mithshell-notifications > contents {
 .notification-row-dismiss:hover {
   background: alpha(@ms_outline_variant, 0.35);
   color: @ms_on_surface;
-}
-
-.player-icon {
-  color: @ms_primary;
-  -gtk-icon-size: 22px;
-}
-
-.player-title {
-  color: @ms_on_surface;
-  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.player-artist {
-  color: alpha(@ms_on_surface_variant, 0.82);
-  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 11px;
-}
-
-.player-button {
-  min-width: 26px;
-  min-height: 26px;
-  padding: 0;
-  color: @ms_on_surface_variant;
-  background: alpha(@ms_on_surface, 0.06);
-  border: 0;
-  border-radius: 8px;
-  box-shadow: none;
-  -gtk-icon-size: 13px;
-  font-size: 17px;
-}
-
-.player-button:hover {
-  color: @ms_on_surface;
-  background: alpha(@ms_on_surface, 0.12);
-}
-
-.player-button.player-play {
-  color: @ms_on_primary;
-  background: @ms_primary;
-}
-
-.player-button.player-play:hover {
-  background: alpha(@ms_primary, 0.85);
-}
-
-progressbar.player-progress trough {
-  min-height: 4px;
-  border-radius: 99px;
-  background: alpha(@ms_outline_variant, 0.35);
-}
-
-progressbar.player-progress progress {
-  min-height: 4px;
-  border-radius: 99px;
-  background: @ms_primary;
-}
-
-.player-time {
-  color: alpha(@ms_on_surface_variant, 0.76);
-  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 10px;
-  font-weight: 700;
-  font-feature-settings: "tnum";
-}
-
-/* Only shown while more than one MPRIS player is up, so it reads as a
-   secondary strip: smaller than the transport buttons above it. */
-.player-switch-button {
-  min-width: 20px;
-  min-height: 20px;
-  padding: 0;
-  color: alpha(@ms_on_surface_variant, 0.7);
-  background: alpha(@ms_on_surface, 0.06);
-  border: 0;
-  border-radius: 7px;
-  box-shadow: none;
-  -gtk-icon-size: 11px;
-  font-size: 14px;
-}
-
-.player-switch-button:hover {
-  color: @ms_on_surface;
-  background: alpha(@ms_on_surface, 0.12);
-}
-
-.player-switch-label {
-  color: alpha(@ms_on_surface_variant, 0.72);
-  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
-  font-size: 10px;
-  font-weight: 700;
 }
 
 /* The grid's own geometry comes from the row/column spacing set in code;
@@ -521,12 +478,6 @@ progressbar.player-progress progress {
   min-height: 26px;
 }
 
-.control-icon {
-  color: @ms_primary;
-  -gtk-icon-size: 16px;
-  font-size: 21px;
-}
-
 .control-value {
   min-width: 38px;
   color: @ms_on_surface_variant;
@@ -570,8 +521,7 @@ scale.control-scale slider {
   border: 1px solid alpha(@ms_outline_variant, 0.24);
   border-radius: 8px;
   box-shadow: none;
-  /* Previously left at GTK's 16px default; stated so the glyph and themed
-     representations stay the same size as each other. */
+  /* The glyph and themed representations must stay the same size. */
   -gtk-icon-size: 16px;
   font-size: 18px;
 }
@@ -888,7 +838,6 @@ progressbar.osd-progress progress {
 
 .notification-content {
   padding: 0 8px 0 16px;
-  cursor: pointer;
 }
 
 .notification-icon {
@@ -1126,8 +1075,7 @@ button.lock-power-button:disabled {
 
 .scale-medium .compact-content { padding: 0 18px; }
 .scale-medium .compact-clock { font-size: 16px; }
-.scale-medium .compact-battery,
-.scale-medium .compact-workspace { font-size: 12px; }
+.scale-medium .compact-battery { font-size: 12px; }
 .scale-medium .workspace-dot { min-width: 9px; min-height: 9px; }
 .scale-medium .workspace-dot.active { min-width: 23px; }
 .scale-medium .tray-icon { min-width: 22px; min-height: 22px; }
@@ -1136,33 +1084,19 @@ button.lock-power-button:disabled {
 .scale-medium .tray-menu-submenu { font-size: 14px; }
 .scale-medium .tray-menu-item,
 .scale-medium .tray-menu-submenu > title { padding: 4px 11px; }
-.scale-medium .dashboard-content { padding: 17px 20px 17px 20px; }
 .scale-medium .eyebrow { font-size: 11px; letter-spacing: 1.4px; }
 .scale-medium .hero-time { font-size: 38px; }
 .scale-medium .hero-date,
 .scale-medium .muted-label { font-size: 13px; }
-.scale-medium .battery-chip { min-height: 32px; padding: 0 11px; border-radius: 10px; }
-.scale-medium .battery-chip label { font-size: 13px; }
 .scale-medium .status-card,
-.scale-medium .player-card,
 .scale-medium .notification-card { border-radius: 15px; padding: 13px 16px; }
 .scale-medium .active-title { font-size: 17px; }
-.scale-medium .player-icon { -gtk-icon-size: 28px; }
-.scale-medium .player-title { font-size: 16px; }
-.scale-medium .player-artist { font-size: 13px; }
-.scale-medium .player-button { min-width: 32px; min-height: 32px; border-radius: 16px; -gtk-icon-size: 16px; font-size: 21px; }
-.scale-medium progressbar.player-progress trough,
-.scale-medium progressbar.player-progress progress { min-height: 5px; }
-.scale-medium .player-time { font-size: 11px; }
-.scale-medium .player-switch-button { min-width: 25px; min-height: 25px; border-radius: 9px; -gtk-icon-size: 13px; font-size: 17px; }
-.scale-medium .player-switch-label { font-size: 11px; }
 .scale-medium .workspace-button,
 .scale-medium .close-button { min-width: 32px; min-height: 32px; border-radius: 10px; }
 .scale-medium .notification-count { min-width: 32px; min-height: 32px; border-radius: 10px; font-size: 14px; }
 .scale-medium .workspace-button { font-size: 12px; }
 .scale-medium .control-stack { padding: 0 4px; }
 .scale-medium .control-row { min-height: 36px; }
-.scale-medium .control-icon { -gtk-icon-size: 19px; font-size: 25px; }
 .scale-medium .control-value { min-width: 46px; font-size: 12px; }
 .scale-medium scale.control-scale trough,
 .scale-medium scale.control-scale highlight,
@@ -1212,7 +1146,6 @@ button.lock-power-button:disabled {
 .scale-medium .notification-row-dismiss .icon-glyph { font-size: 21px; }
 .scale-medium .close-button { -gtk-icon-size: 20px; font-size: 22px; }
 .scale-medium .notification-toast-close { -gtk-icon-size: 17px; font-size: 22px; }
-.scale-medium .battery-icon { -gtk-icon-size: 17px; font-size: 22px; }
 .scale-medium .notification-content { padding: 0 9px 0 19px; }
 .scale-medium .notification-icon,
 .scale-medium .notification-toast-icon { -gtk-icon-size: 37px; }
@@ -1251,8 +1184,7 @@ button.lock-power-button:disabled {
 
 .scale-large .compact-content { padding: 0 22px; }
 .scale-large .compact-clock { font-size: 19px; }
-.scale-large .compact-battery,
-.scale-large .compact-workspace { font-size: 14px; }
+.scale-large .compact-battery { font-size: 14px; }
 .scale-large .workspace-dot { min-width: 10px; min-height: 10px; }
 .scale-large .workspace-dot.active { min-width: 28px; }
 .scale-large .tray-icon { min-width: 26px; min-height: 26px; }
@@ -1261,33 +1193,19 @@ button.lock-power-button:disabled {
 .scale-large .tray-menu-submenu { font-size: 16px; }
 .scale-large .tray-menu-item,
 .scale-large .tray-menu-submenu > title { padding: 5px 13px; }
-.scale-large .dashboard-content { padding: 21px 25px 21px 25px; }
 .scale-large .eyebrow { font-size: 13px; letter-spacing: 1.7px; }
 .scale-large .hero-time { font-size: 46px; }
 .scale-large .hero-date,
 .scale-large .muted-label { font-size: 16px; }
-.scale-large .battery-chip { min-height: 38px; padding: 0 13px; border-radius: 12px; }
-.scale-large .battery-chip label { font-size: 16px; }
 .scale-large .status-card,
-.scale-large .player-card,
 .scale-large .notification-card { border-radius: 18px; padding: 16px 19px; }
 .scale-large .active-title { font-size: 20px; }
-.scale-large .player-icon { -gtk-icon-size: 32px; }
-.scale-large .player-title { font-size: 19px; }
-.scale-large .player-artist { font-size: 16px; }
-.scale-large .player-button { min-width: 38px; min-height: 38px; border-radius: 19px; -gtk-icon-size: 19px; font-size: 25px; }
-.scale-large progressbar.player-progress trough,
-.scale-large progressbar.player-progress progress { min-height: 6px; }
-.scale-large .player-time { font-size: 13px; }
-.scale-large .player-switch-button { min-width: 30px; min-height: 30px; border-radius: 10px; -gtk-icon-size: 16px; font-size: 21px; }
-.scale-large .player-switch-label { font-size: 13px; }
 .scale-large .workspace-button,
 .scale-large .close-button { min-width: 38px; min-height: 38px; border-radius: 12px; }
 .scale-large .notification-count { min-width: 38px; min-height: 38px; border-radius: 12px; font-size: 16px; }
 .scale-large .workspace-button { font-size: 14px; }
 .scale-large .control-stack { padding: 0 5px; }
 .scale-large .control-row { min-height: 46px; }
-.scale-large .control-icon { -gtk-icon-size: 23px; font-size: 30px; }
 .scale-large .control-value { min-width: 55px; font-size: 14px; }
 .scale-large scale.control-scale trough,
 .scale-large scale.control-scale highlight,
@@ -1337,7 +1255,6 @@ button.lock-power-button:disabled {
 .scale-large .notification-row-dismiss .icon-glyph { font-size: 25px; }
 .scale-large .close-button { -gtk-icon-size: 24px; font-size: 26px; }
 .scale-large .notification-toast-close { -gtk-icon-size: 20px; font-size: 26px; }
-.scale-large .battery-icon { -gtk-icon-size: 20px; font-size: 26px; }
 .scale-large .notification-content { padding: 0 12px 0 24px; }
 .scale-large .notification-icon,
 .scale-large .notification-toast-icon { -gtk-icon-size: 43px; }

@@ -1,9 +1,8 @@
 //! Material 3 transition tokens and shell-specific profiles.
 //!
-//! Token definitions are from the legacy Material 3 motion guidance, verified
-//! against the first-party documentation cited in `docs/motion.md`. Profile
-//! assignments are shell design choices, not prescribed Google component
-//! timings.
+//! Token definitions are verified against the first-party documentation cited
+//! in `docs/motion.md`. Profile assignments are shell design choices, not
+//! prescribed Google component timings.
 
 use std::time::Duration;
 
@@ -14,23 +13,26 @@ pub mod duration {
     pub const SHORT2: Duration = Duration::from_millis(100);
     pub const SHORT3: Duration = Duration::from_millis(150);
     pub const SHORT4: Duration = Duration::from_millis(200);
-    pub const MEDIUM2: Duration = Duration::from_millis(300);
+    pub const MEDIUM4: Duration = Duration::from_millis(400);
     pub const LONG2: Duration = Duration::from_millis(500);
+
+    /// Delay before island content fades in after its container starts expanding.
+    pub const ISLAND_ENTER_FADE_DELAY: Duration = SHORT2;
 }
 
 /// Monotone, non-overshooting Material 3 cubic-bezier easing tokens.
 ///
-/// The multi-segment `emphasized` token is intentionally not represented here.
+/// Includes the two-segment emphasized path for persistent container transforms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Easing {
+    /// Material's two-segment emphasized path, not the single-bezier fallback.
+    Emphasized,
     /// cubic-bezier(0.2, 0, 0, 1)
     Standard,
     /// cubic-bezier(0, 0, 0, 1)
     StandardDecelerate,
     /// cubic-bezier(0.3, 0, 1, 1)
     StandardAccelerate,
-    /// cubic-bezier(0.05, 0.7, 0.1, 1)
-    EmphasizedDecelerate,
     /// cubic-bezier(0.3, 0, 0.8, 0.15)
     EmphasizedAccelerate,
 }
@@ -47,11 +49,32 @@ impl Easing {
         if progress >= 1.0 {
             return 1.0;
         }
+        if self == Self::Emphasized {
+            let (start, a, b, end) = if progress < 0.166666 {
+                ((0.0, 0.0), (0.05, 0.0), (0.133333, 0.06), (0.166666, 0.4))
+            } else {
+                ((0.166666, 0.4), (0.208333, 0.82), (0.25, 1.0), (1.0, 1.0))
+            };
+            let bezier = |t: f64, s: f64, a: f64, b: f64, e: f64| {
+                let u = 1.0 - t;
+                u * u * u * s + 3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t * e
+            };
+            let (mut low, mut high) = (0.0, 1.0);
+            for _ in 0..48 {
+                let t = (low + high) * 0.5;
+                if bezier(t, start.0, a.0, b.0, end.0) < progress {
+                    low = t;
+                } else {
+                    high = t;
+                }
+            }
+            return bezier((low + high) * 0.5, start.1, a.1, b.1, end.1);
+        }
         let (x1, y1, x2, y2) = match self {
+            Self::Emphasized => unreachable!("sampled using the two-segment path"),
             Self::Standard => (0.2, 0.0, 0.0, 1.0),
             Self::StandardDecelerate => (0.0, 0.0, 0.0, 1.0),
             Self::StandardAccelerate => (0.3, 0.0, 1.0, 1.0),
-            Self::EmphasizedDecelerate => (0.05, 0.7, 0.1, 1.0),
             Self::EmphasizedAccelerate => (0.3, 0.0, 0.8, 0.15),
         };
 
@@ -92,7 +115,6 @@ impl Profile {
         duration: duration::SHORT3,
         easing: Easing::Standard,
     };
-    pub const HOVER_EXIT: Self = Self::HOVER_ENTER;
     pub const CONTAINER_EXPAND: Self = Self {
         duration: duration::LONG2,
         // Persistent container movement is undirected; Standard is Google's
@@ -104,14 +126,6 @@ impl Profile {
         // See CONTAINER_EXPAND: this is not an enter/exit direction.
         easing: Easing::Standard,
     };
-    pub const ENTER: Self = Self {
-        duration: duration::MEDIUM2,
-        easing: Easing::StandardDecelerate,
-    };
-    pub const EXIT: Self = Self {
-        duration: duration::SHORT4,
-        easing: Easing::StandardAccelerate,
-    };
     pub const CONTENT_IN: Self = Self {
         duration: duration::SHORT3,
         easing: Easing::StandardDecelerate,
@@ -119,6 +133,22 @@ impl Profile {
     pub const CONTENT_OUT: Self = Self {
         duration: duration::SHORT2,
         easing: Easing::StandardAccelerate,
+    };
+    pub const ISLAND_EXPAND: Self = Self {
+        duration: duration::LONG2,
+        easing: Easing::Emphasized,
+    };
+    pub const ISLAND_COLLAPSE: Self = Self {
+        duration: duration::MEDIUM4,
+        easing: Easing::EmphasizedAccelerate,
+    };
+    pub const ISLAND_FADE_IN: Self = Self {
+        duration: duration::SHORT4,
+        easing: Easing::Standard,
+    };
+    pub const ISLAND_FADE_OUT: Self = Self {
+        duration: duration::SHORT4,
+        easing: Easing::Standard,
     };
 
     /// Resolves timing without interpreting config defaults as user intent.
@@ -150,24 +180,6 @@ impl Profile {
         self.easing
             .sample(elapsed.as_secs_f64() / self.duration.as_secs_f64())
     }
-
-    /// Interpolates finite scalar endpoints with exact start/end values.
-    ///
-    /// For interruption, capture the currently rendered value as `from`, choose
-    /// the new `to` and profile, then restart elapsed at zero. This preserves
-    /// position continuity, not velocity. Invalidate the previous tick callback
-    /// at the call site. Geometry can instead share one `progress` sample.
-    pub fn sample(self, from: f64, to: f64, elapsed: Duration) -> f64 {
-        let progress = self.progress(elapsed);
-        if progress <= 0.0 {
-            from
-        } else if progress >= 1.0 {
-            to
-        } else {
-            // Convex form avoids overflow in `to - from` for opposite signs.
-            (1.0 - progress) * from + progress * to
-        }
-    }
 }
 
 #[cfg(test)]
@@ -175,21 +187,22 @@ mod tests {
     use super::*;
 
     const EASINGS: [Easing; 5] = [
+        Easing::Emphasized,
         Easing::Standard,
         Easing::StandardDecelerate,
         Easing::StandardAccelerate,
-        Easing::EmphasizedDecelerate,
         Easing::EmphasizedAccelerate,
     ];
-    const PROFILES: [Profile; 8] = [
+    const PROFILES: [Profile; 9] = [
         Profile::HOVER_ENTER,
-        Profile::HOVER_EXIT,
         Profile::CONTAINER_EXPAND,
         Profile::CONTAINER_COLLAPSE,
-        Profile::ENTER,
-        Profile::EXIT,
         Profile::CONTENT_IN,
         Profile::CONTENT_OUT,
+        Profile::ISLAND_EXPAND,
+        Profile::ISLAND_COLLAPSE,
+        Profile::ISLAND_FADE_IN,
+        Profile::ISLAND_FADE_OUT,
     ];
 
     fn close(actual: f64, expected: f64) {
@@ -219,7 +232,6 @@ mod tests {
             (Easing::Standard, 0.2, 0.5),
             (Easing::StandardDecelerate, 0.125, 0.5),
             (Easing::StandardAccelerate, 0.6125, 0.5),
-            (Easing::EmphasizedDecelerate, 0.18125, 0.7625),
             (Easing::EmphasizedAccelerate, 0.5375, 0.18125),
         ] {
             close(easing.sample(time), displacement);
@@ -260,7 +272,6 @@ mod tests {
             ] {
                 assert_eq!(instant.duration, Duration::ZERO);
                 assert_eq!(instant.progress(Duration::ZERO), 1.0);
-                assert_eq!(instant.sample(23.0, -8.0, Duration::ZERO), -8.0);
                 assert!(instant.is_complete(Duration::ZERO));
             }
             let maximum = profile.with_timing(true, Some(u32::MAX));
@@ -278,41 +289,48 @@ mod tests {
     }
 
     #[test]
-    fn profile_sampling_finishes_exactly_and_preserves_scalar_endpoints() {
+    fn island_profiles_use_directional_material_tokens_and_fade_delay() {
+        assert_eq!(duration::MEDIUM4, Duration::from_millis(400));
+        assert_eq!(duration::ISLAND_ENTER_FADE_DELAY, duration::SHORT2);
+        assert_eq!(
+            Profile::ISLAND_EXPAND,
+            Profile {
+                duration: duration::LONG2,
+                easing: Easing::Emphasized,
+            }
+        );
+        assert_eq!(
+            Profile::ISLAND_COLLAPSE,
+            Profile {
+                duration: duration::MEDIUM4,
+                easing: Easing::EmphasizedAccelerate,
+            }
+        );
+        assert_eq!(
+            Profile::ISLAND_FADE_IN,
+            Profile {
+                duration: duration::SHORT4,
+                easing: Easing::Standard,
+            }
+        );
+        assert_eq!(
+            Profile::ISLAND_FADE_OUT,
+            Profile {
+                duration: duration::SHORT4,
+                easing: Easing::Standard,
+            }
+        );
+    }
+
+    #[test]
+    fn profile_progress_finishes_exactly() {
         for profile in PROFILES {
             assert!(!profile.is_complete(Duration::ZERO));
             assert!(!profile.is_complete(profile.duration - Duration::from_nanos(1)));
             assert!(profile.is_complete(profile.duration));
             assert_eq!(profile.progress(Duration::ZERO), 0.0);
             assert_eq!(profile.progress(profile.duration), 1.0);
-            assert_eq!(
-                profile.sample(-0.0, 83.0, Duration::ZERO).to_bits(),
-                (-0.0_f64).to_bits()
-            );
-            assert_eq!(profile.sample(-20.0, 83.0, profile.duration), 83.0);
-            assert_eq!(profile.sample(-20.0, 83.0, Duration::MAX), 83.0);
-            assert!(
-                profile
-                    .sample(-f64::MAX, f64::MAX, profile.duration / 2)
-                    .is_finite()
-            );
+            assert_eq!(profile.progress(Duration::MAX), 1.0);
         }
-    }
-
-    #[test]
-    fn reversal_starts_at_the_rendered_value_and_converges_without_overshoot() {
-        let opening = Profile::CONTAINER_EXPAND;
-        let closing = Profile::CONTAINER_COLLAPSE;
-        let rendered = opening.sample(40.0, 400.0, Duration::from_millis(120));
-        assert!(rendered > 40.0 && rendered < 400.0);
-        assert_eq!(closing.sample(rendered, 40.0, Duration::ZERO), rendered);
-        let mut previous = rendered;
-        for elapsed_ms in 0..=200 {
-            let value = closing.sample(rendered, 40.0, Duration::from_millis(elapsed_ms));
-            assert!((40.0..=rendered).contains(&value));
-            assert!(value <= previous);
-            previous = value;
-        }
-        assert_eq!(previous, 40.0);
     }
 }

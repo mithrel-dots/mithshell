@@ -407,6 +407,7 @@ struct Controller {
     tarragon_snapshot: RefCell<Option<TarragonSnapshot>>,
     tarragon_status: RefCell<Option<TarragonStatus>>,
     pending_volume: Cell<Option<u8>>,
+    audio_mutation_sender: Sender<system::AudioMutation>,
     islands: RefCell<HashMap<String, Rc<IslandWindow>>>,
     /// `Some` exactly while the session is locked.
     lock: RefCell<Option<Rc<LockSession>>>,
@@ -432,6 +433,7 @@ struct Controller {
     notification_command_sender: Sender<NotificationCommand>,
     _media_listener: thread::JoinHandle<()>,
     _visualizer_listener: thread::JoinHandle<()>,
+    _telemetry_listener: thread::JoinHandle<()>,
     _weather_listener: thread::JoinHandle<()>,
     _tray_listener: Option<thread::JoinHandle<()>>,
     _notification_listener: Option<thread::JoinHandle<()>>,
@@ -603,6 +605,19 @@ impl Controller {
         } else {
             media::start_visualizer(visualizer_sender)
         };
+        let (audio_mutation_sender, audio_mutation_receiver) = async_channel::unbounded();
+        let _audio_mutation_worker = if hooks.skip_passive_workers {
+            drop(audio_mutation_receiver);
+            idle_worker()
+        } else {
+            system::start_audio_mutation_worker(audio_mutation_receiver)
+        };
+        let (telemetry_sender, telemetry_receiver) = async_channel::bounded(1);
+        let telemetry_listener = if hooks.skip_passive_workers {
+            idle_worker()
+        } else {
+            crate::telemetry::start_sampler(telemetry_sender, telemetry_receiver.clone())
+        };
         let (weather_sender, weather_receiver) = async_channel::unbounded();
         let weather_listener = if hooks.skip_passive_workers {
             idle_worker()
@@ -696,6 +711,7 @@ impl Controller {
             tarragon_snapshot: RefCell::new(None),
             tarragon_status: RefCell::new(None),
             pending_volume: Cell::new(None),
+            audio_mutation_sender,
             islands: RefCell::new(HashMap::new()),
             lock: RefCell::new(None),
             animations,
@@ -714,6 +730,7 @@ impl Controller {
             notification_command_sender,
             _media_listener: media_listener,
             _visualizer_listener: visualizer_listener,
+            _telemetry_listener: telemetry_listener,
             _weather_listener: weather_listener,
             _tray_listener: tray_listener,
             _notification_listener: notification_listener,
@@ -754,6 +771,7 @@ impl Controller {
         controller.attach_weather(weather_receiver);
         controller.attach_tray(tray_receiver);
         controller.attach_visualizer(visualizer_receiver);
+        controller.attach_telemetry(telemetry_receiver);
         if startup_services.tarragon {
             controller.attach_tarragon(tarragon_event_receiver);
         }
@@ -882,6 +900,25 @@ impl Controller {
                         }
                     }
                     Err(error) => warn!("cannot show volume OSD: {error:#}"),
+                }
+            }
+        });
+    }
+
+    fn attach_telemetry(self: &Rc<Self>, receiver: Receiver<crate::state::HardwareSnapshot>) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(hardware) = receiver.recv().await {
+                let Some(controller) = weak.upgrade() else {
+                    break;
+                };
+                let snapshot = {
+                    let mut cache = controller.system.borrow_mut();
+                    cache.update_hardware(hardware);
+                    cache.snapshot().clone()
+                };
+                for island in controller.islands.borrow().values() {
+                    island.update_system(&snapshot);
                 }
             }
         });
@@ -2024,18 +2061,19 @@ impl Controller {
                         }
                     });
                 }
-                thread::spawn(move || {
-                    if let Err(error) = system::set_volume(value) {
-                        warn!("failed to set volume: {error:#}");
-                    }
-                });
+                if let Some(controller) = weak.upgrade() {
+                    let _ = controller
+                        .audio_mutation_sender
+                        .try_send(system::AudioMutation::SetVolume(value));
+                }
             });
-            let set_brightness = Rc::new(move |value: u8| {
-                thread::spawn(move || {
-                    if let Err(error) = system::set_brightness(value) {
-                        warn!("failed to set brightness: {error:#}");
-                    }
-                });
+            let weak = Rc::downgrade(self);
+            let toggle_mute = Rc::new(move || {
+                if let Some(controller) = weak.upgrade() {
+                    let _ = controller
+                        .audio_mutation_sender
+                        .try_send(system::AudioMutation::ToggleMute);
+                }
             });
             let tarragon_sender = self.tarragon_sender.clone();
             let search = Rc::new(move |text: String| {
@@ -2170,7 +2208,7 @@ impl Controller {
                 IslandActions {
                     switch_workspace,
                     set_volume,
-                    set_brightness,
+                    toggle_mute,
                     search,
                     select,
                     tarragon_status,
