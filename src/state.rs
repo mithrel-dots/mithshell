@@ -167,6 +167,7 @@ pub struct SystemInfoState {
     pub hostname: String,
     pub os_name: String,
     pub uptime_seconds: u64,
+    pub last_update_age_seconds: Option<u64>,
 }
 
 /// A coarse weather condition, used to pick which placeholder pixel-art

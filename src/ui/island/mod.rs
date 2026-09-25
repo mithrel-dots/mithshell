@@ -242,6 +242,8 @@ pub struct IslandWindow {
     media_tray: gtk::Box,
     latest_media: RefCell<Option<MediaState>>,
     selected_media_service: RefCell<Option<String>>,
+    uptime_value: gtk::Label,
+    last_update_value: gtk::Label,
     active_eyebrow: gtk::Label,
     active_title: gtk::Label,
     workspace_row: gtk::FlowBox,

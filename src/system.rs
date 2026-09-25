@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
     sync::OnceLock,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
@@ -326,7 +326,26 @@ pub fn query_system_info() -> Result<SystemInfoState> {
         hostname,
         os_name,
         uptime_seconds,
+        last_update_age_seconds: last_package_update_age_seconds(),
     })
+}
+
+/// The newest package record in libalpm's local database is shared by Arch
+/// and its derivatives, unlike distro-specific update commands or log paths.
+/// Its `desc` timestamp gives the age of the latest installed/upgraded package.
+fn last_package_update_age_seconds() -> Option<u64> {
+    let local_db = fs::read_dir("/var/lib/pacman/local").ok()?;
+    let updated_at = local_db
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| fs::metadata(entry.path().join("desc")).ok())
+        .filter_map(|metadata| metadata.modified().ok())
+        .max()?;
+    Some(
+        SystemTime::now()
+            .duration_since(updated_at)
+            .unwrap_or_default()
+            .as_secs(),
+    )
 }
 
 pub fn request_power(action: PowerAction) -> Result<()> {
@@ -440,6 +459,7 @@ mod tests {
                 hostname: "test-desktop".into(),
                 os_name: "Test Linux".into(),
                 uptime_seconds: 120,
+                last_update_age_seconds: None,
             }),
         }
     }

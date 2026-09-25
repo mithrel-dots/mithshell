@@ -431,6 +431,8 @@ impl IslandWindow {
             media_tray: media_widgets.tray,
             latest_media: RefCell::new(None),
             selected_media_service: RefCell::new(None),
+            uptime_value: dashboard_widgets.uptime_value,
+            last_update_value: dashboard_widgets.last_update_value,
             active_eyebrow: dashboard_widgets.active_eyebrow,
             active_title: dashboard_widgets.active_title,
             workspace_row: dashboard_widgets.workspace_row,

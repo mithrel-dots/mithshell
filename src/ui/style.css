@@ -307,6 +307,14 @@ window.mithshell-notifications > contents {
   letter-spacing: 1.4px;
 }
 
+.header-system-value {
+  color: @ms_on_surface;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
 .hero-time {
   color: @ms_tertiary;
   font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;

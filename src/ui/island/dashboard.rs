@@ -14,6 +14,8 @@ pub(super) struct DashboardWidgets {
     pub(super) root: gtk::Box,
     pub(super) sections: Vec<DashboardSection>,
     pub(super) hardware: HardwarePanel,
+    pub(super) uptime_value: gtk::Label,
+    pub(super) last_update_value: gtk::Label,
     pub(super) active_eyebrow: gtk::Label,
     pub(super) active_title: gtk::Label,
     pub(super) workspace_row: gtk::FlowBox,
@@ -269,6 +271,19 @@ fn hardware_progress() -> gtk::ProgressBar {
     progress
 }
 
+fn header_system_stat(title: &str, value: &str) -> (gtk::Box, gtk::Label) {
+    let block = gtk::Box::new(Orientation::Vertical, 1);
+    let caption = gtk::Label::new(Some(title));
+    caption.add_css_class("eyebrow");
+    caption.set_xalign(0.0);
+    let value = gtk::Label::new(Some(value));
+    value.add_css_class("header-system-value");
+    value.set_xalign(0.0);
+    block.append(&caption);
+    block.append(&value);
+    (block, value)
+}
+
 pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     // Section gaps roll away with their clipped content, rather than remaining
     // fixed until a disappearing child is abruptly removed from the box.
@@ -277,21 +292,19 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     root.add_css_class("dashboard-content");
     root.set_valign(Align::Start);
 
-    // The identity label fills the header beside its navigation controls.
+    // System-health values fill the header beside its navigation controls.
     let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
     header.add_css_class("island-drop-header");
-    let heading = gtk::Box::new(Orientation::Vertical, 0);
+    let heading = gtk::Box::new(Orientation::Horizontal, metrics.spacing(16));
     heading.set_hexpand(true);
     heading.set_valign(Align::Center);
-    // Filled rather than sized to the text: `.eyebrow`'s letter-spacing is
-    // not counted in the natural width GTK measures, so an ellipsizing
-    // label pinned to `halign: start` gets allocated a hair less than it
-    // needs and drops its last character.
-    let eyebrow = gtk::Label::new(Some("MITHSHELL  //  LOCAL"));
-    eyebrow.add_css_class("eyebrow");
-    eyebrow.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    eyebrow.set_xalign(0.0);
-    heading.append(&eyebrow);
+    let (uptime_block, uptime_value) = header_system_stat("UPTIME", "--");
+    let (last_update_block, last_update_value) = header_system_stat("LAST UPDATE", "--");
+    last_update_value.set_tooltip_text(Some(
+        "Age since the newest installed package record in pacman's local database",
+    ));
+    heading.append(&uptime_block);
+    heading.append(&last_update_block);
 
     let close_button = icon::icon_button(Icon::Close, metrics.icons);
     close_button.add_css_class("close-button");
@@ -432,6 +445,8 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
             notification_section,
         ],
         hardware,
+        uptime_value,
+        last_update_value,
         active_eyebrow,
         active_title,
         workspace_row,
@@ -549,6 +564,15 @@ impl IslandWindow {
         self.updating_controls.set(true);
         let hardware = &snapshot.hardware;
         self.hardware.update(hardware);
+        if let Some(info) = &snapshot.info {
+            self.uptime_value
+                .set_label(&format_system_uptime(info.uptime_seconds));
+            self.last_update_value.set_label(
+                &info
+                    .last_update_age_seconds
+                    .map_or_else(|| "n/a".to_owned(), format_update_age),
+            );
+        }
         if let Some(audio) = snapshot.audio {
             self.volume_scale.set_value(f64::from(audio.percent));
             self.volume_value.set_label(&if audio.muted {
@@ -590,6 +614,31 @@ impl IslandWindow {
         self.updating_controls.set(false);
         self.resize_compact();
         self.reconcile_pill_geometry();
+    }
+}
+
+fn format_system_uptime(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+fn format_update_age(seconds: u64) -> String {
+    if seconds < 60 {
+        "just now".to_owned()
+    } else if seconds < 3_600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3_600)
+    } else {
+        format!("{}d ago", seconds / 86_400)
     }
 }
 
