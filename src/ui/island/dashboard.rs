@@ -9,6 +9,7 @@ use gtk::{Align, Orientation};
 
 use super::{IslandWindow, Metrics};
 use crate::state::{HyprlandSnapshot, SystemSnapshot};
+use crate::ui::format::format_uptime;
 
 pub(super) struct DashboardWidgets {
     pub(super) root: gtk::Box,
@@ -312,7 +313,6 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     root.add_css_class("dashboard-content");
     root.set_valign(Align::Start);
 
-    // System-health values fill the header beside its navigation controls.
     let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(9));
     header.add_css_class("island-drop-header");
     let heading = gtk::Box::new(Orientation::Horizontal, metrics.spacing(16));
@@ -346,10 +346,6 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     let hardware = hardware_panel(metrics);
     root.append(&hardware.root);
 
-    // Output identity and the workspace grid share a single panel. The grid
-    // asks for exactly the width its buttons need and the window title
-    // takes the remainder, rather than the near-empty column claiming the
-    // wider half.
     let status_card = gtk::Box::new(Orientation::Horizontal, metrics.spacing(10));
     status_card.add_css_class("status-card");
 
@@ -364,11 +360,7 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     let active_title = gtk::Label::new(Some("Quiet desktop"));
     active_title.add_css_class("active-title");
     active_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    // Fill + a small natural width, rather than `halign: start` at the
-    // label's own width: the dashboard is laid out at its natural size
-    // inside a fixed-width surface, so a long title left unbounded pushes
-    // the workspace grid out past the visible edge. Filling still lets it
-    // use every pixel the strip actually has at any scale.
+    // Bound natural width so long titles cannot push the workspace grid off-screen.
     active_title.set_xalign(0.0);
     active_title.set_max_width_chars(16);
     active_column.append(&active_eyebrow);
@@ -390,7 +382,6 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     status_card.append(&workspace_row);
     let status_section = dashboard_section(&root, &status_card, true);
 
-    // Volume rides directly on the dashboard as a thin row.
     let controls_stack = gtk::Box::new(Orientation::Vertical, 0);
     controls_stack.add_css_class("control-stack");
     let volume_row = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
@@ -445,8 +436,6 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     let notification_list = gtk::Box::new(Orientation::Vertical, metrics.spacing(4));
     notification_list.add_css_class("notification-list");
     notification_list.set_vexpand(false);
-    // Replaced by `update_notification_history` as soon as the controller
-    // pushes its first (possibly empty) history snapshot.
     let notification_placeholder = gtk::Label::new(Some("All caught up"));
     notification_placeholder.add_css_class("muted-label");
     notification_placeholder.add_css_class("notification-empty");
@@ -593,7 +582,7 @@ impl IslandWindow {
         self.hardware.update(hardware);
         if let Some(info) = &snapshot.info {
             self.uptime_value
-                .set_label(&format_system_uptime(info.uptime_seconds));
+                .set_label(&format_uptime(info.uptime_seconds));
             self.last_update_value.set_label(
                 &info
                     .last_update_age_seconds
@@ -641,19 +630,6 @@ impl IslandWindow {
         self.updating_controls.set(false);
         self.resize_compact();
         self.reconcile_pill_geometry();
-    }
-}
-
-fn format_system_uptime(seconds: u64) -> String {
-    let days = seconds / 86_400;
-    let hours = (seconds % 86_400) / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
     }
 }
 

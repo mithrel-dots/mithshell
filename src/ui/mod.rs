@@ -1,3 +1,4 @@
+mod format;
 pub(crate) mod icon;
 mod island;
 mod lock;

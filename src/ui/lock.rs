@@ -27,6 +27,7 @@ use gtk::{
 use gtk4_session_lock::Instance as SessionLockInstance;
 use log::{debug, info, warn};
 
+use super::format::format_uptime;
 use super::icon::Icon;
 use super::{automatic_scale, resolved_scale, scale_class, scaled};
 use crate::{
@@ -1110,19 +1111,6 @@ fn system_info_text(info: &SystemInfoState) -> String {
     )
 }
 
-fn format_uptime(seconds: u64) -> String {
-    let days = seconds / 86_400;
-    let hours = (seconds % 86_400) / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
-    }
-}
-
 fn power_action_name(action: PowerAction) -> &'static str {
     match action {
         PowerAction::PowerOff => "power off",
@@ -1147,14 +1135,7 @@ impl Drop for LockSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{LockAnimation, format_uptime, smoothstep};
-
-    #[test]
-    fn formats_uptime_at_useful_precision() {
-        assert_eq!(format_uptime(42), "0m");
-        assert_eq!(format_uptime(3_720), "1h 2m");
-        assert_eq!(format_uptime(183_600), "2d 3h");
-    }
+    use super::{LockAnimation, smoothstep};
 
     #[test]
     fn lock_animation_honors_disable_and_configured_duration() {

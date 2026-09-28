@@ -127,28 +127,18 @@ impl TrayCircle {
         // relayout. Keep callbacks behind the child rebuild.
         self.menu_tracker.begin_batch();
         self.menu_tracker.invalidate();
-        clear_children(&self.compact);
-        clear_children(&self.hover);
-        clear_children(&self.full);
+        clear_overlay(&self.compact);
+        super::clear_box(&self.hover);
+        super::clear_box(&self.full);
         let present = self.enabled && !items.is_empty();
         if present {
             let count = gtk::Label::new(Some(&items.len().to_string()));
             count.add_css_class("circle-tray-count");
             self.compact.set_child(Some(&count));
             if self.style == TrayCompactStyle::CountWithIcons {
-                for (index, item) in items
-                    .iter()
-                    .take(preview_count(items.len(), self.max_compact_icons))
-                    .enumerate()
-                {
-                    let Some((x, y, size)) = compact_preview_layout(
-                        self.scale,
-                        preview_count(items.len(), self.max_compact_icons),
-                    )
-                    .get(index)
-                    .copied() else {
-                        continue;
-                    };
+                let preview_count = items.len().min(self.max_compact_icons);
+                let layout = compact_preview_layout(self.scale, preview_count);
+                for (item, (x, y, size)) in items.iter().zip(layout) {
                     let image = self.small_preview(item, size);
                     image.set_halign(Align::Center);
                     image.set_valign(Align::Center);
@@ -257,31 +247,10 @@ fn ensure_page_measurement(page: &gtk::Box) {
     page.set_size_request(-1, 24);
 }
 
-fn clear_children<W: IsA<gtk::Widget>>(widget: &W) {
-    if let Some(overlay) = widget.as_ref().downcast_ref::<gtk::Overlay>() {
-        overlay.set_child(None::<&gtk::Widget>);
-        while let Some(child) = overlay.first_child() {
-            overlay.remove_overlay(&child);
-        }
-        return;
-    }
-    if let Some(flow) = widget.as_ref().downcast_ref::<gtk::FlowBox>() {
-        while let Some(child) = flow.first_child() {
-            flow.remove(&child);
-        }
-        return;
-    }
-    if let Some(row) = widget.as_ref().downcast_ref::<gtk::Box>() {
-        while let Some(child) = row.first_child() {
-            row.remove(&child);
-        }
-        return;
-    }
-    // Do not retain sibling links across unparenting.  GTK containers are
-    // allowed to update their child list synchronously, and a stale sibling
-    // obtained before removal can become an invalid object during allocation.
-    while let Some(current) = widget.first_child() {
-        current.unparent();
+fn clear_overlay(overlay: &gtk::Overlay) {
+    overlay.set_child(None::<&gtk::Widget>);
+    while let Some(child) = overlay.first_child() {
+        overlay.remove_overlay(&child);
     }
 }
 
@@ -314,13 +283,9 @@ fn compact_preview_layout(scale: f64, total: usize) -> Vec<(i32, i32, i32)> {
         .collect()
 }
 
-fn preview_count(total: usize, limit: usize) -> usize {
-    total.min(limit)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{TrayCircle, compact_preview_layout, preview_count};
+    use super::{TrayCircle, compact_preview_layout};
     use crate::config::{TrayCompactStyle, TrayConfig};
     use crate::state::{TrayIcon, TrayItem, TrayStatus};
     use gtk::prelude::*;
@@ -335,14 +300,6 @@ mod tests {
                 assert!(distance + diagonal <= diameter / 2.0 + 1.0);
             }
         }
-    }
-
-    #[test]
-    fn preview_limit_never_truncates_expanded_snapshot() {
-        let total = 17;
-        assert_eq!(preview_count(total, 0), 0);
-        assert_eq!(preview_count(total, 4), 4);
-        assert_eq!(total, 17);
     }
 
     #[test]

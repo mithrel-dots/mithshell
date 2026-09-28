@@ -218,9 +218,7 @@ pub(super) fn search_view(metrics: Metrics) -> SearchWidgets {
 
 /// Swaps the single child of a preview icon slot.
 fn replace_slot_child(slot: &gtk::Box, child: &impl IsA<gtk::Widget>) {
-    while let Some(existing) = slot.first_child() {
-        slot.remove(&existing);
-    }
+    super::clear_box(slot);
     slot.append(child);
 }
 
@@ -491,9 +489,7 @@ impl IslandWindow {
             .selected_row()
             .map_or(0, |row| row.index());
         *self.search_snapshot.borrow_mut() = Some(snapshot.clone());
-        while let Some(child) = self.search_results.first_child() {
-            self.search_results.remove(&child);
-        }
+        clear_list_box(&self.search_results);
 
         for result in &snapshot.list {
             let row = search_result_row(result, self.metrics);
@@ -552,7 +548,6 @@ impl IslandWindow {
         }
         self.search_status.set_label(&status);
         self.render_plugin_list();
-        // t4: main-thread widget work for this snapshot is complete.
         crate::latency::mark_build();
     }
 
@@ -866,9 +861,7 @@ impl IslandWindow {
         self.search_plugin_toggle.set_active(false);
         self.search_stack.set_visible_child_name("results");
         self.search_entry.set_text("");
-        while let Some(child) = self.search_results.first_child() {
-            self.search_results.remove(&child);
-        }
+        clear_list_box(&self.search_results);
         *self.search_snapshot.borrow_mut() = None;
         self.clear_search_preview();
         if self.search_connected.get() {
@@ -1096,13 +1089,12 @@ impl IslandWindow {
         }
         self.search_status.set_label("SEARCHING");
 
-        // Leading edge: nothing dispatched recently, so send immediately.
         let now = Instant::now();
-        let ready = self
+        let throttle_elapsed = self
             .last_search_dispatch
             .get()
             .is_none_or(|last| now.duration_since(last) >= SEARCH_THROTTLE);
-        if ready {
+        if throttle_elapsed {
             self.dispatch_search(text);
             return;
         }

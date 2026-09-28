@@ -307,15 +307,7 @@ impl IslandWindow {
         apply_tray_icon(&image, &item.icon);
         button.set_child(Some(&image));
 
-        // Primary click goes through `GtkButton`'s own `clicked` signal
-        // rather than an extra `GestureClick`: the button already has an
-        // internal click gesture that claims the primary-button sequence,
-        // so a second gesture watching the same button loses the claim and
-        // never fires. Middle/secondary are free for gestures below, but
-        // each is restricted to exactly the button it handles -- a
-        // catch-all `button(0)` gesture competes with that same internal
-        // one (which is itself "any button", it just only *emits* for the
-        // primary) and can swallow those clicks too.
+        // Extra primary/catch-all gestures would compete with GtkButton's own claim.
         let weak = Rc::downgrade(self);
         let service = item.service.clone();
         let object_path = item.object_path.clone();
@@ -438,11 +430,9 @@ impl IslandWindow {
             let result = crate::tray::menu_layout(&fetch_service, &fetch_menu_path);
             let _ = sender.send_blocking(result.map_err(|error| error.to_string()));
         });
-        let lease = tracker
-            .as_ref()
-            .map(|tracker| tracker.begin(&anchor_key(&anchor, &service, &menu_path)));
+        let key = menu_key(&service, &menu_path);
+        let lease = tracker.as_ref().map(|tracker| tracker.begin(&key));
         let island = self.clone();
-        let key = anchor_key(&anchor, &service, &menu_path);
         glib::MainContext::default().spawn_local(async move {
             match receiver.recv().await {
                 Ok(Ok(menu)) => {
@@ -581,7 +571,7 @@ fn present_tray_popover(
     popover.popup();
 }
 
-fn anchor_key(_anchor: &gtk::Button, service: &str, menu_path: &str) -> String {
+fn menu_key(service: &str, menu_path: &str) -> String {
     format!("{service}\0{menu_path}")
 }
 

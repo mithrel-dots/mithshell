@@ -208,7 +208,7 @@ impl CircleIntegration {
                 CircleModule::None => None,
             };
             if let Some(host) = host {
-                let (spec, _) = spec_for(module, island.metrics.scale);
+                let spec = spec_for(module);
                 island.fixed.put(host.widget(), 0.0, 0.0);
                 let weak = Rc::downgrade(island);
                 host.set_on_change(move |_| {
@@ -523,24 +523,18 @@ impl CircleIntegration {
                 }
             }
         }
-        // CircleSurface publishes its current frame through a custom measure
-        // vfunc.  Force the outer Fixed to consume that request immediately;
-        // otherwise a host first mapped while its ScrolledWindow page is
-        // empty can remain allocated at 0x0 until an unrelated resize.
-        // A custom CircleSurface publishes a new size request when a page
-        // commits.  Queue the parent resize as well as allocation; allocation
-        // alone can retain the compact page's old request on a mapped Fixed.
+        // Fixed needs both passes to consume a changed CircleSurface measurement.
         island.fixed.queue_resize();
         island.fixed.queue_allocate();
         island.update_circle_input_region();
         drop(animations);
         if self.animations.borrow().iter().any(Option::is_some) {
-            self.ensure_tick(island);
+            self.ensure_tick();
         }
         island.refresh_keyboard_mode();
     }
 
-    fn ensure_tick(&self, _island: &IslandWindow) {
+    fn ensure_tick(&self) {
         if self.tick_scheduled.replace(true) {
             return;
         }
@@ -718,10 +712,8 @@ impl IslandWindow {
     }
 }
 
-fn spec_for(module: CircleModule, _scale: f64) -> (CircleSpec, Visual) {
-    // The neutral pill is 32 design pixels high.  Layout applies the shell
-    // scale once; the old 48px value made compact circles 48*scale high.
-    let diameter = 32.0;
+fn spec_for(module: CircleModule) -> CircleSpec {
+    let diameter = f64::from(super::COMPACT_HEIGHT);
     let hover = match module {
         CircleModule::Notifications => Size {
             width: 300.0,
@@ -746,10 +738,9 @@ fn spec_for(module: CircleModule, _scale: f64) -> (CircleSpec, Visual) {
         width: 420.0,
         height: 520.0,
     });
-    let spec = CircleSpec {
+    CircleSpec {
         diameter,
         hover,
         full,
-    };
-    (spec, spec.visual(circle::Mode::Compact).unwrap())
+    }
 }
