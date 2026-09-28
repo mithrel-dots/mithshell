@@ -44,8 +44,6 @@ pub fn start_listener(
         let mut last_failure: Option<String> = None;
         while !command_receiver.is_closed() {
             let context = glib::MainContext::new();
-            // Two failure layers, both fatal to this attempt: acquiring the
-            // context, then the listener itself. Flatten so neither is lost.
             let result = context
                 .with_thread_default(|| run_listener(&context, &events, command_receiver.clone()))
                 .context("failed to acquire a thread-default main context")
@@ -54,16 +52,13 @@ pub fn start_listener(
                 break;
             }
             match result {
-                // A clean return means the session bus went away rather than
-                // never having been there; retry promptly.
+                // A clean disconnect should retry without the failure backoff.
                 Ok(()) => {
                     backoff = RETRY_BASE;
                     last_failure = None;
                 }
                 Err(error) => {
                     let message = format!("{error:#}");
-                    // Repeating the same reason every retry is noise; only
-                    // the first occurrence of each distinct one is a warning.
                     if last_failure.as_deref() == Some(message.as_str()) {
                         debug!("logind lock listener still unavailable: {message}");
                     } else {

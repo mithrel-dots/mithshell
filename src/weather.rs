@@ -127,8 +127,7 @@ fn add_days(date: &str, delta: i64) -> Option<String> {
     Some(format!("{year:04}-{month:02}-{day:02}"))
 }
 
-/// Full weekday name for an ISO `YYYY-MM-DD` date, computed with Sakamoto's
-/// algorithm rather than pulling in a dedicated date/time crate.
+/// Full weekday name for an ISO `YYYY-MM-DD` date.
 fn weekday_label(date: &str) -> String {
     const NAMES: [&str; 7] = [
         "Sunday",
@@ -150,21 +149,14 @@ fn weekday_label(date: &str) -> String {
     ) else {
         return String::new();
     };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return String::new();
+    }
+    let sunday_based_weekday = (to_julian_day(year, month, day) + 1).rem_euclid(7);
     NAMES
-        .get(day_of_week(year, month, day) as usize)
+        .get(sunday_based_weekday as usize)
         .map(|name| (*name).to_owned())
         .unwrap_or_default()
-}
-
-/// Sakamoto's algorithm. Returns 0 for Sunday through 6 for Saturday.
-fn day_of_week(year: i32, month: u32, day: u32) -> i32 {
-    const OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    let mut year = year;
-    if month < 3 {
-        year -= 1;
-    }
-    (year + year / 4 - year / 100 + year / 400 + OFFSETS[(month - 1) as usize] + day as i32)
-        .rem_euclid(7)
 }
 
 /// Some providers report fewer than seven days of forecast, but the dashboard
@@ -201,6 +193,9 @@ mod tests {
         assert_eq!(weekday_label("2000-01-01"), "Saturday");
         assert_eq!(weekday_label("2026-08-03"), "Monday");
         assert_eq!(weekday_label("not-a-date"), "");
+        assert_eq!(weekday_label("2026-00-01"), "");
+        assert_eq!(weekday_label("2026-13-01"), "");
+        assert_eq!(weekday_label("2024-02-29"), "Thursday");
     }
 
     #[test]

@@ -139,10 +139,9 @@ fn run_server(
     let registration = connection
         .register_object(OBJECT_PATH, &interface_info)
         .method_call(
-            move |connection, sender, _path, _interface, method, parameters, invocation| {
+            move |connection, _sender, _path, _interface, method, parameters, invocation| {
                 handle_method_call(
                     &connection,
-                    sender,
                     method,
                     &parameters,
                     invocation,
@@ -202,10 +201,8 @@ fn emit_closed(connection: &gio::DBusConnection, id: u32, reason: CloseReason) {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_method_call(
     connection: &gio::DBusConnection,
-    _sender: Option<&str>,
     method: &str,
     parameters: &glib::Variant,
     invocation: gio::DBusMethodInvocation,

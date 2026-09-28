@@ -1,12 +1,8 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    io::{BufRead, BufReader, Write},
-    process::{Command, Stdio},
-    rc::Rc,
-    thread,
-    time::Duration,
-};
+mod visualizer;
+
+pub use visualizer::{VISUALIZER_BARS, VisualizerLevels, start_visualizer};
+
+use std::{cell::RefCell, collections::HashMap, rc::Rc, thread};
 
 use anyhow::{Context, Result};
 use async_channel::Sender;
@@ -16,91 +12,16 @@ use log::warn;
 
 use crate::state::{MediaPlayer, MediaState, PlaybackStatus};
 
-pub const VISUALIZER_BARS: usize = 7;
-pub type VisualizerLevels = [u8; VISUALIZER_BARS];
-
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PLAYER_PATH: &str = "/org/mpris/MediaPlayer2";
 const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
-const CAVA_CONFIG: &str = r#"
-[general]
-framerate = 30
-bars = 7
-autosens = 1
-sleep_timer = 1
-
-[input]
-method = pipewire
-source = auto
-
-[output]
-method = raw
-raw_target = /dev/stdout
-data_format = ascii
-ascii_max_range = 100
-bar_delimiter = 59
-frame_delimiter = 10
-channels = mono
-
-[smoothing]
-noise_reduction = 80
-"#;
-
 pub fn start_listener(sender: Sender<Option<MediaState>>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let context = glib::MainContext::new();
         if let Err(error) = context.with_thread_default(|| run_mpris_listener(&context, sender)) {
             warn!("failed to create the MPRIS event context: {error}");
-        }
-    })
-}
-
-pub fn start_visualizer(sender: Sender<VisualizerLevels>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        loop {
-            let mut child = match Command::new("cava")
-                .args(["-p", "/dev/stdin"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(error) => {
-                    warn!("real media visualization is unavailable: failed to run cava: {error}");
-                    thread::sleep(Duration::from_secs(10));
-                    continue;
-                }
-            };
-
-            let configured = child
-                .stdin
-                .take()
-                .is_some_and(|mut input| input.write_all(CAVA_CONFIG.as_bytes()).is_ok());
-            let Some(stdout) = child.stdout.take().filter(|_| configured) else {
-                let _ = child.kill();
-                thread::sleep(Duration::from_secs(5));
-                continue;
-            };
-
-            for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
-                let Some(levels) = parse_cava_line(&line) else {
-                    continue;
-                };
-                if sender.send_blocking(levels).is_err() {
-                    let _ = child.kill();
-                    return;
-                }
-            }
-
-            let _ = child.wait();
-            if sender.is_closed() {
-                return;
-            }
-            warn!("cava media visualizer stopped; reconnecting");
-            thread::sleep(Duration::from_secs(2));
         }
     })
 }
@@ -220,7 +141,7 @@ fn query_active_media(connection: &gio::DBusConnection) -> Result<Option<MediaSt
     else {
         return Ok(None);
     };
-    Ok(Some(media_state(active, players)))
+    Ok(Some(MediaState::from_player(active, players)))
 }
 
 fn query_properties(
@@ -312,9 +233,7 @@ fn media_player_from_properties(
         .get("Position")
         .and_then(|value| value.get::<i64>())
         .unwrap_or(0);
-    // Absent capability properties are treated as supported, matching the
-    // MPRIS convention of only advertising a capability as `false` when a
-    // player is certain it cannot perform the action.
+    // Keep controls usable for players that omit capability properties.
     let capability = |name: &str| {
         properties
             .get(name)
@@ -337,26 +256,6 @@ fn media_player_from_properties(
         can_go_previous: capability("CanGoPrevious"),
         status,
     })
-}
-
-fn media_state(active: MediaPlayer, players: Vec<MediaPlayer>) -> MediaState {
-    MediaState {
-        player: active.player.clone(),
-        service: active.service.clone(),
-        title: active.title.clone(),
-        artist: active.artist.clone(),
-        album: active.album.clone(),
-        app_icon: active.app_icon.clone(),
-        art_url: active.art_url.clone(),
-        position_us: active.position_us,
-        length_us: active.length_us,
-        can_play: active.can_play,
-        can_pause: active.can_pause,
-        can_go_next: active.can_go_next,
-        can_go_previous: active.can_go_previous,
-        status: active.status,
-        players,
-    }
 }
 
 fn control(service: &str, method: &str) -> Result<()> {
@@ -394,15 +293,6 @@ pub fn previous(service: &str) -> Result<()> {
     control(service, "Previous")
 }
 
-fn parse_cava_line(line: &str) -> Option<VisualizerLevels> {
-    let values: Vec<_> = line
-        .split(';')
-        .filter(|value| !value.is_empty())
-        .map(|value| value.parse::<u8>().ok().map(|value| value.min(100)))
-        .collect::<Option<_>>()?;
-    values.try_into().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_only_playing_media_with_a_title_and_icon() {
+    fn extracts_playing_and_paused_media_with_a_title_and_icon() {
         let playing = media_player_from_properties(
             "org.mpris.MediaPlayer2.spotify",
             &properties("Playing", "A long song title"),
@@ -513,7 +403,7 @@ mod tests {
             media_player_from_properties("org.mpris.MediaPlayer2.vlc", &local, None).unwrap();
         assert_eq!(second.art_url.as_deref(), Some("file:///tmp/cover.png"));
 
-        let switched = media_state(second.clone(), vec![first.clone(), second]);
+        let switched = MediaState::from_player(second.clone(), vec![first.clone(), second]);
         assert_eq!(switched.player, "vlc");
         assert_eq!(switched.art_url.as_deref(), Some("file:///tmp/cover.png"));
 
@@ -540,14 +430,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(absent.art_url, None);
-    }
-
-    #[test]
-    fn parses_cava_ascii_frames() {
-        assert_eq!(
-            parse_cava_line("0;12;45;100;82;9;3;"),
-            Some([0, 12, 45, 100, 82, 9, 3])
-        );
-        assert_eq!(parse_cava_line("0;1;2;"), None);
     }
 }

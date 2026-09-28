@@ -149,9 +149,7 @@ fn parse_cpu(contents: &str) -> Option<(u64, u64)> {
     if values.len() < 4 {
         return None;
     }
-    // Linux positions: user nice system idle iowait irq softirq steal guest
-    // guest_nice. Guest ticks are already included in user/nice, so adding
-    // fields 8 and 9 would count those ticks twice.
+    // Guest ticks (fields 8/9) are already included in user/nice.
     let total = values.iter().take(8).copied().sum();
     let idle = values[3].saturating_add(*values.get(4).unwrap_or(&0));
     Some((total, idle))
@@ -194,7 +192,7 @@ fn read_network(root: &Path) -> Option<BTreeMap<String, (u64, u64)>> {
                 .parse::<u64>()
                 .ok()
         };
-        if let (Some(r), Some(t)) = (read("rx_bytes"), read("tx_bytes")) {
+        if let (Some(received), Some(transmitted)) = (read("rx_bytes"), read("tx_bytes")) {
             // Include ifindex so a device removed and recreated under the
             // same name cannot be mistaken for a continuous counter.
             let ifindex = fs::read_to_string(path.join("ifindex"))
@@ -203,7 +201,7 @@ fn read_network(root: &Path) -> Option<BTreeMap<String, (u64, u64)>> {
                 .to_owned();
             counters.insert(
                 format!("{}@{ifindex}", entry.file_name().to_string_lossy()),
-                (r, t),
+                (received, transmitted),
             );
         }
     }

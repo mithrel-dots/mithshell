@@ -109,10 +109,8 @@ pub struct MediaState {
     pub album: Option<String>,
     pub app_icon: Option<String>,
     pub art_url: Option<String>,
-    /// Track position at the moment this state was captured, in
-    /// microseconds. Since `MediaState` is only ever produced for a
-    /// `Playing` player, a progress bar can interpolate forward from this
-    /// baseline using a local clock instead of polling MPRIS continuously.
+    /// Track position at capture time, in microseconds. Interpolate forward
+    /// only while `status` is `Playing`.
     pub position_us: i64,
     pub length_us: Option<i64>,
     pub can_play: bool,
@@ -121,6 +119,28 @@ pub struct MediaState {
     pub can_go_previous: bool,
     pub status: PlaybackStatus,
     pub players: Vec<MediaPlayer>,
+}
+
+impl MediaState {
+    pub(crate) fn from_player(active: MediaPlayer, players: Vec<MediaPlayer>) -> Self {
+        Self {
+            player: active.player,
+            service: active.service,
+            title: active.title,
+            artist: active.artist,
+            album: active.album,
+            app_icon: active.app_icon,
+            art_url: active.art_url,
+            position_us: active.position_us,
+            length_us: active.length_us,
+            can_play: active.can_play,
+            can_pause: active.can_pause,
+            can_go_next: active.can_go_next,
+            can_go_previous: active.can_go_previous,
+            status: active.status,
+            players,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

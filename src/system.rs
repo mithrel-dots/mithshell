@@ -160,38 +160,24 @@ pub fn query_audio() -> Result<AudioState> {
 }
 
 pub fn set_volume(percent: u8) -> Result<()> {
-    let status = Command::new("wpctl")
-        .args([
-            "set-volume",
-            "@DEFAULT_AUDIO_SINK@",
-            &format!("{}%", percent.min(100)),
-        ])
-        .status()
-        .context("failed to run wpctl")?;
-    if !status.success() {
-        bail!("wpctl set-volume failed");
-    }
-    Ok(())
+    set_sink_property("set-volume", &format!("{}%", percent.min(100)))
 }
 
 pub fn toggle_mute() -> Result<()> {
-    let status = Command::new("wpctl")
-        .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
-        .status()
-        .context("failed to run wpctl")?;
-    if !status.success() {
-        bail!("wpctl set-mute failed");
-    }
-    Ok(())
+    set_sink_property("set-mute", "toggle")
 }
 
 pub fn unmute() -> Result<()> {
+    set_sink_property("set-mute", "0")
+}
+
+fn set_sink_property(command: &str, value: &str) -> Result<()> {
     let status = Command::new("wpctl")
-        .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
+        .args([command, "@DEFAULT_AUDIO_SINK@", value])
         .status()
         .context("failed to run wpctl")?;
     if !status.success() {
-        bail!("wpctl set-mute failed");
+        bail!("wpctl {command} failed");
     }
     Ok(())
 }
