@@ -223,23 +223,8 @@ fn normalize_hex(value: &str) -> Option<String> {
     }
 }
 
-/// Watches `$XDG_CONFIG_HOME/gtk-4.0/gtk.css` for changes and sends a `()`
-/// signal whenever it's modified, so callers can regenerate the `gtk`
-/// palette engine without restarting mithshell when an external tool (or
-/// the user) rewrites it. The parent directory is watched non-recursively
-/// rather than the file itself, since tools typically replace config files
-/// via a temp-file-then-rename rather than an in-place write.
-/// Whether an inotify event means the file's contents may differ, as opposed
-/// to it merely having been looked at.
-///
-/// Reading a file is itself an inotify event. The palette regeneration this
-/// watcher triggers opens `gtk.css` to parse it, which fires `OPEN`, `ACCESS`
-/// and `CLOSE_NOWRITE` for the very path being watched; forwarding those fed
-/// the regeneration back into itself, re-parsing and re-applying the whole
-/// stylesheet several times a second for as long as the daemon ran, with the
-/// coalescing delay in `attach_gtk_css_watch` setting the pace. Metadata-only
-/// changes are excluded for the same reason: an access-time update is not a
-/// new palette.
+/// Excludes reads and metadata changes to prevent palette regeneration from
+/// triggering itself by reading the watched stylesheet.
 fn changes_content(kind: EventKind) -> bool {
     match kind {
         EventKind::Access(_) | EventKind::Other => false,
@@ -250,6 +235,8 @@ fn changes_content(kind: EventKind) -> bool {
     }
 }
 
+/// Watches the GTK stylesheet's parent directory so atomic replacements are
+/// detected as well as in-place writes. Signals possible palette changes.
 pub fn watch_gtk_css(sender: Sender<()>) -> Option<thread::JoinHandle<()>> {
     let path = gtk_user_css_path().ok()?;
     let watch_dir = path.parent()?.to_path_buf();

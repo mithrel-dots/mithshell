@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
     ffi::OsString,
     io::{BufRead, BufReader, ErrorKind, Write},
@@ -359,18 +359,17 @@ fn run_connection(
 ) -> Result<(), String> {
     let writer = stream.try_clone().map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(stream);
-    let mut own_queries = HashSet::new();
+    let mut active_query_id = None;
     let mut line = String::new();
 
     connection.attach(writer);
     connection.send(&TarragonCommand::Status);
 
-    // A blocking read: no timeout, so the thread parks instead of spinning.
     loop {
         match reader.read_line(&mut line) {
             Ok(0) => return Err("TarraGon closed the connection".into()),
             Ok(_) => {
-                handle_message(&line, &mut own_queries, connection, event_sender);
+                handle_message(&line, &mut active_query_id, connection, event_sender);
                 line.clear();
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
@@ -380,37 +379,26 @@ fn run_connection(
 }
 
 fn write_command(writer: &mut UnixStream, command: &TarragonCommand) -> Result<(), String> {
-    match command {
-        TarragonCommand::Query(text) => write_request(
-            writer,
-            &Request::Query {
-                client_id: CLIENT_ID,
-                text,
-            },
-        ),
-        TarragonCommand::Select(selection) => write_request(
-            writer,
-            &Request::Select {
-                client_id: CLIENT_ID,
-                query_id: &selection.query_id,
-                plugin: &selection.plugin,
-                result_id: &selection.result_id,
-                action: &selection.action,
-            },
-        ),
-        TarragonCommand::Status => write_request(
-            writer,
-            &Request::Status {
-                client_id: CLIENT_ID,
-            },
-        ),
-        TarragonCommand::Reload => write_request(
-            writer,
-            &Request::Reload {
-                client_id: CLIENT_ID,
-            },
-        ),
-    }
+    let request = match command {
+        TarragonCommand::Query(text) => Request::Query {
+            client_id: CLIENT_ID,
+            text,
+        },
+        TarragonCommand::Select(selection) => Request::Select {
+            client_id: CLIENT_ID,
+            query_id: &selection.query_id,
+            plugin: &selection.plugin,
+            result_id: &selection.result_id,
+            action: &selection.action,
+        },
+        TarragonCommand::Status => Request::Status {
+            client_id: CLIENT_ID,
+        },
+        TarragonCommand::Reload => Request::Reload {
+            client_id: CLIENT_ID,
+        },
+    };
+    write_request(writer, &request)
 }
 
 fn write_request(writer: &mut UnixStream, request: &Request<'_>) -> Result<(), String> {
@@ -424,7 +412,7 @@ fn write_request(writer: &mut UnixStream, request: &Request<'_>) -> Result<(), S
 
 fn handle_message(
     line: &str,
-    own_queries: &mut HashSet<String>,
+    active_query_id: &mut Option<String>,
     connection: &Connection,
     event_sender: &Sender<TarragonEvent>,
 ) {
@@ -434,15 +422,14 @@ fn handle_message(
     match message.get("type").and_then(|value| value.as_str()) {
         Some("ack") => {
             if let Some(query_id) = message.get("query_id").and_then(|value| value.as_str()) {
-                own_queries.clear();
-                own_queries.insert(query_id.to_owned());
+                *active_query_id = Some(query_id.to_owned());
             }
         }
         Some("update") => {
             let Some(query_id) = message.get("query_id").and_then(|value| value.as_str()) else {
                 return;
             };
-            if !own_queries.contains(query_id) {
+            if active_query_id.as_deref() != Some(query_id) {
                 return;
             }
             let Some(payload) = message.get("payload").and_then(|value| value.as_str()) else {
@@ -549,7 +536,7 @@ mod tests {
             "payload": STANDARD.encode(payload),
         });
         let (sender, receiver) = async_channel::unbounded();
-        let mut own = HashSet::from(["q-1".to_owned()]);
+        let mut own = Some("q-1".to_owned());
         handle_message(
             &message.to_string(),
             &mut own,
@@ -582,11 +569,11 @@ mod tests {
         let connection = Connection::default();
 
         // No selection in flight: the response is ignored.
-        handle_message(&message, &mut HashSet::new(), &connection, &sender);
+        handle_message(&message, &mut None, &connection, &sender);
         assert!(receiver.try_recv().is_err());
 
         connection.pending_selection.store(true, Ordering::Relaxed);
-        handle_message(&message, &mut HashSet::new(), &connection, &sender);
+        handle_message(&message, &mut None, &connection, &sender);
         let TarragonEvent::Selection { success, message } = receiver.try_recv().unwrap() else {
             panic!("expected selection event");
         };
@@ -596,7 +583,7 @@ mod tests {
         // The flag is consumed, so a duplicate response is not reported again.
         handle_message(
             &serde_json::json!({ "type": "select_response", "success": true }).to_string(),
-            &mut HashSet::new(),
+            &mut None,
             &connection,
             &sender,
         );
@@ -660,7 +647,7 @@ mod tests {
         let (sender, receiver) = async_channel::unbounded();
         handle_message(
             &message.to_string(),
-            &mut HashSet::new(),
+            &mut None,
             &Connection::default(),
             &sender,
         );
