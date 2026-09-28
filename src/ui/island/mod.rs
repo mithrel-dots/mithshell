@@ -189,6 +189,7 @@ pub struct IslandWindow {
     dashboard_expansion: Cell<f64>,
     dashboard_section_opacity: Cell<f64>,
     panel_scroll: gtk::ScrolledWindow,
+    notification_scroll: gtk::ScrolledWindow,
     search: gtk::Box,
     weather: gtk::Box,
     osd: gtk::Box,
@@ -2305,7 +2306,7 @@ mod tests {
                 island.surface_shell.width(),
                 island.metrics.scale
             );
-            let scroll = island.panel_scroll.vadjustment();
+            let scroll = island.notification_scroll.vadjustment();
             scroll.set_value(scroll.upper());
             pump(Duration::from_millis(40));
             let last = island
@@ -2313,11 +2314,11 @@ mod tests {
                 .last_child()
                 .expect("notification content");
             let bounds = last
-                .compute_bounds(&island.panel_scroll)
+                .compute_bounds(&island.notification_scroll)
                 .expect("notification allocation");
             assert!(
-                bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 2.0,
-                "last notification must be reachable at the bottom of the panel"
+                bounds.y() + bounds.height() <= island.notification_scroll.height() as f32 + 2.0,
+                "last notification must be reachable inside its own scroller"
             );
             let history: Vec<_> = (0..8).map(|id| crate::state::Notification {
             id,
@@ -2373,11 +2374,11 @@ mod tests {
 
             island.update_notification_history(&history);
             fixture_window.present();
-            let scroll = island.panel_scroll.vadjustment();
+            let scroll = island.notification_scroll.vadjustment();
             await_allocation(&|| scroll.upper() > scroll.page_size());
             assert!(
                 scroll.upper() > scroll.page_size(),
-                "long history must scroll: scale={scale} upper={} page={} geometry={:?} panel={} dashboard={} list={} visible={}",
+                "long history must scroll locally: scale={scale} upper={} page={} geometry={:?} panel={} dashboard={} list={} visible={}",
                 scroll.upper(),
                 scroll.page_size(),
                 island.geometry.get(),
@@ -2386,18 +2387,56 @@ mod tests {
                 island.notification_list.height(),
                 island.notification_list.is_visible()
             );
+            let hardware_before = island.hardware.root.compute_bounds(&island.fixed).unwrap();
+            let notification_section = island.dashboard_sections.last().unwrap();
+            let header = notification_section.content.first_child().unwrap();
+            let header_before = header.compute_bounds(&island.fixed).unwrap();
+            assert!(
+                notification_section.viewport.height() <= island.metrics.monitor_height / 3 + 2,
+                "notification card must be capped at a third of the display: card={} monitor={} scale={scale}",
+                notification_section.viewport.height(),
+                island.metrics.monitor_height,
+            );
+            let panel = island.panel_scroll.vadjustment();
+            assert!(
+                panel.upper() <= panel.page_size() + 4.0,
+                "dashboard should fit without scrolling: upper={} page={} scale={scale}",
+                panel.upper(),
+                panel.page_size()
+            );
+            panel.set_value(panel.upper());
+            assert_eq!(panel.value(), 0.0, "dashboard clip must stay pinned");
+            for section in &island.dashboard_sections {
+                let adjustment = section.viewport.vadjustment();
+                adjustment.set_value(adjustment.upper());
+                assert_eq!(adjustment.value(), 0.0, "section clips must stay pinned");
+            }
             scroll.set_value(scroll.upper());
             let last = island.notification_list.last_child().unwrap();
             await_allocation(&|| {
-                last.compute_bounds(&island.panel_scroll)
+                last.compute_bounds(&island.notification_scroll)
                     .is_some_and(|bounds| {
-                        bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 4.0
+                        bounds.y() + bounds.height()
+                            <= island.notification_scroll.height() as f32 + 4.0
                     })
             });
-            let bounds = last.compute_bounds(&island.panel_scroll).unwrap();
+            let bounds = last.compute_bounds(&island.notification_scroll).unwrap();
             assert!(
-                bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 4.0,
+                bounds.y() + bounds.height() <= island.notification_scroll.height() as f32 + 4.0,
                 "wrapped history remains reachable at scale {scale}"
+            );
+            assert!(scroll.value() > 0.0);
+            assert_eq!(
+                island.hardware.root.compute_bounds(&island.fixed).unwrap(),
+                hardware_before
+            );
+            assert_eq!(header.compute_bounds(&island.fixed).unwrap(), header_before);
+            let capped_height = island.geometry.get().height;
+            island.update_notification_history(&[]);
+            await_allocation(&|| island.notification_scroll.vadjustment().value() == 0.0);
+            assert!(
+                island.geometry.get().height < capped_height,
+                "empty history should shrink the dashboard rather than reserve the cap"
             );
 
             // Existing alternate views temporarily replace the center, then

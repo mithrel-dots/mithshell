@@ -242,14 +242,11 @@ impl IslandWindow {
         compact.set_child(Some(&battery_waves.area));
 
         let dashboard_widgets = dashboard_view(metrics);
-        let panel_scroll = gtk::ScrolledWindow::new();
+        let panel_scroll = super::dashboard::dashboard_clip(&dashboard_widgets.root);
         panel_scroll.add_css_class("island-panel-viewport");
         // Both axes clip independently of child minima while rolling shut.
         // Never on the horizontal axis forces the hardware's minimum width
         // onto the shrinking viewport and clips away its rounded right border.
-        panel_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
-        panel_scroll.set_overflow(Overflow::Hidden);
-        panel_scroll.set_child(Some(&dashboard_widgets.root));
         panel_scroll.set_visible(false);
         surface_shell.add_overlay(&panel_scroll);
         surface_shell.add_overlay(&compact);
@@ -401,6 +398,7 @@ impl IslandWindow {
             dashboard_expansion: Cell::new(0.0),
             dashboard_section_opacity: Cell::new(0.0),
             panel_scroll,
+            notification_scroll: dashboard_widgets.notification_scroll,
             search: search_widgets.root,
             weather: weather_widgets.root,
             osd,

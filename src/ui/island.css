@@ -18,7 +18,8 @@
   box-shadow: none;
 }
 .island-panel-viewport label { font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace; }
-.island-dashboard-section, .island-dashboard-section > viewport {
+.island-dashboard-section, .island-dashboard-section > viewport,
+.notification-history-scroll, .notification-history-scroll > viewport {
   background: transparent; border: none; box-shadow: none; padding: 0;
 }
 .island-panel-viewport .hardware-stat { min-height: 0; padding: 12px 14px; }

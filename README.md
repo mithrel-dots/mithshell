@@ -422,6 +422,9 @@ persistent entry would otherwise block the queue forever.
 Every notification is also kept in the dashboard's notification card
 (up to `max_history`), independent of `position` and of whether its popup
 has already timed out, with its own dismiss button.
+Only the history list scrolls: its header/actions and the other dashboard
+sections stay fixed. The notification card grows with its content up to one-third
+of the monitor's logical height, or less when needed to keep the dashboard on-screen.
 
 Notification layout and fullscreen settings take effect after running
 `mithshell reload` or restarting the daemon.

@@ -553,6 +553,27 @@ impl IslandWindow {
         }
     }
 
+    fn island_lift(&self) -> i32 {
+        self.motion
+            .get()
+            .map_or(self.metrics.spacing(16), |motion| {
+                (motion.peek.lift * self.metrics.scale).round() as i32
+            })
+    }
+
+    fn island_height_limit(&self) -> i32 {
+        let lift = self.island_lift();
+        let bottom_clearance = self.metrics.spacing(16);
+        let top_margin = if self.window.is_layer_window() {
+            self.window.margin(gtk4_layer_shell::Edge::Top)
+        } else {
+            0
+        };
+        (self.metrics.monitor_height - top_margin - lift - bottom_clearance)
+            .min(self.metrics.window_height - lift - bottom_clearance)
+            .max(self.metrics.compact_height + 1)
+    }
+
     pub(super) fn presentation_target_geometry(&self, view: View) -> Geometry {
         let base = self.geometry_for_view(view);
         // The legacy density classes have a readable font-size floor. Keep the
@@ -566,18 +587,8 @@ impl IslandWindow {
         let scale_width = |width: i32| {
             f64::from(width) * (self.metrics.scale * 32.0 / 52.0).max(1.0) * width_scale
         };
-        let lift = peek.map_or(self.metrics.spacing(16), |peek| {
-            (peek.lift * self.metrics.scale).round() as i32
-        });
-        let bottom_clearance = self.metrics.spacing(16);
-        let top_margin = if self.window.is_layer_window() {
-            self.window.margin(gtk4_layer_shell::Edge::Top)
-        } else {
-            0
-        };
-        let max_height = (self.metrics.monitor_height - top_margin - lift - bottom_clearance)
-            .min(self.metrics.window_height - lift - bottom_clearance)
-            .max(self.metrics.compact_height + 1);
+        let lift = self.island_lift();
+        let max_height = self.island_height_limit();
         if view == View::Dashboard || (view == View::Compact && self.island_hovered.get()) {
             // GTK reports zero for an invisible widget. Measure the incoming
             // panel before starting the track, including direct Idle -> Open.
@@ -678,6 +689,10 @@ impl IslandWindow {
             - 4
             - i32::from(padding.left())
             - i32::from(padding.right());
+        self.size_notification_history(
+            inner_width,
+            i32::from(padding.top()) + i32::from(padding.bottom()),
+        );
         let gap = (f64::from(self.metrics.spacing(8)) * amount).round() as i32;
         self.hardware.root.set_margin_bottom(gap);
         for section in &self.dashboard_sections {
@@ -704,6 +719,61 @@ impl IslandWindow {
                 .set_margin_bottom(if section.trailing_gap { gap } else { 0 });
             section.viewport.set_visible(amount > 0.0);
         }
+    }
+
+    /// Reserve the fixed rows first, then give history at most a third of the
+    /// display (including its card chrome). Measuring at the current width
+    /// handles wrapped notifications and keeps the short/empty card compact.
+    #[allow(deprecated)]
+    fn size_notification_history(&self, inner_width: i32, dashboard_padding: i32) {
+        let (notifications, fixed_sections) = self.dashboard_sections.split_last().unwrap();
+        let measure = |widget: &gtk::Box| {
+            let minimum = widget.measure(Orientation::Horizontal, -1).0;
+            widget
+                .measure(Orientation::Vertical, inner_width.max(minimum))
+                .1
+        };
+        let card_style = notifications.content.style_context();
+        let padding = card_style.padding();
+        let border = card_style.border();
+        let list_width = (inner_width
+            - i32::from(padding.left())
+            - i32::from(padding.right())
+            - i32::from(border.left())
+            - i32::from(border.right()))
+        .max(
+            self.notification_list
+                .measure(Orientation::Horizontal, -1)
+                .0,
+        );
+        let scroll_height = self
+            .notification_scroll
+            .measure(Orientation::Vertical, list_width)
+            .1;
+        let chrome = (measure(&notifications.content) - scroll_height).max(0);
+        let gap = self.metrics.spacing(8);
+        let fixed_height = dashboard_padding + measure(&self.hardware.root)
+            - self.hardware.root.margin_bottom()
+            + gap
+            + fixed_sections
+                .iter()
+                .map(|section| {
+                    measure(&section.content) + if section.trailing_gap { gap } else { 0 }
+                })
+                .sum::<i32>();
+        // Match the persistent header overlap and panel clearance used by the
+        // target geometry; on smaller displays the list yields space sooner.
+        let available = self.island_height_limit()
+            - (f64::from(self.metrics.compact_height) * 0.55).ceil() as i32
+            - 4
+            - fixed_height;
+        let limit = (self.metrics.monitor_height / 3).min(available);
+        let natural = self
+            .notification_list
+            .measure(Orientation::Vertical, list_width)
+            .1;
+        self.notification_scroll
+            .set_height_request(natural.min((limit - chrome).max(1)));
     }
 
     fn apply_dashboard_sections(&self, amount: f64, opacity: f64, width: f64) {

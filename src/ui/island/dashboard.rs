@@ -26,6 +26,7 @@ pub(super) struct DashboardWidgets {
     pub(super) notification_clear_button: gtk::Button,
     pub(super) notification_inhibit_button: gtk::ToggleButton,
     pub(super) notification_list: gtk::Box,
+    pub(super) notification_scroll: gtk::ScrolledWindow,
     pub(super) weather_button: gtk::Button,
     pub(super) search_button: gtk::Button,
     pub(super) close_button: gtk::Button,
@@ -38,14 +39,33 @@ pub(super) struct DashboardSection {
     pub(super) trailing_gap: bool,
 }
 
-fn dashboard_section(root: &gtk::Box, content: &gtk::Box, trailing_gap: bool) -> DashboardSection {
+/// A shrinking animation clip, not a user-scrollable surface. External policy
+/// hides scrollbars but still allows wheel/focus scrolling, so keep its origin
+/// pinned even while its child is larger than the rolling allocation.
+pub(super) fn dashboard_clip(content: &gtk::Box) -> gtk::ScrolledWindow {
     let viewport = gtk::ScrolledWindow::new();
-    viewport.add_css_class("island-dashboard-section");
     viewport.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
     viewport.set_has_frame(false);
     viewport.set_overflow(gtk::Overflow::Hidden);
-    viewport.set_valign(Align::Start);
+    viewport.set_kinetic_scrolling(false);
     viewport.set_child(Some(content));
+    if let Some(child) = viewport.child().and_downcast::<gtk::Viewport>() {
+        child.set_scroll_to_focus(false);
+    }
+    for adjustment in [viewport.hadjustment(), viewport.vadjustment()] {
+        adjustment.connect_value_changed(|adjustment| {
+            if adjustment.value() != 0.0 {
+                adjustment.set_value(0.0);
+            }
+        });
+    }
+    viewport
+}
+
+fn dashboard_section(root: &gtk::Box, content: &gtk::Box, trailing_gap: bool) -> DashboardSection {
+    let viewport = dashboard_clip(content);
+    viewport.add_css_class("island-dashboard-section");
+    viewport.set_valign(Align::Start);
     viewport.set_visible(false);
     root.append(&viewport);
     DashboardSection {
@@ -390,8 +410,8 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     controls_stack.append(&volume_row);
     let controls_section = dashboard_section(&root, &controls_stack, true);
 
-    // The densest section, and the only one that grows: it absorbs whatever
-    // the fixed-height dashboard has left after the rows above.
+    // Only history scrolls. Its header/actions stay pinned above the list, and
+    // layout caps the whole card at one third of the monitor's logical height.
     let notification_card = gtk::Box::new(Orientation::Vertical, metrics.spacing(6));
     notification_card.add_css_class("notification-card");
 
@@ -433,7 +453,13 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     notification_placeholder.set_halign(Align::Center);
     notification_placeholder.set_wrap(true);
     notification_list.append(&notification_placeholder);
-    notification_card.append(&notification_list);
+    let notification_scroll = gtk::ScrolledWindow::new();
+    notification_scroll.add_css_class("notification-history-scroll");
+    notification_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    notification_scroll.set_has_frame(false);
+    notification_scroll.set_vexpand(false);
+    notification_scroll.set_child(Some(&notification_list));
+    notification_card.append(&notification_scroll);
     let notification_section = dashboard_section(&root, &notification_card, false);
 
     DashboardWidgets {
@@ -457,6 +483,7 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
         notification_clear_button,
         notification_inhibit_button,
         notification_list,
+        notification_scroll,
         weather_button,
         search_button,
         close_button,
