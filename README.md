@@ -756,11 +756,19 @@ scripts are also available by replacing the shell argument above.
 
 ## Development
 
+See [the repository map](docs/architecture.md) for module responsibilities and
+[the interactive design reference](docs/design/island-reference-m3.html) for
+the island's idle, peek, and open presentations.
+
 ```sh
 cargo fmt --check
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+Display-dependent tests are ignored by `cargo test`. Run them in isolated
+Broadway sessions with `python3 scripts/run-ui-regressions-gtk.py`; the runner
+discovers them from the Rust test binary.
 
 Set `RUST_LOG=mithshell=debug` for IPC and service diagnostics. The daemon also
 accepts `--no-animations` for debugging or reduced-motion setups.
