@@ -1,3 +1,6 @@
+mod client;
+mod events;
+
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
@@ -9,15 +12,14 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use async_channel::{Receiver, Sender};
-use clap::CommandFactory;
 use gtk::{Application, CssProvider, gdk, gio, glib, prelude::*};
 use log::{debug, error, info, warn};
 
 use crate::{
-    cli::{self, Cli, Command, SetupCommand, ThemeCommand, ThemeModeArg},
-    config::{self, AppConfig, FullscreenStrategy, PaletteEngine, ThemeMode, ThemeSource},
-    hyprland::{self, HyprlandUpdate},
-    ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Request, Response},
+    cli::{Cli, Command, SetupCommand},
+    config::{self, AppConfig, FullscreenStrategy, PaletteEngine},
+    hyprland,
+    ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Response},
     latency,
     lock::{
         self, AuthEvent, AuthRequest,
@@ -28,8 +30,7 @@ use crate::{
     preview::{self, PreviewEvent, PreviewRequest},
     setup,
     state::{
-        AudioState, HyprlandSnapshot, MediaState, Notification, OsdState, Palette, SystemSnapshot,
-        TrayItem, WeatherState,
+        HyprlandSnapshot, MediaState, Notification, OsdState, Palette, TrayItem, WeatherState,
     },
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
@@ -42,281 +43,27 @@ use crate::{
 };
 
 pub fn run(cli: Cli) -> Result<()> {
-    // Completions are generated offline; skip resolving a runtime socket
-    // path (which requires XDG_RUNTIME_DIR) for this command entirely.
-    if let Command::Completions { shell } = &cli.command {
-        generate_completions(*shell);
-        return Ok(());
-    }
-    // Setup is a standalone local operation -- installing/enabling an
-    // optional integration -- and must work even without a running daemon
-    // or a resolvable runtime socket path, exactly like `Completions` above.
-    if let Command::Setup { command } = cli.command {
-        return match command {
-            SetupCommand::Tarragon(args) => setup::install_tarragon(args),
-        };
-    }
-    let socket_path = ipc::socket_path(cli.socket)?;
     match cli.command {
+        Command::Completions { shell } => {
+            client::generate_completions(shell);
+            Ok(())
+        }
+        Command::Setup {
+            command: SetupCommand::Tarragon(args),
+        } => setup::install_tarragon(args),
         Command::Daemon {
             config,
             no_animations,
             test_battery,
             no_global_services,
         } => run_daemon(
-            socket_path,
+            ipc::socket_path(cli.socket)?,
             config,
             !no_animations,
             test_battery,
             no_global_services,
         ),
-        command => run_client(socket_path, command),
-    }
-}
-
-/// Writes a completion script for `shell` to stdout, generated from the same
-/// `clap::Command` used to parse arguments so it never drifts from the CLI.
-fn generate_completions(shell: clap_complete::Shell) {
-    let mut command = Cli::command();
-    let name = command.get_name().to_owned();
-    clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
-}
-
-fn run_client(socket_path: PathBuf, command: Command) -> Result<()> {
-    let is_latency = matches!(command, Command::Latency { .. });
-    let is_palette = matches!(
-        command,
-        Command::Theme {
-            command: ThemeCommand::Palette
-        }
-    );
-    let (request, print_json) = command_request(command)?;
-    let response = ipc::send(&socket_path, &request)?;
-    if print_json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
-    } else if is_latency {
-        print_latency_report(&response);
-    } else if is_palette {
-        print_palette_swatches(&response);
-    } else if let Some(data) = &response.data {
-        println!("{}", serde_json::to_string_pretty(data)?);
-    } else {
-        println!("{}", response.message);
-    }
-    if !response.ok {
-        bail!(response.message);
-    }
-    Ok(())
-}
-
-/// Role labels in the same order as `Palette`'s fields, paired with the JSON
-/// key `ThemeCurrent` reports them under.
-const PALETTE_ROLES: &[(&str, &str)] = &[
-    ("primary", "Primary"),
-    ("on_primary", "On Primary"),
-    ("primary_container", "Primary Container"),
-    ("on_primary_container", "On Primary Container"),
-    ("secondary", "Secondary"),
-    ("tertiary", "Tertiary"),
-    ("surface", "Surface"),
-    ("surface_container_low", "Surface Container Low"),
-    ("surface_container", "Surface Container"),
-    ("surface_container_high", "Surface Container High"),
-    ("on_surface", "On Surface"),
-    ("on_surface_variant", "On Surface Variant"),
-    ("outline", "Outline"),
-    ("outline_variant", "Outline Variant"),
-    ("error", "Error"),
-];
-
-/// Renders each palette role as a colored square (when stdout is a
-/// terminal) followed by its scope name and hex value.
-fn print_palette_swatches(response: &Response) {
-    use std::io::IsTerminal;
-
-    let Some(data) = &response.data else {
-        println!("{}", response.message);
-        return;
-    };
-    let colorize = std::io::stdout().is_terminal();
-    if let Some(source) = data.get("source").and_then(serde_json::Value::as_str) {
-        let mode = data
-            .get("mode")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        println!("source: {source}  mode: {mode}");
-        println!();
-    }
-    for (key, label) in PALETTE_ROLES {
-        let Some(hex) = data.get(*key).and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let square = match (colorize, parse_hex(hex)) {
-            (true, Some((r, g, b))) => format!("\x1b[48;2;{r};{g};{b}m   \x1b[0m"),
-            _ => "   ".to_owned(),
-        };
-        println!("{square}  {label:<24} {hex}");
-    }
-}
-
-fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {
-    let hex = hex.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    Some((
-        u8::from_str_radix(&hex[0..2], 16).ok()?,
-        u8::from_str_radix(&hex[2..4], 16).ok()?,
-        u8::from_str_radix(&hex[4..6], 16).ok()?,
-    ))
-}
-
-/// Renders the latency spans as a fixed-width table, in the same shape as
-/// `tarragon bench` so the two are easy to read side by side.
-fn print_latency_report(response: &Response) {
-    let Some(spans) = response
-        .data
-        .as_ref()
-        .and_then(|data| data.get("spans"))
-        .and_then(|spans| spans.as_object())
-    else {
-        println!("{}", response.message);
-        return;
-    };
-    if spans.is_empty() {
-        println!("{}", response.message);
-        println!("no samples recorded yet");
-        return;
-    }
-
-    println!("Mithshell search latency");
-    println!();
-    println!(
-        "{:<10}  {:>5}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
-        "Span", "Runs", "Avg ms", "Min ms", "P50 ms", "P95 ms", "Max ms"
-    );
-    println!("{}", "-".repeat(68));
-    // Fixed pipeline order rather than the map's ordering.
-    for name in ["debounce", "write", "backend", "build", "paint", "total"] {
-        let Some(span) = spans.get(name) else {
-            continue;
-        };
-        let number = |key: &str| {
-            span.get(key)
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0)
-        };
-        let count = span
-            .get("count")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        println!(
-            "{:<10}  {:>5}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}",
-            name,
-            count,
-            number("avg_ms"),
-            number("min_ms"),
-            number("p50_ms"),
-            number("p95_ms"),
-            number("max_ms"),
-        );
-    }
-}
-
-fn command_request(command: Command) -> Result<(Request, bool)> {
-    let mut json = false;
-    let command = match command {
-        Command::Toggle(args) => IpcCommand::Toggle {
-            monitor: MonitorTarget::parse(&args.monitor)?,
-        },
-        Command::Open(args) => IpcCommand::Open {
-            monitor: MonitorTarget::parse(&args.monitor)?,
-        },
-        Command::Search(args) => IpcCommand::Search {
-            monitor: MonitorTarget::parse(&args.monitor)?,
-        },
-        Command::Weather(args) => IpcCommand::Weather {
-            monitor: MonitorTarget::parse(&args.monitor)?,
-        },
-        Command::Close(args) => IpcCommand::Close {
-            monitor: MonitorTarget::parse(&args.monitor)?,
-        },
-        Command::Osd {
-            kind,
-            value,
-            timeout,
-            monitor,
-        } => IpcCommand::Osd {
-            monitor: MonitorTarget::parse(&monitor.monitor)?,
-            kind: match kind {
-                cli::OsdKind::Volume => OsdKind::Volume,
-                cli::OsdKind::Brightness => OsdKind::Brightness,
-                cli::OsdKind::Workspace => OsdKind::Workspace,
-            },
-            value,
-            timeout_ms: timeout,
-        },
-        Command::Lock => IpcCommand::Lock,
-        Command::Unlock => IpcCommand::Unlock,
-        Command::Reload => IpcCommand::Reload,
-        Command::Inhibit { duration_ms } => IpcCommand::Inhibit { duration_ms },
-        Command::Status { json: print_json } => {
-            json = print_json;
-            IpcCommand::Status
-        }
-        Command::Latency {
-            json: print_json,
-            reset,
-        } => {
-            json = print_json;
-            IpcCommand::Latency { reset }
-        }
-        Command::Theme { command } => match command {
-            ThemeCommand::Set {
-                image,
-                color,
-                mode,
-                persist,
-            } => {
-                let source = if let Some(path) = image {
-                    let path = config::expand_home(path);
-                    let path = path.canonicalize().with_context(|| {
-                        format!("failed to resolve theme image {}", path.display())
-                    })?;
-                    ThemeSource::Image { path }
-                } else {
-                    ThemeSource::Color {
-                        value: color.context("--image or --color is required")?,
-                    }
-                };
-                IpcCommand::ThemeSet {
-                    source,
-                    mode: mode.map(theme_mode),
-                    persist,
-                }
-            }
-            ThemeCommand::Mode { mode, persist } => IpcCommand::ThemeMode {
-                mode: theme_mode(mode),
-                persist,
-            },
-            ThemeCommand::Current { json: print_json } => {
-                json = print_json;
-                IpcCommand::ThemeCurrent
-            }
-            ThemeCommand::Palette => IpcCommand::ThemeCurrent,
-            ThemeCommand::Reset => IpcCommand::ThemeReset,
-        },
-        Command::Daemon { .. } => bail!("daemon command cannot be sent over IPC"),
-        Command::Completions { .. } => bail!("completions are generated locally, not over IPC"),
-        Command::Setup { .. } => bail!("setup commands are handled locally, not over IPC"),
-    };
-    Ok((Request::new(command), json))
-}
-
-fn theme_mode(mode: ThemeModeArg) -> ThemeMode {
-    match mode {
-        ThemeModeArg::Dark => ThemeMode::Dark,
-        ThemeModeArg::Light => ThemeMode::Light,
+        command => client::run(ipc::socket_path(cli.socket)?, command),
     }
 }
 
@@ -486,6 +233,12 @@ fn idle_worker() -> thread::JoinHandle<()> {
     thread::spawn(|| {})
 }
 
+fn closed_sender<T>() -> Sender<T> {
+    let (sender, receiver) = async_channel::unbounded();
+    drop(receiver);
+    sender
+}
+
 impl StartupServices {
     fn for_daemon(no_global_services: bool) -> Self {
         if no_global_services {
@@ -585,9 +338,7 @@ impl Controller {
             theme::apply_override(&mut initial_theme, theme_override);
         }
         let fallback = theme::generate(&crate::config::ThemeConfig::default())?;
-        // Resolve which chrome glyphs the installed fonts can actually draw
-        // before any widget is built, so every icon picks its representation
-        // from the same answer.
+        // Probe before building widgets so every icon uses the same coverage.
         ui::icon::probe_coverage();
         let css_provider = ui::install_styles(&fallback);
         let user_css_provider =
@@ -636,17 +387,12 @@ impl Controller {
             let (sender, listener) = (hooks.tarragon)(tarragon_event_sender);
             (sender, Some(listener))
         } else {
-            // No listener, retry loop, socket resolution, or Detach request.
-            let (sender, receiver) = async_channel::unbounded();
-            drop(receiver);
             drop(tarragon_event_sender);
-            (sender, None)
+            (closed_sender(), None)
         };
         let (preview_event_sender, preview_event_receiver) = async_channel::unbounded();
         let (preview_sender, preview_listener) = if hooks.skip_passive_workers {
-            let (sender, receiver) = async_channel::unbounded();
-            drop(receiver);
-            (sender, idle_worker())
+            (closed_sender(), idle_worker())
         } else {
             preview::start_loader(preview_event_sender)
         };
@@ -662,11 +408,8 @@ impl Controller {
             let (sender, listener) = (hooks.notifications)(notification_event_sender);
             (sender, Some(listener))
         } else {
-            // No worker means no session bus connection or well-known name.
-            let (sender, receiver) = async_channel::unbounded();
-            drop(receiver);
             drop(notification_event_sender);
-            (sender, None)
+            (closed_sender(), None)
         };
         // Resolved once here rather than at lock time so a broken PAM
         // configuration shows up in the log at startup, while the user can
@@ -674,9 +417,7 @@ impl Controller {
         let pam_service = lock::service_name(config.lock.pam_service.as_deref());
         let (auth_event_sender, auth_event_receiver) = async_channel::unbounded();
         let (auth_sender, auth_listener) = if hooks.skip_passive_workers {
-            let (sender, receiver) = async_channel::unbounded();
-            drop(receiver);
-            (sender, idle_worker())
+            (closed_sender(), idle_worker())
         } else {
             lock::start_authenticator(pam_service, auth_event_sender)
         };
@@ -685,12 +426,8 @@ impl Controller {
             let (sender, listener) = (hooks.logind)(logind_event_sender);
             (sender, Some(listener))
         } else {
-            // Do not call start_listener: it connects to the system bus and
-            // retries in the background. This also prevents SetLockedHint.
-            let (sender, receiver) = async_channel::unbounded();
-            drop(receiver);
             drop(logind_event_sender);
-            (sender, None)
+            (closed_sender(), None)
         };
 
         let controller = Rc::new(Self {
@@ -748,23 +485,17 @@ impl Controller {
         let (hypr_sender, hypr_receiver) = async_channel::unbounded();
         if !hooks.skip_passive_workers {
             hyprland::start_listener(hypr_sender);
-        }
-        if !hooks.skip_passive_workers {
             controller.attach_hyprland(hypr_receiver);
         }
 
         let (system_sender, system_receiver) = async_channel::unbounded();
         if !hooks.skip_passive_workers {
             system::start_poller(system_sender);
-        }
-        if !hooks.skip_passive_workers {
             controller.attach_system(system_receiver);
         }
         let (audio_sender, audio_receiver) = async_channel::unbounded();
         if !hooks.skip_passive_workers {
             system::start_audio_listener(audio_sender);
-        }
-        if !hooks.skip_passive_workers {
             controller.attach_audio(audio_receiver);
         }
         controller.attach_media(media_receiver);
@@ -819,172 +550,6 @@ impl Controller {
                     |controller| controller.handle_command(incoming.request.command),
                 );
                 let _ = incoming.respond_to.send(response);
-            }
-        });
-    }
-
-    fn attach_hyprland(self: &Rc<Self>, receiver: Receiver<HyprlandUpdate>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(update) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                match update {
-                    HyprlandUpdate::Snapshot(snapshot) => {
-                        for island in controller.islands.borrow().values() {
-                            island.update_hyprland(&snapshot);
-                        }
-                        *controller.hyprland.borrow_mut() = snapshot;
-                    }
-                    HyprlandUpdate::Unavailable(message) => warn!("Hyprland IPC: {message}"),
-                }
-            }
-        });
-    }
-
-    fn attach_system(self: &Rc<Self>, receiver: Receiver<SystemSnapshot>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(snapshot) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                let snapshot = {
-                    let mut system = controller.system.borrow_mut();
-                    system.update(snapshot);
-                    system.snapshot().clone()
-                };
-                for island in controller.islands.borrow().values() {
-                    island.update_system(&snapshot);
-                }
-                if let Some(session) = controller.lock.borrow().as_ref() {
-                    session.update_system(&snapshot);
-                }
-            }
-        });
-    }
-
-    fn attach_audio(self: &Rc<Self>, receiver: Receiver<AudioState>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(audio) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                let suppress_osd = controller.pending_volume.get() == Some(audio.percent);
-                if suppress_osd {
-                    controller.pending_volume.set(None);
-                }
-                let snapshot = {
-                    let mut system = controller.system.borrow_mut();
-                    system.update_audio(audio);
-                    system.snapshot().clone()
-                };
-                for island in controller.islands.borrow().values() {
-                    island.update_system(&snapshot);
-                }
-
-                if suppress_osd {
-                    continue;
-                }
-                match controller.target_islands(&MonitorTarget::Focused) {
-                    Ok(islands) => {
-                        for island in islands {
-                            island.show_osd(OsdState {
-                                kind: OsdKind::Volume,
-                                value: audio.percent,
-                                muted: audio.muted,
-                                timeout_ms: 1_500,
-                            });
-                        }
-                    }
-                    Err(error) => warn!("cannot show volume OSD: {error:#}"),
-                }
-            }
-        });
-    }
-
-    fn attach_telemetry(self: &Rc<Self>, receiver: Receiver<crate::state::HardwareSnapshot>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(hardware) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                let snapshot = {
-                    let mut cache = controller.system.borrow_mut();
-                    cache.update_hardware(hardware);
-                    cache.snapshot().clone()
-                };
-                for island in controller.islands.borrow().values() {
-                    island.update_system(&snapshot);
-                }
-            }
-        });
-    }
-
-    fn attach_media(self: &Rc<Self>, receiver: Receiver<Option<MediaState>>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(state) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                for island in controller.islands.borrow().values() {
-                    island.update_media(state.as_ref());
-                }
-                *controller.media.borrow_mut() = state;
-            }
-        });
-    }
-
-    fn attach_weather(self: &Rc<Self>, receiver: Receiver<WeatherState>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(state) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                for island in controller.islands.borrow().values() {
-                    island.update_weather(Some(&state));
-                }
-                if let Some(session) = controller.lock.borrow().as_ref() {
-                    session.update_weather(&state);
-                }
-                *controller.weather.borrow_mut() = Some(state);
-            }
-        });
-    }
-
-    fn attach_tray(self: &Rc<Self>, receiver: Receiver<Vec<TrayItem>>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(items) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                for island in controller.islands.borrow().values() {
-                    island.update_tray(&items);
-                }
-                *controller.tray.borrow_mut() = items;
-            }
-        });
-    }
-
-    fn attach_visualizer(self: &Rc<Self>, receiver: Receiver<media::VisualizerLevels>) {
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(levels) = receiver.recv().await {
-                let Some(controller) = weak.upgrade() else {
-                    break;
-                };
-                if controller.media.borrow().is_some() {
-                    for island in controller.islands.borrow().values() {
-                        island.update_visualizer(levels);
-                    }
-                }
-                *controller.visualizer.borrow_mut() = levels;
             }
         });
     }
@@ -1527,13 +1092,7 @@ impl Controller {
     }
 
     fn try_handle_command(self: &Rc<Self>, command: IpcCommand) -> Result<Response> {
-        // Anything that raises interactive chrome is refused while locked.
-        // The compositor already hides the island's surface for the
-        // duration of the lock (ext-session-lock-v1 blanks every normal
-        // client), so these would be invisible either way -- but TarraGon
-        // search can launch applications, which must not be reachable from
-        // a locked session by anyone who can reach the IPC socket, visible
-        // or not.
+        // Hidden launchers can still start applications, so reject them while locked.
         if self.lock.borrow().is_some()
             && matches!(
                 command,
@@ -1615,12 +1174,7 @@ impl Controller {
                 Ok(Response::ok("session lock requested"))
             }
             IpcCommand::Unlock => {
-                // Same-user, same-machine escape hatch: reaching this at
-                // all already proves the caller passed the peer-credential
-                // check in `ipc::handle_connection`, whatever TTY or
-                // session they're sending it from. Bypasses PAM entirely,
-                // by design -- this is the recovery path for a stuck
-                // prompt, not a second authentication method.
+                // Recovery bypasses PAM after IPC has verified the caller's uid.
                 let session = self.lock.borrow().clone();
                 match session {
                     Some(session) => {
@@ -1982,21 +1536,9 @@ impl Controller {
     }
 
     fn generate_theme(&self, config: crate::config::ThemeConfig) {
-        // The GTK engine reads widget/style-context state and must run on
-        // the main thread; only the Material engine is safe to offload.
-        if matches!(config.engine, crate::config::PaletteEngine::Gtk) {
-            let result = theme::generate(&config)
-                .and_then(|palette| {
-                    theme::export_palette(&palette)?;
-                    Ok(palette)
-                })
-                .map_err(|error| format!("{error:#}"));
-            let _ = self.theme_sender.send_blocking(result);
-            return;
-        }
-
+        let requires_gtk_thread = matches!(config.engine, PaletteEngine::Gtk);
         let sender = self.theme_sender.clone();
-        thread::spawn(move || {
+        let generate_and_publish = move || {
             let result = theme::generate(&config)
                 .and_then(|palette| {
                     theme::export_palette(&palette)?;
@@ -2004,7 +1546,12 @@ impl Controller {
                 })
                 .map_err(|error| format!("{error:#}"));
             let _ = sender.send_blocking(result);
-        });
+        };
+        if requires_gtk_thread {
+            generate_and_publish();
+        } else {
+            thread::spawn(generate_and_publish);
+        }
     }
 
     fn reconcile_monitors(self: &Rc<Self>) {
@@ -2284,14 +1831,7 @@ impl Controller {
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        // Deliberately does not unlock a locked session. Fail-locked is the
-        // entire point of ext-session-lock-v1: dropping the `LockSession`
-        // here (its `Drop` only unregisters our own timers/watchers, never
-        // calls `Instance::unlock`) leaves the compositor still blanking
-        // every output. A daemon restart while locked therefore cannot
-        // unlock the screen; recovery is `mithshell unlock` from another
-        // session, or whatever secure recovery the compositor itself
-        // offers. See the "Lock screen" section of the README.
+        // Never unlock on teardown: ext-session-lock-v1 must remain fail-locked.
         self.tarragon_sender.close();
         self.preview_sender.close();
         self.auth_sender.close();
@@ -2328,25 +1868,19 @@ mod tests {
 
     fn spy_tarragon(_: Sender<TarragonEvent>) -> (Sender<TarragonCommand>, thread::JoinHandle<()>) {
         TARRAGON_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
-        let (sender, receiver) = async_channel::unbounded();
-        drop(receiver);
-        (sender, idle_worker())
+        (closed_sender(), idle_worker())
     }
 
     fn spy_notifications(
         _: Sender<NotificationEvent>,
     ) -> (Sender<NotificationCommand>, thread::JoinHandle<()>) {
         NOTIFICATION_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
-        let (sender, receiver) = async_channel::unbounded();
-        drop(receiver);
-        (sender, idle_worker())
+        (closed_sender(), idle_worker())
     }
 
     fn spy_logind(_: Sender<LogindEvent>) -> (Sender<LogindCommand>, thread::JoinHandle<()>) {
         LOGIND_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
-        let (sender, receiver) = async_channel::unbounded();
-        drop(receiver);
-        (sender, idle_worker())
+        (closed_sender(), idle_worker())
     }
 
     fn isolated_startup_hooks() -> StartupHooks {
@@ -2397,6 +1931,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
     fn controller_new_isolates_global_workers_and_refuses_lock() {
         reset_factory_calls();
         gtk::init().expect("run this test under a private GTK display");
