@@ -276,13 +276,8 @@ impl IslandWindow {
     }
 
     fn reveal_compact_visualizer(self: &Rc<Self>, reveal: bool) {
-        self.compact_visualizer_revealer.set_transition_duration(
-            if self.animations_enabled.get() {
-                self.animation_ms.get()
-            } else {
-                0
-            },
-        );
+        self.compact_visualizer_revealer
+            .set_transition_duration(self.auxiliary_duration_ms(280));
         self.compact_visualizer_revealer.set_reveal_child(reveal);
         self.resize_compact();
         self.reconcile_pill_geometry();

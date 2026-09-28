@@ -8,6 +8,7 @@ use std::{rc::Rc, time::Duration};
 use gtk4_layer_shell::KeyboardMode;
 
 use super::{Geometry, IslandWindow, View};
+use crate::ui::motion::Transition;
 
 fn sequential_fade_progress(
     previous: View,
@@ -21,7 +22,11 @@ fn sequential_fade_progress(
     } else {
         (
             outgoing.progress(elapsed),
-            incoming.progress(elapsed.saturating_sub(outgoing.duration)),
+            if elapsed < outgoing.duration {
+                0.0
+            } else {
+                incoming.progress(elapsed.saturating_sub(outgoing.duration))
+            },
         )
     }
 }
@@ -267,60 +272,48 @@ impl IslandWindow {
         self.view_animation_generation.set(generation);
         self.view_animation_target.set(Some(target));
         self.view_transition_active.set(true);
-        if !self.animations_enabled.get() || self.animation_ms.get() == 0 {
-            self.apply_geometry(target);
-            self.compact_date.set_opacity(
-                if view == View::Dashboard || (view == View::Compact && self.island_hovered.get()) {
-                    1.0
-                } else {
-                    0.0
-                },
-            );
-            self.finish_view(view);
-            return;
-        }
-
-        let island_transition = view == View::Dashboard
-            || previous_view == View::Dashboard
-            || (view == View::Compact && section_start > 0.0);
-        let profile = profile_timing(
-            if island_transition {
-                if view == View::Dashboard {
-                    crate::ui::motion::Profile::ISLAND_EXPAND
-                } else {
-                    crate::ui::motion::Profile::ISLAND_COLLAPSE
-                }
-            } else if view == View::Compact {
-                crate::ui::motion::Profile::CONTAINER_COLLAPSE
+        let launcher_transition = view == View::Search || previous_view == View::Search;
+        let island_transition = !launcher_transition
+            && (view == View::Dashboard
+                || previous_view == View::Dashboard
+                || (view == View::Compact && section_start > 0.0));
+        let profile = self.motion_profile(if launcher_transition {
+            if view == View::Search {
+                Transition::LauncherOpen
             } else {
-                crate::ui::motion::Profile::CONTAINER_EXPAND
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
-        let content_out = profile_timing(
-            if island_transition {
-                crate::ui::motion::Profile::ISLAND_FADE_OUT
+                Transition::LauncherClose
+            }
+        } else if island_transition {
+            if view == View::Dashboard {
+                Transition::IslandOpen
             } else {
-                crate::ui::motion::Profile::CONTENT_OUT
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
-        let content_in = profile_timing(
-            if island_transition {
-                crate::ui::motion::Profile::ISLAND_FADE_IN
-            } else {
-                crate::ui::motion::Profile::CONTENT_IN
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
+                Transition::IslandClose
+            }
+        } else if view == View::Compact {
+            Transition::ContainerCollapse
+        } else {
+            Transition::ContainerExpand
+        });
+        let content_out = self.motion_profile(if island_transition {
+            Transition::IslandFadeOut
+        } else {
+            Transition::ContentOut
+        });
+        let content_in = self.motion_profile(if island_transition {
+            Transition::IslandFadeIn
+        } else {
+            Transition::ContentIn
+        });
         let transition_duration = if island_transition {
             profile.duration
         } else {
             transition_duration(profile, content_out, content_in)
         };
+        if transition_duration.is_zero() {
+            self.apply_geometry(target);
+            self.finish_view(view);
+            return;
+        }
         let started = Instant::now();
         let start_opacities = self.view_widgets().map(|(widget, _)| widget.opacity());
         let weak = Rc::downgrade(self);
@@ -357,7 +350,7 @@ impl IslandWindow {
             island.apply_geometry(geometry);
             island.apply_content_opacity(view, previous_view, elapsed, start_opacities);
             island.apply_search_opacity(view, previous_view, elapsed, search_start_opacity);
-            island.apply_island_date_opacity(view, elapsed, date_start_opacity);
+            island.apply_island_date_opacity(view, elapsed, date_start_opacity, profile.duration);
             // Opacity/visibility changes can cause GTK to reallocate an
             // incoming page after the geometry write. Re-apply the pill
             // position last so the mapped child cannot snap back to y=0.
@@ -391,27 +384,21 @@ impl IslandWindow {
         elapsed: Duration,
         start: [f64; 6],
     ) {
-        let island_transition = target == View::Dashboard
-            || previous == View::Dashboard
-            || (target == View::Compact && start[2] > 0.0);
-        let outgoing = profile_timing(
-            if island_transition {
-                crate::ui::motion::Profile::ISLAND_FADE_OUT
-            } else {
-                crate::ui::motion::Profile::CONTENT_OUT
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
-        let incoming = profile_timing(
-            if island_transition {
-                crate::ui::motion::Profile::ISLAND_FADE_IN
-            } else {
-                crate::ui::motion::Profile::CONTENT_IN
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
+        let island_transition = target != View::Search
+            && previous != View::Search
+            && (target == View::Dashboard
+                || previous == View::Dashboard
+                || (target == View::Compact && start[2] > 0.0));
+        let outgoing = self.motion_profile(if island_transition {
+            Transition::IslandFadeOut
+        } else {
+            Transition::ContentOut
+        });
+        let incoming = self.motion_profile(if island_transition {
+            Transition::IslandFadeIn
+        } else {
+            Transition::ContentIn
+        });
         let (out_progress, in_progress) = if island_transition {
             let duration = self.island_transition_duration(target == View::Dashboard);
             (
@@ -443,7 +430,13 @@ impl IslandWindow {
         }
     }
 
-    fn apply_island_date_opacity(&self, target: View, elapsed: Duration, start: f64) {
+    fn apply_island_date_opacity(
+        &self,
+        target: View,
+        elapsed: Duration,
+        start: f64,
+        geometry_duration: Duration,
+    ) {
         if !matches!(target, View::Dashboard | View::Compact) {
             return;
         }
@@ -451,22 +444,17 @@ impl IslandWindow {
         if !show && self.current_view.get() != View::Compact {
             return;
         }
-        let progress =
-            self.island_fade_progress(show, elapsed, self.island_transition_duration(show));
+        let progress = self.island_fade_progress(show, elapsed, geometry_duration);
         self.compact_date
             .set_opacity(lerp(start, if show { 1.0 } else { 0.0 }, progress));
     }
 
     fn island_transition_duration(&self, expanding: bool) -> Duration {
-        profile_timing(
-            if expanding {
-                crate::ui::motion::Profile::ISLAND_EXPAND
-            } else {
-                crate::ui::motion::Profile::ISLAND_COLLAPSE
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        )
+        self.motion_profile(if expanding {
+            Transition::IslandOpen
+        } else {
+            Transition::IslandClose
+        })
         .duration
     }
 
@@ -478,19 +466,16 @@ impl IslandWindow {
         elapsed: Duration,
         geometry_duration: Duration,
     ) -> f64 {
-        let mut profile = profile_timing(
-            if show {
-                crate::ui::motion::Profile::ISLAND_FADE_IN
-            } else {
-                crate::ui::motion::Profile::ISLAND_FADE_OUT
-            },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
+        let mut profile = self.motion_profile(if show {
+            Transition::IslandFadeIn
+        } else {
+            Transition::IslandFadeOut
+        });
         profile.duration = profile.duration.min(geometry_duration);
         let available_delay = geometry_duration.saturating_sub(profile.duration);
         let delay = if show {
-            crate::ui::motion::duration::ISLAND_ENTER_FADE_DELAY.min(available_delay)
+            self.motion_delay(crate::ui::motion::duration::ISLAND_ENTER_FADE_DELAY)
+                .min(available_delay)
         } else {
             available_delay
         };
@@ -507,16 +492,8 @@ impl IslandWindow {
         if self.launcher_presentation != crate::config::LauncherPresentation::Integrated {
             return;
         }
-        let outgoing = profile_timing(
-            crate::ui::motion::Profile::CONTENT_OUT,
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
-        let incoming = profile_timing(
-            crate::ui::motion::Profile::CONTENT_IN,
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
+        let outgoing = self.motion_profile(Transition::ContentOut);
+        let incoming = self.motion_profile(Transition::ContentIn);
         let (_, in_progress) =
             sequential_fade_progress(previous, target, elapsed, outgoing, incoming);
         if target == View::Search {
@@ -555,7 +532,7 @@ impl IslandWindow {
                 widget.set_opacity(if active { 1.0 } else { 0.0 });
             }
         }
-        if view == View::Dashboard {
+        if view == View::Dashboard || (view == View::Compact && self.island_hovered.get()) {
             self.dashboard.set_visible(true);
             self.compact_date.set_visible(true);
             self.compact_date.set_opacity(1.0);
@@ -580,9 +557,18 @@ impl IslandWindow {
         let base = self.geometry_for_view(view);
         // The legacy density classes have a readable font-size floor. Keep the
         // reference's minimum content width even when the idle pill is tiny.
-        let scale_width =
-            |width: i32| f64::from(width) * (self.metrics.scale * 32.0 / 52.0).max(1.0) * 1.1;
-        let lift = self.metrics.spacing(16);
+        let peek = self.motion.get().map(|motion| motion.peek);
+        let width_scale = if view == View::Dashboard {
+            1.1
+        } else {
+            peek.map_or(1.1, |peek| peek.width_scale)
+        };
+        let scale_width = |width: i32| {
+            f64::from(width) * (self.metrics.scale * 32.0 / 52.0).max(1.0) * width_scale
+        };
+        let lift = peek.map_or(self.metrics.spacing(16), |peek| {
+            (peek.lift * self.metrics.scale).round() as i32
+        });
         let bottom_clearance = self.metrics.spacing(16);
         let top_margin = if self.window.is_layer_window() {
             self.window.margin(gtk4_layer_shell::Edge::Top)
@@ -624,7 +610,7 @@ impl IslandWindow {
                 width,
                 height: (f64::from(self.metrics.compact_height) * 0.55 + f64::from(natural))
                     .min(f64::from(max_height)),
-                y: f64::from(lift) - f64::from(self.metrics.compact_height) * 0.05,
+                y: (f64::from(lift) - f64::from(self.metrics.compact_height) * 0.05).max(0.0),
             }
         } else if matches!(view, View::Compact | View::Media) {
             hover_geometry(
@@ -914,6 +900,32 @@ mod tests {
             incoming,
         );
         assert!(in_after_out > 0.0);
+
+        // An instant incoming override still waits for the outgoing track;
+        // saturating subtraction alone would reveal it at elapsed zero.
+        let instant_incoming = incoming.with_timing(true, Some(0));
+        assert_eq!(
+            sequential_fade_progress(
+                View::Compact,
+                View::Search,
+                Duration::from_millis(50),
+                outgoing,
+                instant_incoming
+            )
+            .1,
+            0.0
+        );
+        assert_eq!(
+            sequential_fade_progress(
+                View::Compact,
+                View::Search,
+                outgoing.duration,
+                outgoing,
+                instant_incoming
+            )
+            .1,
+            1.0
+        );
     }
 
     #[test]

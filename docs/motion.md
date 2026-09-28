@@ -15,7 +15,7 @@ not a claim that Google prescribes these timings for this custom surface.
 - https://m3.material.io/styles/motion/easing-and-duration/tokens-specs
 - https://m3.material.io/styles/motion/easing-and-duration/applying-easing-and-duration
 
-Duration subset: `short2 = 100`, `short3 = 150`, `short4 = 200`,
+Duration subset: `short2 = 100`, `short3 = 150`, `short4 = 200`, `medium2 = 300`,
 `medium4 = 400`, `long2 = 500`.
 
 | Easing token | CSS cubic-bezier control points |
@@ -41,6 +41,8 @@ hover timing is a shell choice rather than a universal Google rule.
 
 | `Profile` constant | Duration token | Duration | Easing |
 | --- | --- | ---: | --- |
+| `PEEK_ENTER` | medium4 | 400 | standard |
+| `PEEK_EXIT` | medium2 | 300 | standard |
 | `HOVER_ENTER` | short3 | 150 | standard |
 | `CONTAINER_EXPAND` | long2 | 500 | standard (undirected emphasized fallback) |
 | `CONTAINER_COLLAPSE` | short4 | 200 | standard (undirected emphasized fallback) |
@@ -60,16 +62,92 @@ owns sequencing, overlap, visibility, and hit testing. The profile API does not
 infer which direction a scalar is moving: a collapse uses the collapse profile
 even when a particular coordinate increases.
 
+## Configuration
+
+`shell.motion` is optional. Its presence opts into named defaults; its absence
+preserves legacy `shell.animation_ms` behavior. A nested override alone also
+counts as opting in. Serialization preserves this distinction.
+
+```toml
+[shell.motion]
+duration_scale = 1.25
+
+[shell.motion.peek_enter]
+duration_ms = 400
+easing = "standard"
+
+[shell.motion.peek]
+lift = 8.0
+width_scale = 1.0
+```
+
+Resolution order: select the named default, apply optional `duration_ms` and
+`easing`, then multiply the duration by `duration_scale`. The animation-disable
+switch wins over every override. A zero scale makes all tracks and delays
+instant; a zero per-track duration makes that track instant. Replacement
+transitions still wait for their other required tracks to finish.
+
+`duration_scale` defaults to 1, accepts finite nonnegative numbers, and means
+**longer/slower** above 1. Durations are rounded to milliseconds after scaling
+and saturate at `u32::MAX` milliseconds. `duration_ms` accepts a nonnegative
+32-bit integer. Unknown fields, invalid easings, and invalid geometry fail
+configuration parsing before reload tears down any windows.
+
+Each table below accepts `duration_ms` and/or `easing`. Unspecified properties
+retain their defaults; overriding one transition never changes another.
+
+| Table under `shell.motion` | Default ms | Default easing | Applies to |
+| --- | ---: | --- | --- |
+| `peek_enter` | 400 | standard | Idle → hover peek |
+| `peek_exit` | 300 | standard | Hover peek → idle |
+| `island_open` | 500 | emphasized | Open dashboard |
+| `island_close` | 400 | emphasized-accelerate | Close dashboard |
+| `launcher_open` | 500 | standard | Independent and integrated launcher |
+| `launcher_close` | 200 | standard | Independent and integrated launcher |
+| `circle_enter` | 500 | standard | Circle expansion, including full pages |
+| `circle_exit` | 200 | standard | Circle contraction |
+| `hover_enter` | 150 | standard | Small tray/media hover changes |
+| `container_expand` | 500 | standard | Other container expansions |
+| `container_collapse` | 200 | standard | Other container collapses |
+| `content_in` | 150 | standard-decelerate | Shared incoming content |
+| `content_out` | 100 | standard-accelerate | Shared outgoing content |
+| `island_fade_in` | 200 | standard | Island/date entrance opacity |
+| `island_fade_out` | 200 | standard | Island/date exit opacity |
+
+Allowed easing strings are `standard`, `standard-decelerate`,
+`standard-accelerate`, `emphasized`, and `emphasized-accelerate`.
+
+The global scale also applies to the lock fade (280 ms base), audio visualizer
+reveal (280 ms), launcher result/plugin crossfade (160 ms), and compact-pill
+CSS color/shadow transitions (150 ms); these retain their existing easing.
+Continuous audio/battery motion and interaction/notification timeouts are not
+transition durations. Zero scale freezes the battery wave, like disabled motion.
+
+### Peek geometry
+
+`shell.motion.peek` controls distance independently of time:
+
+- `lift`: default 8, range 0–128, in logical pixels multiplied by UI density.
+  Zero places the header at its resting vertical origin. The open dashboard
+  retains this lift so its persistent header does not jump between states.
+- `width_scale`: default 1, greater than 0 and at most 4. Multiplies the 500px
+  reference peek width after density normalization. Content minimums and screen
+  bounds still apply, so reducing it cannot force hardware content to fit in an
+  arbitrarily narrow panel. It does not scale text or change open-dashboard width.
+
+Legacy configs retain a lift of 16 and a width multiplier of 1.1. The new
+defaults intentionally soften peek while keeping the emphasized open animation.
+
 ## Integration and compatibility
 
 ```rust,ignore
 use std::time::Duration;
 use crate::ui::motion::Profile;
 
-// Presentation resolves the historical default 280 to the named profile;
-// non-default values (including zero) remain exact overrides.
-let geometry = Profile::CONTAINER_EXPAND
-    .with_timing(animations_enabled, (shell.animation_ms != 280).then_some(shell.animation_ms));
+use crate::ui::motion::Transition;
+
+let geometry = Transition::PeekEnter
+    .resolve(shell.motion, animations_enabled, shell.animation_ms);
 
 // Use the profile's Material duration when token timing is explicitly selected.
 let content = Profile::CONTENT_IN.with_timing(animations_enabled, None);
@@ -89,12 +167,12 @@ final geometry/content/visibility synchronously in that case instead of waiting
 for a tick. Use `is_complete(elapsed)` for lifecycle completion; floating
 point eased progress can round to one just before the clock's endpoint.
 
-The existing `shell.animation_ms` is a defaulted `u32` (280), so the runtime
+When `shell.motion` is absent, `shell.animation_ms` is a defaulted `u32` (280), so the runtime
 value cannot distinguish an omitted default from an explicitly configured 280.
 Presentation call sites use 280 as the compatibility default for named profiles;
 any other positive value is an exact override, and zero/disabled animation is
 always immediate. This convention is documented rather than hidden, and an
-explicit token-timing config can remove the ambiguity later.
+new `shell.motion` table removes this ambiguity by ignoring the legacy scalar.
 
 For interruption, cancel/invalidate the old tick generation, capture the current
 rendered geometry and opacities, and restart elapsed at zero with those values
@@ -134,8 +212,9 @@ Transition choreography guidance: https://m3.material.io/styles/motion/transitio
 
 ## Native GTK island choreography
 
-Use `Profile::ISLAND_EXPAND` for the island container's expanding geometry and
-`Profile::ISLAND_COLLAPSE` for collapsing geometry. These are explicit
+Resolve `Transition::PeekEnter`/`PeekExit` for hover and
+`Transition::IslandOpen`/`IslandClose` for the pinned dashboard. The latter
+default to `Profile::ISLAND_EXPAND` and `Profile::ISLAND_COLLAPSE`. These are explicit
 Material easing tokens: the full emphasized path for entry and
 emphasized-accelerate for exit. The 500/400 ms durations are shell-specific
 choices tuned after native visual feedback; collapse is intentionally slower
@@ -151,7 +230,8 @@ allocation reveals it. Date opacity uses `Profile::ISLAND_FADE_IN` and
 their opacity, height, and spacing contract, so closing to Peek never abruptly
 unmounts a card or jumps the hardware row. On an enabled date enter, begin the fade-in after
 `duration::ISLAND_ENTER_FADE_DELAY` (the `short2`, 100 ms token), measured from
-the start of the container expansion; sequence the fade so it can finish with
+the start of the container expansion, multiplied by the global duration scale;
+sequence the fade so it can finish with
 the longer transform. Do not apply that delay for reduced motion, when
 animations are disabled, or when the resolved transition duration is zero:
 apply final opacity and geometry synchronously. `with_timing(false, ...)`

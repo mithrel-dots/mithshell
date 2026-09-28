@@ -3,9 +3,34 @@
 monitors = ["*"]
 top_margin = 6
 exclusive_zone = 48
-animation_ms = 280
+# Legacy fallback when [shell.motion] is absent: animation_ms = 280
 # 0 selects an automatic scale from each monitor's logical width.
 scale = 0
+
+# Larger values mean longer/slower transitions; 0 makes transitions instant.
+# This table supersedes shell.animation_ms, including its old zero/default rules.
+[shell.motion]
+duration_scale = 1.0
+
+# Optional per-transition overrides are scaled by duration_scale afterward.
+[shell.motion.peek_enter]
+duration_ms = 400
+easing = "standard"
+
+[shell.motion.peek_exit]
+duration_ms = 300
+easing = "standard"
+
+# Geometry is independent of timing. Lift uses density-scaled logical pixels;
+# width_scale multiplies the reference peek width, with content-fit minimums.
+[shell.motion.peek]
+lift = 8.0
+width_scale = 1.0
+
+# Other override tables: island_open, island_close, launcher_open,
+# launcher_close, circle_enter, circle_exit, hover_enter, container_expand,
+# container_collapse, content_in, content_out, island_fade_in, island_fade_out.
+# Each accepts duration_ms and/or easing. See docs/motion.md for defaults.
 
 # Circle/launcher options below configure the optional production UI surfaces.
 # See README's "Circle and launcher configuration".

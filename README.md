@@ -84,7 +84,6 @@ Monitor selection uses exact Wayland connector names from
 monitors = ["DP-1", "DP-2"]
 top_margin = 6
 exclusive_zone = 48
-animation_ms = 280
 scale = 0
 ```
 
@@ -97,6 +96,45 @@ do not silently fall back to another monitor.
 
 The island uses the top layer in every view, matching Quickshell's default for
 panels and keeping it visible across regular and special workspaces.
+
+### Animation settings
+
+Use a global duration multiplier to make transitions slower or faster while
+preserving their relative timings. Optional named overrides let you tune a
+particular transition:
+
+```toml
+[shell.motion]
+duration_scale = 1.25 # 25% longer/slower; 1.0 = normal, 0 = instant
+
+[shell.motion.peek_enter]
+duration_ms = 400
+easing = "standard"
+
+[shell.motion.peek_exit]
+duration_ms = 300
+easing = "standard"
+
+[shell.motion.peek]
+lift = 8.0        # density-scaled logical pixels; 0 removes the downward offset
+width_scale = 1.0 # reference peek width multiplier, bounded by content fit
+```
+
+The effective duration is **override-or-default × duration_scale**. In this
+example peek takes 500 ms to enter and 375 ms to exit. Fade delays scale too;
+`daemon --no-animations` always disables transitions. The new peek defaults use
+standard easing at 400/300 ms, half the old lift, and no extra 10% width boost.
+
+Adding `[shell.motion]` (even an empty table or just one nested override) opts
+into named defaults and supersedes `shell.animation_ms` completely. Existing
+configs without it retain the legacy behavior: `280` selects profile defaults,
+other values force a shared absolute duration, and `0` disables animations.
+
+Other override tables include `island_open`/`island_close`,
+`launcher_open`/`launcher_close` (both presentation modes),
+`circle_enter`/`circle_exit`, and shared content tracks. See
+[the motion reference](docs/motion.md#configuration) for every name, easing,
+default, and geometry constraint. Run `mithshell reload` after saving.
 
 Media width is content-driven and capped as a multiple of compact width:
 
@@ -448,7 +486,8 @@ card reuses the island's surface, typography and `@ms_*` palette roles, so a
 locked session looks like the same shell rather than a separate program. It
 also shows the hostname, operating system and uptime, plus battery and current
 weather when those pollers have data. The card and safe captured backdrop fade
-in and out using `shell.animation_ms`; `daemon --no-animations` disables those
+in and out using the global motion duration scale (or legacy `shell.animation_ms`);
+`daemon --no-animations` disables those
 transitions as it does for the island.
 
 ```toml

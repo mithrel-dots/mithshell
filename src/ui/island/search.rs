@@ -900,11 +900,7 @@ impl IslandWindow {
         self.search_animation_generation.set(generation);
         let integrated =
             self.launcher_presentation == crate::config::LauncherPresentation::Integrated;
-        let profile = profile_timing(
-            crate::ui::motion::Profile::CONTAINER_EXPAND,
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
+        let profile = self.motion_profile(crate::ui::motion::Transition::LauncherOpen);
         let animate = !profile.duration.is_zero();
         let target = self.search_target_geometry();
         if integrated {
@@ -986,11 +982,7 @@ impl IslandWindow {
         self.window.present();
         let generation = self.search_animation_generation.get().wrapping_add(1);
         self.search_animation_generation.set(generation);
-        let profile = profile_timing(
-            crate::ui::motion::Profile::CONTAINER_COLLAPSE,
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
-        );
+        let profile = self.motion_profile(crate::ui::motion::Transition::LauncherClose);
         if profile.duration.is_zero() {
             self.hide_search_window();
             return;

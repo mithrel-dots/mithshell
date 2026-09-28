@@ -1819,7 +1819,12 @@ impl Controller {
             weather.as_ref(),
             LockAnimation {
                 enabled: self.animations,
-                duration_ms: config.shell.animation_ms,
+                duration_ms: crate::ui::motion::auxiliary_duration_ms(
+                    config.shell.motion,
+                    self.animations,
+                    config.shell.animation_ms,
+                    280,
+                ),
             },
             config.icons.style,
             LockActions {

@@ -342,6 +342,8 @@ pub struct IslandWindow {
     /// `finish_view` samples the current pill target before committing it.
     view_transition_active: Cell<bool>,
     animation_ms: Cell<u32>,
+    motion: Cell<Option<crate::config::MotionConfig>>,
+    motion_style: gtk::CssProvider,
     animations_enabled: Cell<bool>,
     launcher_presentation: LauncherPresentation,
     osd_generation: Cell<u64>,
@@ -364,17 +366,49 @@ pub struct IslandWindow {
     pub(crate) circles: RefCell<Option<circle_integration::CircleIntegration>>,
 }
 
-/// `280` is the historical default.  Treating that value as the compatibility
-/// default lets the named profiles select their Material timings, while any
-/// other positive value remains an explicit user override.  This is necessarily
-/// a convention because the TOML scalar cannot distinguish an omitted value
-/// from an explicitly written `280`.
-fn profile_timing(
-    profile: crate::ui::motion::Profile,
-    enabled: bool,
-    animation_ms: u32,
-) -> crate::ui::motion::Profile {
-    profile.with_timing(enabled, (animation_ms != 280).then_some(animation_ms))
+impl IslandWindow {
+    fn motion_profile(
+        &self,
+        transition: crate::ui::motion::Transition,
+    ) -> crate::ui::motion::Profile {
+        transition.resolve(
+            self.motion.get(),
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+        )
+    }
+
+    fn motion_enabled(&self) -> bool {
+        self.animations_enabled.get()
+            && self
+                .motion
+                .get()
+                .map_or(self.animation_ms.get() > 0, |motion| {
+                    motion.duration_scale > 0.0
+                })
+    }
+
+    fn auxiliary_duration_ms(&self, default_ms: u32) -> u32 {
+        crate::ui::motion::auxiliary_duration_ms(
+            self.motion.get(),
+            self.animations_enabled.get(),
+            self.animation_ms.get(),
+            default_ms,
+        )
+    }
+
+    fn motion_delay(&self, duration: Duration) -> Duration {
+        if !self.motion_enabled() {
+            Duration::ZERO
+        } else {
+            crate::ui::motion::scale_duration(
+                duration,
+                self.motion
+                    .get()
+                    .map_or(1.0, |motion| motion.duration_scale),
+            )
+        }
+    }
 }
 
 fn hover_geometry(base: Geometry, inset: f64, hovered: bool) -> Geometry {
@@ -429,7 +463,7 @@ fn dominant_scroll_direction(dx: f64, dy: f64) -> i8 {
 mod tests {
     use super::media::media_state_for_player;
     use super::weather::weather_provider_label;
-    use super::{Geometry, IslandActions, IslandWindow, View, hover_geometry, profile_timing};
+    use super::{Geometry, IslandActions, IslandWindow, View, hover_geometry};
     use crate::config::{AppConfig, CircleModule, LauncherPresentation};
     use crate::state::{
         MediaPlayer, MediaState, Notification, NotificationAction, NotificationTimeout,
@@ -457,12 +491,12 @@ mod tests {
 
     #[test]
     fn default_animation_value_selects_named_profile() {
-        let profile = profile_timing(crate::ui::motion::Profile::HOVER_ENTER, true, 280);
+        let profile = crate::ui::motion::Transition::HoverEnter.resolve(None, true, 280);
         assert_eq!(
             profile.duration,
             crate::ui::motion::Profile::HOVER_ENTER.duration
         );
-        let override_profile = profile_timing(crate::ui::motion::Profile::HOVER_ENTER, true, 333);
+        let override_profile = crate::ui::motion::Transition::HoverEnter.resolve(None, true, 333);
         assert_eq!(
             override_profile.duration,
             std::time::Duration::from_millis(333)
@@ -2545,6 +2579,86 @@ mod tests {
         );
         assert!(animated.hardware.root.is_visible());
         assert!(animated.dashboard.is_visible());
+
+        // Exercise the new settings through real widget entry points. A zero
+        // scale must settle synchronously, including date opacity and picking,
+        // even when a legacy positive duration remains in the config.
+        let legacy_peek = animated.geometry.get();
+        let mut shell = animated_config.shell.clone();
+        let mut motion = crate::config::MotionConfig {
+            duration_scale: 0.0,
+            ..crate::config::MotionConfig::default()
+        };
+        motion.peek.lift = 0.0;
+        motion.peek.width_scale = 0.9;
+        shell.motion = Some(motion);
+        animated.update_shell_config(&shell, true);
+        animated.set_pointer_in_hover_region(false);
+        assert!(animated.pill_animation_target.get().is_none());
+        animated.set_pointer_in_hover_region(true);
+        let configured_peek = animated.geometry.get();
+        assert_eq!(
+            configured_peek,
+            animated.presentation_target_geometry(View::Compact)
+        );
+        assert_eq!(configured_peek.y, 0.0);
+        assert!(configured_peek.width <= legacy_peek.width);
+        assert_eq!(animated.compact_date.opacity(), 1.0);
+        assert!(animated.dashboard.can_target());
+        assert_eq!(animated.search_stack.transition_duration(), 0);
+        assert_eq!(
+            animated.compact_visualizer_revealer.transition_duration(),
+            0
+        );
+        animated.open();
+        assert!(!animated.view_transition_active.get());
+        animated.close();
+        assert!(!animated.view_transition_active.get());
+        assert_eq!(animated.compact_date.opacity(), 1.0);
+        animated.open_search();
+        assert_eq!(animated.search.opacity(), 1.0);
+        animated.close();
+        assert!(!animated.search_window.is_visible());
+        animated.set_pointer_in_hover_region(false);
+
+        // The new table overrides legacy zero, and its scaled delay stays in
+        // sync with its scaled transform. Reversing preserves the rendered frame.
+        shell.animation_ms = 0;
+        motion.duration_scale = 2.0;
+        shell.motion = Some(motion);
+        animated.update_shell_config(&shell, true);
+        assert_eq!(animated.search_stack.transition_duration(), 320);
+        assert_eq!(
+            animated.compact_visualizer_revealer.transition_duration(),
+            560
+        );
+        let duration = animated
+            .motion_profile(crate::ui::motion::Transition::PeekEnter)
+            .duration;
+        assert_eq!(duration, Duration::from_millis(800));
+        assert_eq!(
+            animated.island_fade_progress(true, Duration::from_millis(100), duration),
+            0.0
+        );
+        assert!(animated.island_fade_progress(true, Duration::from_millis(300), duration) > 0.0);
+        let rest = animated.geometry.get();
+        animated.set_pointer_in_hover_region(true);
+        assert_eq!(animated.geometry.get(), rest);
+        pump(Duration::from_millis(100));
+        let midway = animated.geometry.get();
+        assert!(midway.height > rest.height);
+        assert!(midway.height < animated.presentation_target_geometry(View::Compact).height);
+        animated.set_pointer_in_hover_region(false);
+        assert_eq!(animated.geometry.get(), midway);
+        motion.duration_scale = 0.0;
+        shell.motion = Some(motion);
+        animated.update_shell_config(&shell, true);
+        animated.set_pointer_in_hover_region(true);
+        assert_eq!(
+            animated.geometry.get(),
+            animated.presentation_target_geometry(View::Compact)
+        );
+        assert_eq!(animated.compact_date.opacity(), 1.0);
         animated.destroy();
     }
 

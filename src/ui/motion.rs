@@ -6,6 +6,121 @@
 
 use std::time::Duration;
 
+use crate::config::{MotionConfig, MotionEasing, MotionOverride};
+
+/// User-facing transition identities, independent of their default tokens.
+#[derive(Clone, Copy, Debug)]
+pub enum Transition {
+    PeekEnter,
+    PeekExit,
+    IslandOpen,
+    IslandClose,
+    LauncherOpen,
+    LauncherClose,
+    CircleEnter,
+    CircleExit,
+    HoverEnter,
+    ContainerExpand,
+    ContainerCollapse,
+    ContentIn,
+    ContentOut,
+    IslandFadeIn,
+    IslandFadeOut,
+}
+
+impl Transition {
+    fn defaults(self, modern: bool) -> Profile {
+        match self {
+            Self::PeekEnter if modern => Profile::PEEK_ENTER,
+            Self::PeekExit if modern => Profile::PEEK_EXIT,
+            Self::PeekEnter | Self::IslandOpen => Profile::ISLAND_EXPAND,
+            Self::PeekExit | Self::IslandClose => Profile::ISLAND_COLLAPSE,
+            Self::LauncherOpen | Self::CircleEnter | Self::ContainerExpand => {
+                Profile::CONTAINER_EXPAND
+            }
+            Self::LauncherClose | Self::CircleExit | Self::ContainerCollapse => {
+                Profile::CONTAINER_COLLAPSE
+            }
+            Self::HoverEnter => Profile::HOVER_ENTER,
+            Self::ContentIn => Profile::CONTENT_IN,
+            Self::ContentOut => Profile::CONTENT_OUT,
+            Self::IslandFadeIn => Profile::ISLAND_FADE_IN,
+            Self::IslandFadeOut => Profile::ISLAND_FADE_OUT,
+        }
+    }
+
+    fn settings(self, config: MotionConfig) -> MotionOverride {
+        match self {
+            Self::PeekEnter => config.peek_enter,
+            Self::PeekExit => config.peek_exit,
+            Self::IslandOpen => config.island_open,
+            Self::IslandClose => config.island_close,
+            Self::LauncherOpen => config.launcher_open,
+            Self::LauncherClose => config.launcher_close,
+            Self::CircleEnter => config.circle_enter,
+            Self::CircleExit => config.circle_exit,
+            Self::HoverEnter => config.hover_enter,
+            Self::ContainerExpand => config.container_expand,
+            Self::ContainerCollapse => config.container_collapse,
+            Self::ContentIn => config.content_in,
+            Self::ContentOut => config.content_out,
+            Self::IslandFadeIn => config.island_fade_in,
+            Self::IslandFadeOut => config.island_fade_out,
+        }
+    }
+
+    pub fn resolve(self, config: Option<MotionConfig>, enabled: bool, legacy_ms: u32) -> Profile {
+        let profile = self.defaults(config.is_some());
+        let Some(config) = config else {
+            return profile.with_timing(enabled, (legacy_ms != 280).then_some(legacy_ms));
+        };
+        let settings = self.settings(config);
+        let profile = profile.with_timing(enabled, settings.duration_ms);
+        Profile {
+            duration: scale_duration(profile.duration, config.duration_scale),
+            easing: settings.easing.map_or(profile.easing, Easing::from),
+        }
+    }
+}
+
+impl From<MotionEasing> for Easing {
+    fn from(value: MotionEasing) -> Self {
+        match value {
+            MotionEasing::Standard => Self::Standard,
+            MotionEasing::StandardDecelerate => Self::StandardDecelerate,
+            MotionEasing::StandardAccelerate => Self::StandardAccelerate,
+            MotionEasing::Emphasized => Self::Emphasized,
+            MotionEasing::EmphasizedAccelerate => Self::EmphasizedAccelerate,
+        }
+    }
+}
+
+/// Round once to milliseconds and saturate to GTK's duration range. This also
+/// keeps huge (but finite) user multipliers from overflowing clock arithmetic.
+pub fn scale_duration(duration: Duration, scale: f64) -> Duration {
+    let milliseconds = (duration.as_secs_f64() * 1000.0 * scale).round();
+    Duration::from_millis(u64::from(milliseconds as u32))
+}
+
+/// Global timing for GTK-owned transitions with their own fixed easing.
+pub fn auxiliary_duration_ms(
+    config: Option<MotionConfig>,
+    enabled: bool,
+    legacy_ms: u32,
+    default_ms: u32,
+) -> u32 {
+    if !enabled {
+        return 0;
+    }
+    config.map_or(legacy_ms, |config| {
+        scale_duration(
+            Duration::from_millis(u64::from(default_ms)),
+            config.duration_scale,
+        )
+        .as_millis() as u32
+    })
+}
+
 /// The subset of Material 3 duration tokens used by the shell profiles.
 pub mod duration {
     use std::time::Duration;
@@ -13,6 +128,7 @@ pub mod duration {
     pub const SHORT2: Duration = Duration::from_millis(100);
     pub const SHORT3: Duration = Duration::from_millis(150);
     pub const SHORT4: Duration = Duration::from_millis(200);
+    pub const MEDIUM2: Duration = Duration::from_millis(300);
     pub const MEDIUM4: Duration = Duration::from_millis(400);
     pub const LONG2: Duration = Duration::from_millis(500);
 
@@ -111,6 +227,14 @@ pub struct Profile {
 }
 
 impl Profile {
+    pub const PEEK_ENTER: Self = Self {
+        duration: duration::MEDIUM4,
+        easing: Easing::Standard,
+    };
+    pub const PEEK_EXIT: Self = Self {
+        duration: duration::MEDIUM2,
+        easing: Easing::Standard,
+    };
     pub const HOVER_ENTER: Self = Self {
         duration: duration::SHORT3,
         easing: Easing::Standard,
@@ -184,6 +308,170 @@ impl Profile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configured_motion_preserves_ratios_and_scales_overrides_last() {
+        use super::{Transition, scale_duration};
+        use crate::config::{MotionConfig, MotionEasing, MotionOverride};
+        let motion = MotionConfig {
+            duration_scale: 1.25,
+            peek_enter: MotionOverride {
+                duration_ms: Some(600),
+                easing: Some(MotionEasing::StandardAccelerate),
+            },
+            ..MotionConfig::default()
+        };
+        let enter = Transition::PeekEnter.resolve(Some(motion), true, 320);
+        assert_eq!(enter.duration, Duration::from_millis(750));
+        assert_eq!(enter.easing, Easing::StandardAccelerate);
+        assert_eq!(
+            Transition::IslandOpen
+                .resolve(Some(motion), true, 320)
+                .duration,
+            Duration::from_millis(625)
+        );
+        assert_eq!(
+            Transition::IslandClose
+                .resolve(Some(motion), true, 320)
+                .duration,
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            Transition::PeekExit
+                .resolve(Some(motion), true, 320)
+                .duration,
+            Duration::from_millis(375)
+        );
+        assert_eq!(
+            scale_duration(duration::ISLAND_ENTER_FADE_DELAY, motion.duration_scale),
+            Duration::from_millis(125)
+        );
+        // Legacy zero is ignored once the new table is present; the real
+        // animation-disable switch still takes precedence over every override.
+        assert_eq!(Transition::PeekEnter.resolve(Some(motion), true, 0), enter);
+        assert!(
+            Transition::PeekEnter
+                .resolve(Some(motion), false, 320)
+                .duration
+                .is_zero()
+        );
+        assert!(
+            Transition::PeekEnter
+                .resolve(
+                    Some(MotionConfig {
+                        duration_scale: 0.0,
+                        ..motion
+                    }),
+                    true,
+                    320
+                )
+                .duration
+                .is_zero()
+        );
+        assert!(
+            Transition::PeekExit
+                .resolve(
+                    Some(MotionConfig {
+                        peek_exit: MotionOverride {
+                            duration_ms: Some(0),
+                            easing: None
+                        },
+                        ..motion
+                    }),
+                    true,
+                    320
+                )
+                .duration
+                .is_zero()
+        );
+        assert_eq!(
+            Transition::PeekEnter.resolve(None, true, 280),
+            Profile::ISLAND_EXPAND
+        );
+        assert_eq!(
+            Transition::PeekEnter.resolve(None, true, 320).duration,
+            Duration::from_millis(320)
+        );
+        assert!(
+            Transition::PeekEnter
+                .resolve(None, true, 0)
+                .duration
+                .is_zero()
+        );
+        assert_eq!(
+            scale_duration(Duration::from_millis(u64::from(u32::MAX)), f64::MAX),
+            Duration::from_millis(u64::from(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn named_overrides_route_independently() {
+        use super::Transition;
+        let config: crate::config::AppConfig = toml::from_str(
+            r#"
+            [shell.motion]
+            duration_scale = 2.0
+            [shell.motion.peek_enter]
+            duration_ms = 111
+            [shell.motion.peek_exit]
+            duration_ms = 112
+            [shell.motion.island_open]
+            duration_ms = 113
+            [shell.motion.island_close]
+            duration_ms = 114
+            [shell.motion.launcher_open]
+            duration_ms = 115
+            [shell.motion.launcher_close]
+            duration_ms = 116
+            [shell.motion.circle_enter]
+            duration_ms = 117
+            [shell.motion.circle_exit]
+            duration_ms = 118
+        "#,
+        )
+        .unwrap();
+        for (transition, expected) in [
+            (Transition::PeekEnter, 222),
+            (Transition::PeekExit, 224),
+            (Transition::IslandOpen, 226),
+            (Transition::IslandClose, 228),
+            (Transition::LauncherOpen, 230),
+            (Transition::LauncherClose, 232),
+            (Transition::CircleEnter, 234),
+            (Transition::CircleExit, 236),
+        ] {
+            assert_eq!(
+                transition.resolve(config.shell.motion, true, 320).duration,
+                Duration::from_millis(expected)
+            );
+        }
+        // Overriding a surface does not flatten the shared content tracks.
+        assert_eq!(
+            Transition::ContentIn
+                .resolve(config.shell.motion, true, 320)
+                .duration,
+            Duration::from_millis(300)
+        );
+        assert_eq!(
+            Transition::ContentOut
+                .resolve(config.shell.motion, true, 320)
+                .duration,
+            Duration::from_millis(200)
+        );
+    }
+
+    #[test]
+    fn auxiliary_transitions_honor_global_scale_and_disable() {
+        use super::auxiliary_duration_ms;
+        use crate::config::MotionConfig;
+        let motion = Some(MotionConfig {
+            duration_scale: 1.5,
+            ..MotionConfig::default()
+        });
+        assert_eq!(auxiliary_duration_ms(motion, true, 320, 280), 420);
+        assert_eq!(auxiliary_duration_ms(motion, false, 320, 280), 0);
+        assert_eq!(auxiliary_duration_ms(None, true, 320, 280), 320);
+    }
+
     use super::*;
 
     const EASINGS: [Easing; 5] = [
@@ -193,7 +481,9 @@ mod tests {
         Easing::StandardAccelerate,
         Easing::EmphasizedAccelerate,
     ];
-    const PROFILES: [Profile; 9] = [
+    const PROFILES: [Profile; 11] = [
+        Profile::PEEK_ENTER,
+        Profile::PEEK_EXIT,
         Profile::HOVER_ENTER,
         Profile::CONTAINER_EXPAND,
         Profile::CONTAINER_COLLAPSE,

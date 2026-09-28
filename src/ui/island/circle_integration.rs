@@ -14,10 +14,10 @@ use super::IslandWindow;
 use super::circle::{self, CircleHost, CircleRequest, CircleSpec, Event, Rect, Size, Visual};
 use super::media_circle::{MediaCircle, MediaCircleActions};
 use super::notification_circle::{NotificationCircle, NotificationCircleCallbacks};
-use super::profile_timing;
 use super::tray_circle::TrayCircle;
 use crate::config::{CircleModule, NotificationConfig, TrayConfig};
 use crate::state::{MediaState, Notification, TrayItem};
+use crate::ui::motion::Transition;
 use gtk::{glib, prelude::*};
 
 struct CircleAnimation {
@@ -55,15 +55,20 @@ fn mode_rank(mode: circle::Mode) -> u8 {
 /// Selects the container profile from the actual transition direction.  The
 /// previous target is used while reversing so a pending Full→Compact change
 /// remains a collapse even if the old page is still presented by the stack.
+fn circle_transition(from: circle::Mode, to: circle::Mode) -> Transition {
+    if mode_rank(to) < mode_rank(from) {
+        Transition::CircleExit
+    } else {
+        Transition::CircleEnter
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn circle_transition_profile(
     from: circle::Mode,
     to: circle::Mode,
 ) -> crate::ui::motion::Profile {
-    if mode_rank(to) < mode_rank(from) {
-        crate::ui::motion::Profile::CONTAINER_COLLAPSE
-    } else {
-        crate::ui::motion::Profile::CONTAINER_EXPAND
-    }
+    circle_transition(from, to).resolve(None, true, 280)
 }
 
 fn sample_visual(animation: &CircleAnimation, now: Instant) -> Visual {
@@ -398,8 +403,17 @@ impl CircleIntegration {
                             && mode == circle::Mode::HoverExpanded
                             && mode_rank(mode) > mode_rank(from_mode);
                         let opacity_start = slot.host.widget().opacity();
-                        let animation_ms = island.animation_ms.get();
-                        if !island.animations_enabled.get() || animation_ms == 0 {
+                        let geometry = island.motion_profile(circle_transition(from_mode, mode));
+                        let out = island.motion_profile(Transition::ContentOut);
+                        let incoming = island.motion_profile(Transition::ContentIn);
+                        let total = geometry.duration.max(if no_fade_expand {
+                            Duration::ZERO
+                        } else if geometry_only {
+                            incoming.duration
+                        } else {
+                            out.duration.saturating_add(incoming.duration)
+                        });
+                        if total.is_zero() {
                             animations[index] = None;
                             commit[index] = true;
                             slot.host.widget().set_opacity(1.0);
@@ -408,28 +422,6 @@ impl CircleIntegration {
                                 visual: target,
                             });
                         }
-                        let geometry = profile_timing(
-                            circle_transition_profile(from_mode, mode),
-                            true,
-                            animation_ms,
-                        );
-                        let out = profile_timing(
-                            crate::ui::motion::Profile::CONTENT_OUT,
-                            true,
-                            animation_ms,
-                        );
-                        let incoming = profile_timing(
-                            crate::ui::motion::Profile::CONTENT_IN,
-                            true,
-                            animation_ms,
-                        );
-                        let total = geometry.duration.max(if no_fade_expand {
-                            Duration::ZERO
-                        } else if geometry_only {
-                            incoming.duration
-                        } else {
-                            out.duration.saturating_add(incoming.duration)
-                        });
                         if no_fade_expand {
                             slot.host.commit_page(slot.host.revision());
                             slot.host.widget().set_opacity(1.0);

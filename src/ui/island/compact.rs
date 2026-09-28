@@ -231,20 +231,21 @@ impl IslandWindow {
             return;
         }
         self.pill_animation_target.set(Some(target));
-        let profile = profile_timing(
-            if self.island_hovered.get() && target.height >= start.height {
-                crate::ui::motion::Profile::ISLAND_EXPAND
+        use crate::ui::motion::Transition;
+        let profile = self.motion_profile(
+            if view == View::Compact && self.island_hovered.get() && target.height >= start.height {
+                Transition::PeekEnter
+            } else if view == View::Compact && target.height < start.height {
+                Transition::PeekExit
             } else if target.height < start.height || target.width < start.width {
-                crate::ui::motion::Profile::ISLAND_COLLAPSE
+                Transition::IslandClose
             } else if self.tray_hovered.get() {
-                crate::ui::motion::Profile::HOVER_ENTER
+                Transition::HoverEnter
             } else if target.width >= start.width {
-                crate::ui::motion::Profile::CONTAINER_EXPAND
+                Transition::ContainerExpand
             } else {
-                crate::ui::motion::Profile::CONTAINER_COLLAPSE
+                Transition::ContainerCollapse
             },
-            self.animations_enabled.get(),
-            self.animation_ms.get(),
         );
         let generation = self.pill_animation_generation.get().wrapping_add(1);
         self.pill_animation_generation.set(generation);

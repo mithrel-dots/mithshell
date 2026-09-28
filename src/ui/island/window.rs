@@ -187,7 +187,9 @@ impl IslandWindow {
         let battery_waves = BatteryWaves::new(
             config.battery,
             animations_enabled,
-            shell.animation_ms,
+            shell.motion.map_or(shell.animation_ms, |motion| {
+                u32::from(motion.duration_scale > 0.0)
+            }),
             metrics.compact_height,
         );
         let surface_shell = gtk::Overlay::new();
@@ -304,11 +306,14 @@ impl IslandWindow {
         compact_visualizer.set_margin_start(metrics.spacing(10));
         let compact_visualizer_revealer = gtk::Revealer::new();
         compact_visualizer_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
-        compact_visualizer_revealer.set_transition_duration(if animations_enabled {
-            shell.animation_ms
-        } else {
-            0
-        });
+        compact_visualizer_revealer.set_transition_duration(
+            crate::ui::motion::auxiliary_duration_ms(
+                shell.motion,
+                animations_enabled,
+                shell.animation_ms,
+                280,
+            ),
+        );
         compact_visualizer_revealer.set_child(Some(&compact_visualizer));
         compact_clock
             .parent()
@@ -517,6 +522,8 @@ impl IslandWindow {
             view_animation_target: Cell::new(None),
             view_transition_active: Cell::new(false),
             animation_ms: Cell::new(shell.animation_ms),
+            motion: Cell::new(shell.motion),
+            motion_style: gtk::CssProvider::new(),
             animations_enabled: Cell::new(animations_enabled),
             launcher_presentation: config.launcher.presentation,
             osd_generation: Cell::new(0),
@@ -534,6 +541,12 @@ impl IslandWindow {
             circles: RefCell::new(None),
         });
 
+        #[allow(deprecated)]
+        island
+            .compact
+            .style_context()
+            .add_provider(&island.motion_style, gtk::STYLE_PROVIDER_PRIORITY_USER + 1);
+        island.update_motion_styles();
         let circles = circle_integration::CircleIntegration::new(
             &island,
             config.circles.left,
@@ -752,9 +765,28 @@ impl IslandWindow {
         self.window
             .set_exclusive_zone(self.metrics.spacing(config.exclusive_zone));
         self.animation_ms.set(config.animation_ms);
+        self.motion.set(config.motion);
         self.animations_enabled.set(animations_enabled);
-        self.battery_waves
-            .set_motion(animations_enabled, config.animation_ms);
+        self.battery_waves.set_motion(self.motion_enabled(), 1);
+        self.compact_visualizer_revealer
+            .set_transition_duration(self.auxiliary_duration_ms(280));
+        self.update_motion_styles();
+    }
+
+    fn update_motion_styles(&self) {
+        let enabled = self.motion_enabled();
+        let duration =
+            crate::ui::motion::auxiliary_duration_ms(self.motion.get(), enabled, 150, 150);
+        self.motion_style.load_from_string(&format!(
+            ".compact-pill {{ transition-duration: {duration}ms; }}"
+        ));
+        self.search_stack
+            .set_transition_duration(crate::ui::motion::auxiliary_duration_ms(
+                self.motion.get(),
+                enabled,
+                160,
+                160,
+            ));
     }
 
     pub fn destroy(&self) {
