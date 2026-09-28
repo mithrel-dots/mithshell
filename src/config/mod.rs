@@ -1,5 +1,15 @@
+mod motion;
+mod paths;
+
+pub use motion::{MotionConfig, MotionEasing, MotionOverride, PeekGeometryConfig};
+pub(crate) use paths::xdg_dir;
+pub use paths::{
+    cache_dir, colors_css_path, config_path, default_socket_path, expand_home, gtk_user_css_path,
+    runtime_dir, state_dir,
+};
+
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -73,124 +83,6 @@ impl ShellConfig {
     }
 }
 
-/// Optional overrides are applied before the global duration scale.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MotionOverride {
-    pub duration_ms: Option<u32>,
-    pub easing: Option<MotionEasing>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum MotionEasing {
-    Standard,
-    StandardDecelerate,
-    StandardAccelerate,
-    Emphasized,
-    EmphasizedAccelerate,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct PeekGeometryConfig {
-    /// Density-scaled logical pixels; also retained by the pinned open header.
-    #[serde(deserialize_with = "deserialize_peek_lift")]
-    pub lift: f64,
-    /// Multiplier of the reference peek width, subject to content minimums.
-    #[serde(deserialize_with = "deserialize_peek_width_scale")]
-    pub width_scale: f64,
-}
-
-impl Default for PeekGeometryConfig {
-    fn default() -> Self {
-        Self {
-            lift: 8.0,
-            width_scale: 1.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MotionConfig {
-    #[serde(deserialize_with = "deserialize_duration_scale")]
-    pub duration_scale: f64,
-    pub peek: PeekGeometryConfig,
-    pub peek_enter: MotionOverride,
-    pub peek_exit: MotionOverride,
-    pub island_open: MotionOverride,
-    pub island_close: MotionOverride,
-    pub launcher_open: MotionOverride,
-    pub launcher_close: MotionOverride,
-    pub circle_enter: MotionOverride,
-    pub circle_exit: MotionOverride,
-    pub hover_enter: MotionOverride,
-    pub container_expand: MotionOverride,
-    pub container_collapse: MotionOverride,
-    pub content_in: MotionOverride,
-    pub content_out: MotionOverride,
-    pub island_fade_in: MotionOverride,
-    pub island_fade_out: MotionOverride,
-}
-
-impl Default for MotionConfig {
-    fn default() -> Self {
-        Self {
-            duration_scale: 1.0,
-            peek: PeekGeometryConfig::default(),
-            peek_enter: MotionOverride::default(),
-            peek_exit: MotionOverride::default(),
-            island_open: MotionOverride::default(),
-            island_close: MotionOverride::default(),
-            launcher_open: MotionOverride::default(),
-            launcher_close: MotionOverride::default(),
-            circle_enter: MotionOverride::default(),
-            circle_exit: MotionOverride::default(),
-            hover_enter: MotionOverride::default(),
-            container_expand: MotionOverride::default(),
-            container_collapse: MotionOverride::default(),
-            content_in: MotionOverride::default(),
-            content_out: MotionOverride::default(),
-            island_fade_in: MotionOverride::default(),
-            island_fade_out: MotionOverride::default(),
-        }
-    }
-}
-
-fn deserialize_duration_scale<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
-    let value = f64::deserialize(d)?;
-    if value.is_finite() && value >= 0.0 {
-        Ok(value)
-    } else {
-        Err(serde::de::Error::custom(
-            "duration_scale must be finite and nonnegative",
-        ))
-    }
-}
-
-fn deserialize_peek_lift<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
-    let value = f64::deserialize(d)?;
-    if value.is_finite() && (0.0..=128.0).contains(&value) {
-        Ok(value)
-    } else {
-        Err(serde::de::Error::custom(
-            "peek.lift must be between 0 and 128",
-        ))
-    }
-}
-
-fn deserialize_peek_width_scale<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
-    let value = f64::deserialize(d)?;
-    if value.is_finite() && value > 0.0 && value <= 4.0 {
-        Ok(value)
-    } else {
-        Err(serde::de::Error::custom(
-            "peek.width_scale must be greater than 0 and at most 4",
-        ))
-    }
-}
-
 /// Optional module placement beside the island. Assignment is independent of
 /// content availability: an empty assigned module stays out of its legacy view.
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
@@ -221,8 +113,7 @@ impl<'de> Deserialize<'de> for CirclesConfig {
             left: slots.left,
             right: slots.right,
         };
-        // Both empty slots are valid, but a real module must have one owner.
-        // Validate during parsing so AppConfig::load fails before reload teardown.
+        // Reject invalid ownership before reload tears down existing windows.
         if config.left != CircleModule::None && config.left == config.right {
             return Err(serde::de::Error::custom(
                 "circles.left and circles.right must not assign the same non-none module",
@@ -572,9 +463,7 @@ impl Default for ThemeConfig {
             engine: PaletteEngine::Material,
             mode: ThemeMode::Dark,
             variant: ThemeVariant::TonalSpot,
-            source: ThemeSource::Color {
-                value: DEFAULT_SOURCE_COLOR.to_owned(),
-            },
+            source: ThemeSource::default(),
         }
     }
 }
@@ -628,79 +517,6 @@ impl Default for ThemeSource {
             value: DEFAULT_SOURCE_COLOR.to_owned(),
         }
     }
-}
-
-pub fn config_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = override_path {
-        return Ok(expand_home(path));
-    }
-
-    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?
-        .join("mithshell")
-        .join("config.toml"))
-}
-
-/// Path to an optional user stylesheet living next to `config.toml`. When
-/// present, its contents are loaded as a higher-priority CSS provider layered
-/// on top of the generated/inherited palette, so it can override individual
-/// `@ms_*` colors or arbitrary widget rules.
-pub fn colors_css_path(config_path: &Path) -> PathBuf {
-    config_path.with_file_name("colors.css")
-}
-
-/// The user's personal GTK4 stylesheet override
-/// (`$XDG_CONFIG_HOME/gtk-4.0/gtk.css`). This is the common target external
-/// palette generators (matugen, wallust, ...) write `@define-color` roles
-/// to, and what `theme.engine = "gtk"` parses directly so mithshell can
-/// follow palette changes without a restart.
-pub fn gtk_user_css_path() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?
-        .join("gtk-4.0")
-        .join("gtk.css"))
-}
-
-pub fn state_dir() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_STATE_HOME", ".local/state")?.join("mithshell"))
-}
-
-pub fn cache_dir() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_CACHE_HOME", ".cache")?.join("mithshell"))
-}
-
-pub fn runtime_dir() -> Result<PathBuf> {
-    let directory = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .context("XDG_RUNTIME_DIR is not set")?;
-    Ok(directory.join("mithshell"))
-}
-
-pub fn default_socket_path() -> Result<PathBuf> {
-    Ok(runtime_dir()?.join("ipc.sock"))
-}
-
-pub fn expand_home(path: PathBuf) -> PathBuf {
-    let string = path.to_string_lossy();
-    if string == "~" {
-        return env::var_os("HOME").map(PathBuf::from).unwrap_or(path);
-    }
-    if let Some(rest) = string.strip_prefix("~/")
-        && let Some(home) = env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
-    }
-    path
-}
-
-/// Resolves an XDG base directory, falling back to `$HOME/{fallback}` when
-/// the variable is unset. `pub(crate)` so other modules resolving their own
-/// paths under a standard XDG directory (e.g. `setup::install_tarragon`
-/// under `XDG_CONFIG_HOME`) don't have to duplicate this fallback.
-pub(crate) fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
-    if let Some(path) = env::var_os(variable) {
-        return Ok(PathBuf::from(path));
-    }
-    let home = env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(fallback))
 }
 
 #[cfg(test)]
@@ -915,7 +731,7 @@ mod tests {
         // The shipped example's existing sections remain a supported legacy config
         // when all newly introduced presentation keys are omitted.
         let mut legacy: toml::Table =
-            toml::from_str(include_str!("../config/mithshell.example.toml")).unwrap();
+            toml::from_str(include_str!("../../config/mithshell.example.toml")).unwrap();
         legacy.remove("circles");
         legacy.remove("launcher");
         let tray = legacy["tray"].as_table_mut().unwrap();
@@ -1193,7 +1009,7 @@ mod tests {
         // Every section carries `deny_unknown_fields`, so a stale key or a
         // renamed option in the example makes it a hard parse error for anyone
         // who copies it -- which `just install-config` does by default.
-        let example = include_str!("../config/mithshell.example.toml");
+        let example = include_str!("../../config/mithshell.example.toml");
         toml::from_str::<AppConfig>(example).expect("the example config should parse");
     }
 
