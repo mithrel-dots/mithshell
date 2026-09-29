@@ -123,9 +123,36 @@ the active transition, and reversals start from the last painted bounds.
 
 The media circle uses symmetric 400 ms standard-eased expansion and collapse,
 also configurable through `circle_enter`/`circle_exit`. One persistent artwork
-tile moves to its expanded inset on the same geometry track and remains visible
-through collapse. The controls stay mounted until the container has closed;
-media snapshots and reversals preserve the current artwork position.
+tile grows to three times its compact size inside a 320 × 136 design-unit card.
+Its circular progress track unrolls into a horizontal bar beneath the artwork
+and controls, spanning the card minus its 12-unit side padding. Progress starts
+at the top and runs counterclockwise. Two curls open around a growing horizontal
+segment, sharing one playback fraction by path length and joining tangentially
+into the final left-to-right bar.
+Artwork, track shape, and container use the same reversible geometry progress.
+The compact ring hugs the artwork's outer edge. Its stroke thickens from 1.25
+to 2.5 design units as it unrolls, then thins back on collapse.
+The expanded bar sits 6 design units below the artwork, with an elapsed / total
+time readout beneath it. The readout fades in near the end of expansion and uses
+the same playback clock as the ring; unknown durations display `--:--` while
+elapsed time continues advancing during playback.
+The controls stay mounted until the container has closed; media snapshots and
+reversals preserve the current artwork position and progress-track shape.
+
+For a slower unravel and wrap-back, set longer circle durations:
+
+```toml
+[shell.motion.circle_enter]
+duration_ms = 700
+
+[shell.motion.circle_exit]
+duration_ms = 700
+```
+
+These overrides also apply to tray and notification circles. The media card,
+artwork, and progress track stay synchronized; `duration_scale` multiplies these
+durations afterward. Save the config and run `mithshell reload` to apply timing
+changes.
 
 Allowed easing strings are `standard`, `standard-decelerate`,
 `standard-accelerate`, `emphasized`, and `emphasized-accelerate`.

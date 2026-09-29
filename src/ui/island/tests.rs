@@ -1126,12 +1126,15 @@ fn circle_integration_real_widgets_and_callbacks() {
         pump(std::time::Duration::from_millis(40));
         let bounds = artwork.compute_bounds(media_host.widget()).unwrap();
         let frame = media_host.frame().unwrap();
-        let progress =
-            (frame.rect.width - compact_frame.rect.width) / (220.0 - compact_frame.rect.width);
-        assert!((bounds.x() - compact_art.x() - 8.0 * progress as f32).abs() <= 1.0);
-        assert!((bounds.y() * 2.0 + bounds.height() - frame.rect.height as f32).abs() <= 1.0);
+        let progress = (frame.rect.width - compact_frame.rect.width)
+            / (super::media_circle::EXPANDED_SIZE.width - compact_frame.rect.width);
+        assert!((bounds.x() - compact_art.x() - 12.0 * progress as f32).abs() <= 1.0);
+        assert!((bounds.y() - compact_art.y() - 12.0 * progress as f32).abs() <= 1.0);
+        assert!(
+            (bounds.width() - compact_art.width() * (1.0 + 2.0 * progress as f32)).abs() <= 1.0
+        );
         assert!(bounds.x() >= previous_x);
-        saw_intermediate |= bounds.x() > compact_art.x() && bounds.x() < compact_art.x() + 8.0;
+        saw_intermediate |= bounds.x() > compact_art.x() && bounds.x() < compact_art.x() + 12.0;
         previous_x = bounds.x();
         assert_eq!(artwork.parent(), art_parent);
         assert!(artwork.is_mapped());
@@ -1139,7 +1142,10 @@ fn circle_integration_real_widgets_and_callbacks() {
         island.update_media(Some(&media));
     }
     assert!(saw_intermediate, "artwork must move across multiple frames");
-    assert_eq!(media_host.frame().unwrap().rect.width, 220.0);
+    assert_eq!(
+        media_host.frame().unwrap().rect.width,
+        super::media_circle::EXPANDED_SIZE.width
+    );
     let expanded_art = artwork.compute_bounds(media_host.widget()).unwrap();
 
     media_host.dispatch(super::circle::Event::Pointer(false));

@@ -209,14 +209,20 @@ pub(crate) fn layout(
         if available_width < diameter || available_height < diameter {
             return None;
         }
-        let width = (slot.visual.size.width * scale)
-            .max(diameter)
-            .min(available_width)
-            .floor();
-        let height = (slot.visual.size.height * scale)
-            .max(diameter)
-            .min(available_height)
-            .floor();
+        // A reversal can start from an already-rounded frame divided by the
+        // UI scale. Ignore round-trip float noise (e.g. 128 / 1.9 * 1.9) so
+        // flooring does not shave a whole pixel off that first frame.
+        let floor_pixel = |value: f64| (value + 1e-9).floor();
+        let width = floor_pixel(
+            (slot.visual.size.width * scale)
+                .max(diameter)
+                .min(available_width),
+        );
+        let height = floor_pixel(
+            (slot.visual.size.height * scale)
+                .max(diameter)
+                .min(available_height),
+        );
         let x = if i == 0 { end - width } else { start };
         Some(Frame {
             rect: Rect {
@@ -310,6 +316,34 @@ mod tests {
                 .iter()
                 .any(|r| r.x() + r.width() > 196)
         );
+    }
+
+    #[test]
+    fn reversing_from_scaled_integer_frames_preserves_the_painted_size() {
+        for scale in [0.75, 1.0, 1.45, 1.9, 2.4] {
+            for pixels in 80..200 {
+                let visual = Visual {
+                    size: Size {
+                        width: f64::from(pixels) / scale,
+                        height: f64::from(pixels) / scale,
+                    },
+                    radius: 16.0,
+                };
+                let frames = layout(
+                    central(1920.0),
+                    monitor(1920.0, 900.0),
+                    scale,
+                    [Some(CircleRequest {
+                        spec: spec(),
+                        visual,
+                    }); 2],
+                );
+                for frame in frames.into_iter().flatten() {
+                    assert_eq!(frame.rect.width, f64::from(pixels));
+                    assert_eq!(frame.rect.height, f64::from(pixels));
+                }
+            }
+        }
     }
 
     #[test]

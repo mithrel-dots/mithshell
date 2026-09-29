@@ -366,7 +366,7 @@ fn scroll_page(child: &gtk::Widget) -> gtk::ScrolledWindow {
     child.set_vexpand(!media);
     child.set_halign(gtk::Align::Fill);
     child.set_valign(if media {
-        gtk::Align::Center
+        gtk::Align::Start
     } else {
         gtk::Align::Fill
     });

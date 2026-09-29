@@ -13,6 +13,14 @@ use std::{
 
 use gtk::{Align, Orientation, gdk, glib, prelude::*};
 
+mod geometry;
+use geometry::{ART_SCALE, MediaGeometry, PADDING};
+
+pub(super) const EXPANDED_SIZE: super::circle::Size = super::circle::Size {
+    width: geometry::EXPANDED_WIDTH,
+    height: geometry::EXPANDED_HEIGHT,
+};
+
 use super::{
     Metrics,
     circle::{CircleContent, CircleHost},
@@ -60,6 +68,10 @@ pub(crate) fn progress_fraction(position_us: i64, length_us: Option<i64>) -> f64
 }
 
 fn interpolated_progress(progress: &Progress, now: Instant) -> f64 {
+    progress_fraction(interpolated_position(progress, now), progress.length_us)
+}
+
+fn interpolated_position(progress: &Progress, now: Instant) -> i64 {
     let position = if progress.status == PlaybackStatus::Playing {
         progress
             .position_us
@@ -71,7 +83,35 @@ fn interpolated_progress(progress: &Progress, now: Instant) -> f64 {
     } else {
         progress.position_us
     };
-    progress_fraction(position, progress.length_us)
+    position.max(0).min(
+        progress
+            .length_us
+            .filter(|length| *length > 0)
+            .unwrap_or(i64::MAX),
+    )
+}
+
+fn format_timestamp(position_us: i64) -> String {
+    let seconds = position_us.max(0) / 1_000_000;
+    if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+fn time_readout(progress: &Progress, now: Instant) -> String {
+    let elapsed = format_timestamp(interpolated_position(progress, now));
+    let total = progress
+        .length_us
+        .filter(|length| *length > 0)
+        .map_or_else(|| "--:--".to_owned(), format_timestamp);
+    format!("{elapsed} / {total}")
 }
 
 /// Center-crop to a square before downsampling so wide/tall artwork keeps the
@@ -91,7 +131,6 @@ fn square_thumbnail(image: image::DynamicImage, size: u32) -> image::RgbaImage {
 
 fn timer_needed(progress: &Progress) -> bool {
     progress.status == PlaybackStatus::Playing
-        && progress.length_us.is_some_and(|length| length > 0)
 }
 
 struct Artwork {
@@ -159,10 +198,13 @@ pub(crate) struct MediaCircle {
     host: Rc<CircleHost>,
     progress: Rc<RefCell<Progress>>,
     progress_area: gtk::DrawingArea,
+    time_label: gtk::Label,
     art_layer: gtk::Fixed,
     art_tile: gtk::Overlay,
     art_icon: gtk::Image,
-    art_inset: f64,
+    geometry: Rc<Cell<MediaGeometry>>,
+    scale: f64,
+    compact_art_size: f64,
     hover_title: gtk::Label,
     hover_artist: gtk::Label,
     players: RefCell<Vec<String>>,
@@ -202,7 +244,9 @@ impl MediaCircle {
         actions: MediaCircleActions,
     ) -> Result<Rc<Self>, &'static str> {
         let progress = Rc::new(RefCell::new(Progress::default()));
-        let (art_tile, art_icon, progress_area) = artwork_tile(metrics, progress.clone());
+        let geometry = Rc::new(Cell::new(MediaGeometry::default()));
+        let (art_tile, art_icon) = artwork_tile(metrics);
+        let progress_area = progress_track(progress.clone(), geometry.clone());
         let compact = gtk::Box::new(Orientation::Horizontal, 0);
         let (hover, hover_title, hover_artist, previous, play_pause, next) = hover_page(metrics);
         let host = CircleHost::new(CircleContent {
@@ -214,6 +258,16 @@ impl MediaCircle {
         art_layer.set_can_target(false);
         art_layer.put(&art_tile, 0.0, 0.0);
         host.add_overlay(&art_layer);
+        host.add_overlay(&progress_area);
+        let time_label = gtk::Label::new(None);
+        time_label.add_css_class("media-circle-time");
+        time_label.set_halign(Align::Center);
+        time_label.set_valign(Align::End);
+        time_label.set_margin_bottom(metrics.spacing(6));
+        time_label.set_can_target(false);
+        time_label.set_opacity(0.0);
+        set_text_size(&time_label, metrics, 10.0);
+        host.add_overlay(&time_label);
         let source_scroll =
             gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         // The CircleHost wraps expanded pages in a ScrolledWindow. Capture
@@ -225,10 +279,13 @@ impl MediaCircle {
             host,
             progress,
             progress_area,
+            time_label,
             art_layer,
             art_tile,
             art_icon,
-            art_inset: f64::from(metrics.spacing(8)),
+            geometry,
+            scale: metrics.scale,
+            compact_art_size: f64::from(media_art_diameter(metrics)),
             hover_title,
             hover_artist,
             players: RefCell::new(Vec::new()),
@@ -245,7 +302,9 @@ impl MediaCircle {
             artwork_texture: RefCell::new(None),
             artwork_generation: Cell::new(0),
             fallback_icon: RefCell::new(None),
-            art_size: media_art_diameter(metrics).max(1) as u32,
+            art_size: (f64::from(media_art_diameter(metrics)) * ART_SCALE)
+                .round()
+                .max(1.0) as u32,
         });
         circle.connect_actions();
         super::circle::scale_text(circle.host.widget(), metrics.scale);
@@ -256,27 +315,40 @@ impl MediaCircle {
         self.host.clone()
     }
 
-    pub(super) fn layout_artwork(&self, expansion: f64) {
-        let expansion = expansion.clamp(0.0, 1.0);
-        let x = self.art_inset * expansion;
-        let size = self.art_size as i32;
-        let height = self.host.frame().map_or(0.0, |frame| frame.rect.height);
-        let top = self
+    pub(super) fn layout_presentation(&self, expansion: f64) {
+        let Some(frame) = self.host.frame() else {
+            return;
+        };
+        let origin = self
             .art_layer
             .compute_bounds(self.host.widget())
-            .map_or(0.0, |bounds| f64::from(bounds.y()));
-        let y = ((height - f64::from(size)) / 2.0 - top).max(0.0);
-        self.art_layer.move_(&self.art_tile, x, y);
-        self.art_tile.allocate(
-            size,
-            size,
-            -1,
-            Some(
-                gtk::gsk::Transform::new()
-                    .translate(&gtk::graphene::Point::new(x as f32, y as f32)),
-            ),
+            .map_or((0.0, 0.0), |bounds| {
+                (f64::from(bounds.x()), f64::from(bounds.y()))
+            });
+        let geometry = MediaGeometry::new(
+            (frame.rect.width - 2.0 * origin.0).max(1.0),
+            (frame.rect.height - 2.0 * origin.1).max(1.0),
+            self.compact_art_size,
+            self.scale,
+            expansion,
         );
-        self.progress_area.set_opacity(1.0 - expansion);
+        let art = geometry.art;
+        let scale = (art.size / f64::from(self.art_size)) as f32;
+        let transform = gtk::gsk::Transform::new()
+            .translate(&gtk::graphene::Point::new(art.x as f32, art.y as f32))
+            .scale(scale, scale);
+        self.art_layer
+            .set_child_transform(&self.art_tile, Some(&transform));
+        self.art_tile.allocate(
+            self.art_size as i32,
+            self.art_size as i32,
+            -1,
+            Some(transform),
+        );
+        self.geometry.set(geometry);
+        self.time_label
+            .set_opacity(((geometry.expansion - 0.7) / 0.3).clamp(0.0, 1.0));
+        self.progress_area.queue_draw();
     }
 
     /// `None` hides the circle. A titled paused/stopped player remains valid so
@@ -297,6 +369,7 @@ impl MediaCircle {
             self.restart_timer();
         } else {
             self.stop_timer();
+            *self.progress.borrow_mut() = Progress::default();
             self.current_service.borrow_mut().take();
             self.artwork_generation
                 .set(self.artwork_generation.get().wrapping_add(1));
@@ -304,6 +377,7 @@ impl MediaCircle {
             self.artwork_texture.borrow_mut().take();
             self.fallback_icon.borrow_mut().take();
             self.art_icon.set_paintable(None::<&gdk::Paintable>);
+            self.host.widget().set_tooltip_text(None);
             self.host.dispatch(super::circle::Event::Content(false));
         }
         self.redraw_progress();
@@ -311,8 +385,18 @@ impl MediaCircle {
 
     fn set_media(self: &Rc<Self>, state: &MediaState) {
         self.update_artwork(state);
-        self.art_icon
-            .set_tooltip_text(Some(&format!("{} — {}", state.title, state.player)));
+        let info = [
+            Some(state.title.as_str()),
+            state.artist.as_deref(),
+            state.album.as_deref(),
+            Some(state.player.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+        self.host.widget().set_tooltip_text(Some(&info));
         self.hover_title.set_label(&state.title);
         self.hover_artist
             .set_label(state.artist.as_deref().unwrap_or_default());
@@ -480,7 +564,7 @@ impl MediaCircle {
             let Some(owner) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            owner.progress_area.queue_draw();
+            owner.redraw_progress();
             let snapshot = owner.progress.borrow();
             let done = snapshot.length_us.is_some_and(|length| {
                 length > 0 && interpolated_progress(&snapshot, Instant::now()) >= 1.0
@@ -505,6 +589,10 @@ impl MediaCircle {
         }
     }
     fn redraw_progress(&self) {
+        let text = time_readout(&self.progress.borrow(), Instant::now());
+        if self.time_label.label().as_str() != text {
+            self.time_label.set_label(&text);
+        }
         self.progress_area.queue_draw();
     }
 
@@ -535,12 +623,9 @@ impl Drop for MediaCircle {
     }
 }
 
-fn artwork_tile(
-    metrics: Metrics,
-    progress: Rc<RefCell<Progress>>,
-) -> (gtk::Overlay, gtk::Image, gtk::DrawingArea) {
+fn artwork_tile(metrics: Metrics) -> (gtk::Overlay, gtk::Image) {
     let overlay = gtk::Overlay::new();
-    let art_size = media_art_diameter(metrics);
+    let art_size = (f64::from(media_art_diameter(metrics)) * ART_SCALE).round() as i32;
     overlay.set_size_request(art_size, art_size);
     overlay.set_halign(Align::Start);
     overlay.set_valign(Align::Start);
@@ -552,34 +637,39 @@ fn artwork_tile(
     image.set_halign(Align::Fill);
     image.set_valign(Align::Fill);
     overlay.set_child(Some(&image));
+    (overlay, image)
+}
+
+fn progress_track(
+    progress: Rc<RefCell<Progress>>,
+    geometry: Rc<Cell<MediaGeometry>>,
+) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
-    area.set_content_width(art_size);
-    area.set_content_height(art_size);
-    area.set_size_request(art_size, art_size);
+    area.set_can_target(false);
     area.add_css_class("media-circle-progress");
-    let draw_progress = progress;
-    area.set_draw_func(move |area, cr, width, height| {
-        let fraction = interpolated_progress(&draw_progress.borrow(), Instant::now());
-        let radius = f64::from(width.min(height)) * 0.5 - 2.0;
-        cr.set_line_width(2.5);
-        cr.arc(
-            f64::from(width) / 2.0,
-            f64::from(height) / 2.0,
-            radius,
-            -std::f64::consts::FRAC_PI_2,
-            -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * fraction,
-        );
+    area.set_draw_func(move |area, cr, _, _| {
+        let geometry = geometry.get();
+        let fraction = interpolated_progress(&progress.borrow(), Instant::now());
         let color = area.color();
-        cr.set_source_rgba(
-            f64::from(color.red()),
-            f64::from(color.green()),
-            f64::from(color.blue()),
-            f64::from(color.alpha()),
-        );
-        let _ = cr.stroke();
+        cr.set_line_width(geometry.stroke);
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.set_line_join(gtk::cairo::LineJoin::Round);
+        let stroke = |fraction, opacity| {
+            geometry.track.append_path(cr, fraction);
+            cr.set_source_rgba(
+                f64::from(color.red()),
+                f64::from(color.green()),
+                f64::from(color.blue()),
+                f64::from(color.alpha()) * opacity,
+            );
+            let _ = cr.stroke();
+        };
+        stroke(1.0, 0.16 * geometry.expansion);
+        if fraction > 0.0 {
+            stroke(fraction, 1.0);
+        }
     });
-    overlay.add_overlay(&area);
-    (overlay, image, area)
+    area
 }
 
 /// File-backed app icons can have a huge natural size; decode and downsample
@@ -616,6 +706,19 @@ fn media_art_diameter(metrics: Metrics) -> i32 {
     (metrics.spacing(COMPACT_DIAMETER) - border * 2).max(1)
 }
 
+fn set_text_size(label: &gtk::Label, metrics: Metrics, size: f64) {
+    label.add_css_class("circle-scaled-text");
+    let style = gtk::CssProvider::new();
+    style.load_from_string(&format!(
+        "label {{ font-size: {}px; }}",
+        (size * metrics.scale).round()
+    ));
+    #[allow(deprecated)]
+    label
+        .style_context()
+        .add_provider(&style, gtk::STYLE_PROVIDER_PRIORITY_USER + 1);
+}
+
 fn hover_page(
     metrics: Metrics,
 ) -> (
@@ -626,47 +729,62 @@ fn hover_page(
     gtk::Button,
     gtk::Button,
 ) {
-    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(1));
-    root.set_margin_start(metrics.spacing(8));
-    root.set_margin_end(metrics.spacing(8));
-    // The viewport centers the row; extra vertical margins would compete
-    // with the scaled border and two-line text for the fixed hover height.
-    root.set_valign(Align::Center);
+    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    root.set_margin_start(metrics.spacing(PADDING));
+    root.set_margin_end(metrics.spacing(PADDING));
+    root.set_margin_top(metrics.spacing(PADDING));
+    root.set_margin_bottom(metrics.spacing(28));
+    root.set_valign(Align::Start);
     root.set_vexpand(false);
     root.add_css_class("media-circle-hover");
 
-    let art_size = media_art_diameter(metrics);
+    let art_size = (f64::from(media_art_diameter(metrics)) * ART_SCALE).round() as i32;
     let art_slot = gtk::Box::new(Orientation::Horizontal, 0);
     art_slot.set_size_request(art_size, art_size);
     art_slot.set_valign(Align::Center);
     root.append(&art_slot);
+    let details = gtk::Box::new(Orientation::Vertical, metrics.spacing(8));
+    details.set_hexpand(true);
+    details.set_valign(Align::Center);
     let text = gtk::Box::new(Orientation::Vertical, 0);
     text.set_hexpand(true);
     text.set_valign(Align::Center);
     let title = gtk::Label::new(None);
-    title.set_xalign(0.0);
+    title.set_xalign(0.5);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.set_single_line_mode(true);
     title.set_width_chars(2);
-    title.set_max_width_chars(12);
+    title.set_max_width_chars(24);
+    title.add_css_class("media-circle-title");
     let artist = gtk::Label::new(None);
-    artist.set_xalign(0.0);
+    artist.set_xalign(0.5);
     artist.add_css_class("dim-label");
     artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
     artist.set_single_line_mode(true);
-    artist.set_max_width_chars(12);
+    artist.set_max_width_chars(24);
+    artist.add_css_class("media-circle-artist");
+    let large = metrics.css_class() == Some("scale-large");
+    for (label, size) in [
+        (&title, if large { 13.0 } else { 14.0 }),
+        (&artist, if large { 11.0 } else { 12.0 }),
+    ] {
+        set_text_size(label, metrics, size);
+    }
     text.append(&title);
     text.append(&artist);
-    root.append(&text);
+    details.append(&text);
+    let controls = gtk::Box::new(Orientation::Horizontal, metrics.spacing(2));
+    controls.set_halign(Align::Center);
     let previous = icon::icon_button(Icon::Previous, metrics.icons);
     let play = icon::icon_button(Icon::Play, metrics.icons);
+    play.add_css_class("media-circle-play");
     let next = icon::icon_button(Icon::Next, metrics.icons);
     for button in [&previous, &play, &next] {
         button.add_css_class("media-circle-control");
         let style = gtk::CssProvider::new();
         style.load_from_string(&format!(
             "button {{ min-width: {}px; min-height: {}px; padding: {}px; }}",
-            metrics.spacing(20),
+            metrics.spacing(if button == &play { 24 } else { 20 }),
             metrics.spacing(24),
             metrics.spacing(3)
         ));
@@ -677,8 +795,10 @@ fn hover_page(
         if let Some(image) = button.child().and_downcast::<gtk::Image>() {
             image.set_pixel_size(metrics.spacing(16));
         }
-        root.append(button);
+        controls.append(button);
     }
+    details.append(&controls);
+    root.append(&details);
     (root, title, artist, previous, play, next)
 }
 
@@ -701,18 +821,48 @@ mod tests {
     }
 
     #[test]
-    fn unknown_duration_never_starts_a_playback_timer() {
+    fn elapsed_time_keeps_ticking_without_a_known_duration() {
         let progress = Progress {
             status: PlaybackStatus::Playing,
             length_us: None,
             ..Default::default()
         };
-        assert!(!timer_needed(&progress));
+        assert!(timer_needed(&progress));
         assert!(timer_needed(&Progress {
             status: PlaybackStatus::Playing,
             length_us: Some(1),
             ..Default::default()
         }));
+        assert!(!timer_needed(&Progress {
+            status: PlaybackStatus::Paused,
+            ..progress
+        }));
+    }
+
+    #[test]
+    fn time_readout_follows_playback_pause_and_duration_bounds() {
+        let now = std::time::Instant::now();
+        let mut progress = Progress {
+            position_us: 192_000_000,
+            length_us: Some(220_000_000),
+            status: PlaybackStatus::Playing,
+            started_at: Some(now),
+        };
+        let later = now + std::time::Duration::from_secs(2);
+        assert_eq!(super::time_readout(&progress, now), "3:12 / 3:40");
+        assert_eq!(super::time_readout(&progress, later), "3:14 / 3:40");
+        progress.status = PlaybackStatus::Paused;
+        assert_eq!(super::time_readout(&progress, later), "3:12 / 3:40");
+        progress.position_us = 221_000_000;
+        assert_eq!(super::time_readout(&progress, later), "3:40 / 3:40");
+        progress.position_us = -1;
+        assert_eq!(super::time_readout(&progress, later), "0:00 / 3:40");
+        progress.position_us = 3_723_000_000;
+        progress.length_us = Some(5_400_000_000);
+        assert_eq!(super::time_readout(&progress, later), "1:02:03 / 1:30:00");
+        progress.status = PlaybackStatus::Playing;
+        progress.length_us = None;
+        assert_eq!(super::time_readout(&progress, later), "1:02:05 / --:--");
     }
 
     #[test]
@@ -761,11 +911,18 @@ mod tests {
 
         circle.update(Some(&test_media_state(PlaybackStatus::Playing, None)));
         assert!(
+            circle.tick.borrow().is_some(),
+            "unknown duration still advances elapsed time"
+        );
+        assert_eq!(circle.time_label.label(), "0:00 / --:--");
+        circle.update(Some(&test_media_state(PlaybackStatus::Paused, None)));
+        assert!(
             circle.tick.borrow().is_none(),
-            "unknown duration has no timer"
+            "pause stops the elapsed clock"
         );
         circle.update(Some(&state));
         assert!(circle.tick.borrow().is_some());
+        assert_eq!(circle.time_label.label(), "0:00 / 0:10");
         drop(circle);
         assert!(
             drawing_area.upgrade().is_none(),
@@ -789,9 +946,11 @@ mod tests {
         for scale in [1.0, 1.45, 1.9] {
             let metrics = super::Metrics::new(&monitor, scale, 1.0, IconStyle::Symbolic);
             let fixture = std::env::temp_dir().join(format!("media-circle-{scale}.png"));
-            image::RgbaImage::from_fn(320, 96, |x, y| image::Rgba([x as u8, y as u8, 0x80, 255]))
-                .save(&fixture)
-                .expect("oversized file-backed test artwork");
+            image::RgbaImage::from_fn(640, 400, |x, y| {
+                image::Rgba([(x / 3) as u8, (y / 2) as u8, 0x80, 255])
+            })
+            .save(&fixture)
+            .expect("oversized file-backed test artwork");
             let fixture = fixture.to_string_lossy().into_owned();
             let actions = super::MediaCircleActions {
                 play_pause: Rc::new(|_| {}),
@@ -800,7 +959,9 @@ mod tests {
                 select: Rc::new(|_| {}),
             };
             let circle = super::MediaCircle::new(metrics, actions).expect("media circle");
-            let mut state = test_media_state(PlaybackStatus::Paused, Some(10_000_000));
+            let mut state = test_media_state(PlaybackStatus::Paused, Some(220_000_000));
+            state.position_us = 192_000_000;
+            state.album = Some("Album".to_owned());
             state.app_icon = Some("audio-x-generic".to_owned());
             state.art_url = Some(gtk::gio::File::for_path(&fixture).uri().to_string());
             circle.update(Some(&state));
@@ -809,9 +970,9 @@ mod tests {
                 window.add_css_class(class);
             }
             let fixed = gtk::Fixed::new();
-            fixed.set_size_request(400, 200);
+            fixed.set_size_request(metrics.spacing(350), metrics.spacing(160));
             fixed.put(circle.host.widget(), 0.0, 0.0);
-            window.set_default_size(400, 200);
+            window.set_default_size(metrics.spacing(350), metrics.spacing(160));
             window.set_child(Some(&fixed));
             let frame = super::super::circle::Frame {
                 rect: super::super::circle::Rect {
@@ -826,7 +987,7 @@ mod tests {
             circle.host.commit_page(circle.host.revision());
             window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
-            circle.layout_artwork(0.0);
+            circle.layout_presentation(0.0);
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             while circle.artwork_texture.borrow().is_none() && std::time::Instant::now() < deadline
@@ -841,16 +1002,26 @@ mod tests {
 
             let diameter = metrics.spacing(32);
             let art_size = super::media_art_diameter(metrics);
-            let decode_size = art_size;
+            let decode_size = art_size * 3;
             let image = &circle.art_icon;
             let ring = &circle.progress_area;
-            assert_eq!(image.width(), art_size, "file art width at scale {scale}");
-            assert_eq!(image.height(), art_size, "file art height at scale {scale}");
+            assert_eq!(
+                image.width(),
+                decode_size,
+                "full-resolution art allocation at scale {scale}"
+            );
+            assert_eq!(
+                image.height(),
+                decode_size,
+                "full-resolution art allocation at scale {scale}"
+            );
             assert_eq!(ring.width(), art_size, "ring width at scale {scale}");
             assert_eq!(ring.height(), art_size, "ring height at scale {scale}");
             let bounds = image
                 .compute_bounds(circle.host.widget())
                 .expect("host-clipped artwork bounds");
+            assert!((bounds.width() - art_size as f32).abs() <= 1.0);
+            assert!((bounds.height() - art_size as f32).abs() <= 1.0);
             assert!(
                 (bounds.x() * 2.0 + bounds.width() - diameter as f32).abs() <= 1.0
                     && (bounds.y() * 2.0 + bounds.height() - diameter as f32).abs() <= 1.0,
@@ -868,8 +1039,8 @@ mod tests {
                 circle.host.widget().height()
             );
             let paintable = image.paintable().expect("file artwork texture");
-            assert!(paintable.intrinsic_width() <= decode_size);
-            assert!(paintable.intrinsic_height() <= decode_size);
+            assert_eq!(paintable.intrinsic_width(), decode_size);
+            assert_eq!(paintable.intrinsic_height(), decode_size);
             assert_eq!(paintable.intrinsic_width(), paintable.intrinsic_height());
             assert!(
                 circle
@@ -884,16 +1055,22 @@ mod tests {
                 "compact circle is targetable at scale {scale}"
             );
             let compact_art_x = bounds.x();
+            capture_media_fixture(&circle, &format!("media-{scale}-compact"));
             let art_parent = circle.art_tile.parent();
             circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(true));
             circle.host.commit_page(circle.host.revision());
-            for progress in [0.0, 0.1, 0.35, 0.8, 1.0, 0.6, 0.2, 0.0] {
+            for (step, progress) in [0.0, 0.1, 0.35, 0.8, 1.0, 0.6, 0.2, 0.0]
+                .into_iter()
+                .enumerate()
+            {
                 let animated_frame = super::super::circle::Frame {
                     rect: super::super::circle::Rect {
-                        width: ((32.0 + 188.0 * progress) * scale).round(),
-                        height: ((32.0 + 8.0 * progress) * scale).round(),
+                        width: ((32.0 + (super::EXPANDED_SIZE.width - 32.0) * progress) * scale)
+                            .round(),
+                        height: ((32.0 + (super::EXPANDED_SIZE.height - 32.0) * progress) * scale)
+                            .round(),
                         ..frame.rect
                     },
                     ..frame
@@ -907,7 +1084,7 @@ mod tests {
                     -1,
                     None,
                 );
-                circle.layout_artwork(progress);
+                circle.layout_presentation(progress);
                 fixed.queue_resize();
                 while gtk::glib::MainContext::default().iteration(false) {}
                 assert_eq!(
@@ -920,19 +1097,27 @@ mod tests {
                 assert!(
                     (moving_bounds.x()
                         - compact_art_x
-                        - metrics.spacing(8) as f32 * progress as f32)
+                        - metrics.spacing(super::PADDING) as f32 * progress as f32)
                         .abs()
                         <= 1.0,
                     "art must follow expansion at scale {scale}, progress {progress}: {moving_bounds:?}"
                 );
                 assert!(
-                    (moving_bounds.y() * 2.0 + moving_bounds.height()
-                        - animated_frame.rect.height as f32)
+                    (moving_bounds.y()
+                        - bounds.y()
+                        - metrics.spacing(super::PADDING) as f32 * progress as f32)
                         .abs()
                         <= 1.0
                 );
+                assert!(
+                    (moving_bounds.width() - art_size as f32 * (1.0 + 2.0 * progress as f32)).abs()
+                        <= 1.0
+                );
+                assert!((moving_bounds.height() - moving_bounds.width()).abs() <= 1.0);
                 assert_eq!(circle.art_tile.parent(), art_parent);
                 assert!(image.is_mapped());
+                assert_eq!(circle.progress_area.opacity(), 1.0);
+                capture_media_fixture(&circle, &format!("media-{scale}-step-{step}"));
             }
 
             window.close();
@@ -969,8 +1154,12 @@ mod tests {
                 rect: super::super::circle::Rect {
                     x: 0.0,
                     y: 0.0,
-                    width: metrics.spacing(if scale > 1.5 { 210 } else { 220 }) as f64,
-                    height: metrics.spacing(40) as f64,
+                    width: metrics.spacing(if scale > 1.5 {
+                        210
+                    } else {
+                        super::EXPANDED_SIZE.width as i32
+                    }) as f64,
+                    height: metrics.spacing(super::EXPANDED_SIZE.height as i32) as f64,
                 },
                 radius: metrics.spacing(16) as f64,
             };
@@ -985,35 +1174,36 @@ mod tests {
             let hover_fixed = gtk::Fixed::new();
             hover_fixed.set_hexpand(true);
             hover_fixed.set_vexpand(true);
-            hover_fixed.set_size_request(metrics.spacing(250), metrics.spacing(48));
+            hover_fixed.set_size_request(metrics.spacing(350), metrics.spacing(160));
             hover_fixed.put(hover_circle.host.widget(), 0.0, 0.0);
-            hover_window.set_default_size(metrics.spacing(250), metrics.spacing(48));
+            hover_window.set_default_size(metrics.spacing(350), metrics.spacing(160));
             hover_window.set_child(Some(&hover_fixed));
             hover_window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
-            hover_circle.layout_artwork(1.0);
+            hover_circle.layout_presentation(1.0);
             assert!(
-                hover_circle.host.widget().height() <= metrics.spacing(40),
-                "media hover is shallow at scale {scale}: {}",
+                hover_circle.host.widget().height() <= expanded.rect.height as i32,
+                "media card must respect its frame at scale {scale}: {}",
                 hover_circle.host.widget().height()
             );
             let expanded_art = hover_circle
                 .art_icon
                 .compute_bounds(hover_circle.host.widget())
-                .expect("circle-sized hover cover art bounds");
+                .expect("expanded cover art bounds");
             assert!(
-                (expanded_art.x() - bounds.x() - metrics.spacing(8) as f32).abs() <= 1.0,
+                (expanded_art.x() - bounds.x() - metrics.spacing(super::PADDING) as f32).abs()
+                    <= 1.0,
                 "hover art should keep its leading inset inside the border at scale {scale}: {expanded_art:?}"
             );
             assert!(
-                (expanded_art.width() - art_size as f32).abs() <= 1.0
-                    && (expanded_art.height() - art_size as f32).abs() <= 1.0,
-                "hover art must remain circle-sized at scale {scale}: {expanded_art:?} vs diameter={art_size}"
+                (expanded_art.width() - (art_size * 3) as f32).abs() <= 1.0
+                    && (expanded_art.height() - (art_size * 3) as f32).abs() <= 1.0,
+                "hover art must grow threefold at scale {scale}: {expanded_art:?} vs compact diameter={art_size}"
             );
             assert!(
                 expanded_art.y() >= 0.0
                     && expanded_art.y() + expanded_art.height() <= expanded.rect.height as f32,
-                "circle-sized hover art must fit within the pill at scale {scale}: {expanded_art:?} vs {expanded:?}"
+                "expanded art must fit within the card at scale {scale}: {expanded_art:?} vs {expanded:?}"
             );
             assert!(hover_circle.art_icon.is_visible());
             for button in [
@@ -1026,6 +1216,12 @@ mod tests {
                     .expect("media control bounds");
                 assert!(bounds.width() >= metrics.spacing(26) as f32 - 1.0);
                 assert!(bounds.height() >= metrics.spacing(30) as f32 - 1.0);
+                if button == &hover_circle.play_pause {
+                    assert!(
+                        (bounds.width() - bounds.height()).abs() <= 1.0,
+                        "play button must be circular: {bounds:?}"
+                    );
+                }
                 let icon = button.child().expect("transport icon");
                 if let Some(image) = icon.downcast_ref::<gtk::Image>() {
                     assert_eq!(image.pixel_size(), metrics.spacing(16));
@@ -1071,11 +1267,39 @@ mod tests {
             assert_eq!(scroller.hscrollbar_policy(), gtk::PolicyType::External);
             assert_eq!(scroller.vscrollbar_policy(), gtk::PolicyType::External);
             assert!(
-                (expanded_art.y() * 2.0 + expanded_art.height() - expanded.rect.height as f32)
-                    .abs()
+                (expanded_art.y() - bounds.y() - metrics.spacing(super::PADDING) as f32).abs()
                     <= 1.0,
-                "hover cover must be vertically centered: {expanded_art:?} at {scale}"
+                "hover cover must align with the content padding: {expanded_art:?} at {scale}"
             );
+            let geometry = hover_circle.geometry.get();
+            let progress_bounds = hover_circle
+                .progress_area
+                .compute_bounds(hover_circle.host.widget())
+                .unwrap();
+            let (start_x, bar_y) = geometry.track.point(0.0);
+            let (end_x, _) = geometry.track.point(1.0);
+            let padding = f64::from(metrics.spacing(super::PADDING));
+            assert!((start_x - geometry.stroke / 2.0 - padding).abs() <= 1.0);
+            assert!(
+                (end_x + geometry.stroke / 2.0 + padding - f64::from(progress_bounds.width()))
+                    .abs()
+                    <= 1.0
+            );
+            assert!(
+                bar_y + f64::from(progress_bounds.y())
+                    > f64::from(expanded_art.y() + expanded_art.height())
+            );
+            assert_eq!(hover_circle.time_label.label(), "3:12 / 3:40");
+            let time_bounds = hover_circle
+                .time_label
+                .compute_bounds(hover_circle.host.widget())
+                .unwrap();
+            assert!(
+                f64::from(time_bounds.y())
+                    > bar_y + f64::from(progress_bounds.y()) + geometry.stroke / 2.0
+            );
+            assert!(time_bounds.y() + time_bounds.height() <= expanded.rect.height as f32);
+            capture_media_fixture(&hover_circle, &format!("media-{scale}-constrained"));
             assert!(
                 scroller.hadjustment().upper() <= scroller.hadjustment().page_size() + 1.0,
                 "unexpected horizontal media scroll at scale {scale}: upper={}, page={}",
@@ -1168,8 +1392,8 @@ mod tests {
                 .expect("selected player's cover art");
             assert_eq!(next_art.intrinsic_width(), next_art.intrinsic_height());
             assert_eq!(
-                hover_circle.art_icon.tooltip_text().as_deref(),
-                Some("Track — VLC")
+                hover_circle.host.widget().tooltip_text().as_deref(),
+                Some("Track\nArtist\nAlbum\nVLC")
             );
             next_state.art_url = None;
             hover_circle.update(Some(&next_state));
@@ -1191,7 +1415,7 @@ mod tests {
                 .host
                 .widget()
                 .allocate(diameter, diameter, -1, None);
-            hover_circle.layout_artwork(0.0);
+            hover_circle.layout_presentation(0.0);
             hover_fixed.queue_resize();
             hover_window.queue_resize();
             let wait = gtk::glib::MainLoop::new(None, false);
@@ -1203,7 +1427,7 @@ mod tests {
             while gtk::glib::MainContext::default().iteration(false) {}
             assert_eq!(
                 hover_circle.art_icon.width(),
-                art_size,
+                decode_size,
                 "art after leave/update at {scale}: mode={:?} presented={:?} host={}x{} compact_visible={} compact_mapped={}",
                 hover_circle.host.mode(),
                 hover_circle.host.presented_page(),
@@ -1217,6 +1441,11 @@ mod tests {
                 art_size,
                 "ring after leave/update at {scale}"
             );
+            let collapsed_art = hover_circle
+                .art_icon
+                .compute_bounds(hover_circle.host.widget())
+                .unwrap();
+            assert!((collapsed_art.width() - art_size as f32).abs() <= 1.0);
             hover_circle
                 .source_scroll
                 .emit_by_name::<bool>("scroll", &[&0.0_f64, &-1.0_f64]);
@@ -1231,6 +1460,50 @@ mod tests {
             let _ = std::fs::remove_file(fixture);
             let _ = std::fs::remove_file(next_fixture);
         }
+    }
+
+    fn capture_media_fixture(circle: &super::MediaCircle, name: &str) {
+        let Ok(directory) = std::env::var("MITHSHELL_UI_CAPTURE_DIR") else {
+            return;
+        };
+        let main_loop = gtk::glib::MainLoop::new(None, false);
+        let quit = main_loop.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(40), move || {
+            quit.quit()
+        });
+        main_loop.run();
+        let widget = circle.host.widget();
+        let paintable = gtk::WidgetPaintable::new(Some(widget));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let node = loop {
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(
+                &snapshot,
+                f64::from(widget.width()),
+                f64::from(widget.height()),
+            );
+            if let Some(node) = snapshot.to_node() {
+                break node;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "media card must paint {name}"
+            );
+            widget.queue_draw();
+            let quit = main_loop.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(20), move || {
+                quit.quit()
+            });
+            main_loop.run();
+        };
+        let renderer = gtk::gsk::CairoRenderer::new();
+        renderer.realize(None::<&gtk::gdk::Surface>).unwrap();
+        let texture = renderer.render_texture(&node, None);
+        std::fs::create_dir_all(&directory).unwrap();
+        texture
+            .save_to_png(std::path::Path::new(&directory).join(format!("{name}.png")))
+            .unwrap();
+        renderer.unrealize();
     }
 
     #[cfg(test)]

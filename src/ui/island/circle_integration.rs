@@ -581,7 +581,7 @@ impl CircleIntegration {
                     {
                         let expansion = (request.visual.size.height - request.spec.diameter)
                             / (request.spec.hover.height - request.spec.diameter);
-                        media.layout_artwork(expansion);
+                        media.layout_presentation(expansion);
                     }
                 }
             }
@@ -791,10 +791,7 @@ fn spec_for(module: CircleModule) -> CircleSpec {
             width: 144.0,
             height: 36.0,
         },
-        CircleModule::Media => Size {
-            width: 220.0,
-            height: 40.0,
-        },
+        CircleModule::Media => super::media_circle::EXPANDED_SIZE,
         CircleModule::None => Size {
             width: diameter,
             height: diameter,

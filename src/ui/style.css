@@ -51,6 +51,29 @@ window.mithshell-notifications > contents {
   border-radius: 50%;
 }
 
+.media-circle-progress { color: @ms_primary; }
+.media-circle-title { color: @ms_on_surface; font-weight: 700; }
+.media-circle-artist { color: @ms_on_surface_variant; }
+.media-circle-time {
+  color: @ms_on_surface_variant;
+  font-feature-settings: "tnum";
+}
+
+.media-circle-control {
+  border: none;
+  border-radius: 999px;
+  background: alpha(@ms_on_surface, 0.08);
+  box-shadow: none;
+  color: @ms_on_surface;
+}
+
+.media-circle-control:hover { background: alpha(@ms_primary, 0.22); }
+.media-circle-control:active { background: alpha(@ms_primary, 0.32); }
+.media-circle-control:disabled { opacity: 0.4; }
+.media-circle-play { background: @ms_primary; color: @ms_on_primary; }
+.media-circle-play:hover { background: shade(@ms_primary, 1.12); }
+.media-circle-play:active { background: shade(@ms_primary, 0.9); }
+
 /* `below-pill`/corner notification popup (window.mithshell-notifications).
    A separate small surface, not part of the island, so it repeats rather
    than shares `.island-surface`'s look. */
