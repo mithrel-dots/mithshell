@@ -159,9 +159,10 @@ pub(crate) struct MediaCircle {
     host: Rc<CircleHost>,
     progress: Rc<RefCell<Progress>>,
     progress_area: gtk::DrawingArea,
-    compact_icon: gtk::Image,
-    hover_artwork: gtk::Picture,
-    hover_icon: gtk::Image,
+    art_layer: gtk::Fixed,
+    art_tile: gtk::Overlay,
+    art_icon: gtk::Image,
+    art_inset: f64,
     hover_title: gtk::Label,
     hover_artist: gtk::Label,
     players: RefCell<Vec<String>>,
@@ -191,27 +192,28 @@ impl MediaCircle {
     pub(crate) fn test_play_pause_button(&self) -> gtk::Button {
         self.play_pause.clone()
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_artwork(&self) -> gtk::Widget {
+        self.art_tile.clone().upcast()
+    }
     pub(super) fn new(
         metrics: Metrics,
         actions: MediaCircleActions,
     ) -> Result<Rc<Self>, &'static str> {
         let progress = Rc::new(RefCell::new(Progress::default()));
-        let (compact, compact_icon, progress_area) = compact_page(metrics, progress.clone());
-        let (
-            hover,
-            hover_artwork,
-            hover_icon,
-            hover_title,
-            hover_artist,
-            previous,
-            play_pause,
-            next,
-        ) = hover_page(metrics);
+        let (art_tile, art_icon, progress_area) = artwork_tile(metrics, progress.clone());
+        let compact = gtk::Box::new(Orientation::Horizontal, 0);
+        let (hover, hover_title, hover_artist, previous, play_pause, next) = hover_page(metrics);
         let host = CircleHost::new(CircleContent {
             compact: compact.clone().upcast(),
             hover: hover.clone().upcast(),
             full: None,
         })?;
+        let art_layer = gtk::Fixed::new();
+        art_layer.set_can_target(false);
+        art_layer.put(&art_tile, 0.0, 0.0);
+        host.add_overlay(&art_layer);
         let source_scroll =
             gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         // The CircleHost wraps expanded pages in a ScrolledWindow. Capture
@@ -223,9 +225,10 @@ impl MediaCircle {
             host,
             progress,
             progress_area,
-            compact_icon,
-            hover_artwork,
-            hover_icon,
+            art_layer,
+            art_tile,
+            art_icon,
+            art_inset: f64::from(metrics.spacing(8)),
             hover_title,
             hover_artist,
             players: RefCell::new(Vec::new()),
@@ -253,6 +256,29 @@ impl MediaCircle {
         self.host.clone()
     }
 
+    pub(super) fn layout_artwork(&self, expansion: f64) {
+        let expansion = expansion.clamp(0.0, 1.0);
+        let x = self.art_inset * expansion;
+        let size = self.art_size as i32;
+        let height = self.host.frame().map_or(0.0, |frame| frame.rect.height);
+        let top = self
+            .art_layer
+            .compute_bounds(self.host.widget())
+            .map_or(0.0, |bounds| f64::from(bounds.y()));
+        let y = ((height - f64::from(size)) / 2.0 - top).max(0.0);
+        self.art_layer.move_(&self.art_tile, x, y);
+        self.art_tile.allocate(
+            size,
+            size,
+            -1,
+            Some(
+                gtk::gsk::Transform::new()
+                    .translate(&gtk::graphene::Point::new(x as f32, y as f32)),
+            ),
+        );
+        self.progress_area.set_opacity(1.0 - expansion);
+    }
+
     /// `None` hides the circle. A titled paused/stopped player remains valid so
     /// the user can resume it; an empty title/service is not valid content.
     pub(super) fn update(self: &Rc<Self>, state: Option<&MediaState>) {
@@ -277,9 +303,7 @@ impl MediaCircle {
             self.artwork_url.borrow_mut().take();
             self.artwork_texture.borrow_mut().take();
             self.fallback_icon.borrow_mut().take();
-            self.hover_artwork.set_paintable(None::<&gdk::Paintable>);
-            self.hover_artwork.set_visible(false);
-            self.hover_icon.set_visible(true);
+            self.art_icon.set_paintable(None::<&gdk::Paintable>);
             self.host.dispatch(super::circle::Event::Content(false));
         }
         self.redraw_progress();
@@ -287,9 +311,8 @@ impl MediaCircle {
 
     fn set_media(self: &Rc<Self>, state: &MediaState) {
         self.update_artwork(state);
-        for image in [&self.compact_icon, &self.hover_icon] {
-            image.set_tooltip_text(Some(&format!("{} — {}", state.title, state.player)));
-        }
+        self.art_icon
+            .set_tooltip_text(Some(&format!("{} — {}", state.title, state.player)));
         self.hover_title.set_label(&state.title);
         self.hover_artist
             .set_label(state.artist.as_deref().unwrap_or_default());
@@ -388,19 +411,9 @@ impl MediaCircle {
             self.artwork_texture.borrow_mut().take();
         }
         if let Some(texture) = self.artwork_texture.borrow().as_ref() {
-            for image in [&self.compact_icon, &self.hover_icon] {
-                image.set_paintable(Some(texture));
-            }
-            self.hover_artwork.set_paintable(Some(texture));
-            self.hover_artwork.set_visible(true);
-            self.hover_icon.set_visible(false);
+            self.art_icon.set_paintable(Some(texture));
         } else if changed || self.fallback_icon.borrow().as_ref() != state.app_icon.as_ref() {
-            for image in [&self.compact_icon, &self.hover_icon] {
-                set_compact_art(image, state.app_icon.as_deref(), self.icon_style);
-            }
-            self.hover_artwork.set_paintable(None::<&gdk::Paintable>);
-            self.hover_artwork.set_visible(false);
-            self.hover_icon.set_visible(true);
+            set_compact_art(&self.art_icon, state.app_icon.as_deref(), self.icon_style);
         }
         *self.fallback_icon.borrow_mut() = state.app_icon.clone();
         let Some(url) = state.art_url.clone().filter(|_| changed) else {
@@ -424,12 +437,7 @@ impl MediaCircle {
                 return;
             }
             let texture: gdk::Texture = artwork_texture(art).upcast();
-            for image in [&owner.compact_icon, &owner.hover_icon] {
-                image.set_paintable(Some(&texture));
-            }
-            owner.hover_artwork.set_paintable(Some(&texture));
-            owner.hover_artwork.set_visible(true);
-            owner.hover_icon.set_visible(false);
+            owner.art_icon.set_paintable(Some(&texture));
             owner.artwork_texture.replace(Some(texture));
         });
     }
@@ -527,22 +535,15 @@ impl Drop for MediaCircle {
     }
 }
 
-fn compact_page(
+fn artwork_tile(
     metrics: Metrics,
     progress: Rc<RefCell<Progress>>,
 ) -> (gtk::Overlay, gtk::Image, gtk::DrawingArea) {
-    // Keep artwork/ring inside the island surface's border, which consumes
-    // space from the Stack allocation on every side.
     let overlay = gtk::Overlay::new();
     let art_size = media_art_diameter(metrics);
     overlay.set_size_request(art_size, art_size);
-    // The right-side circle expands from a fixed left edge. Its compact page
-    // stays presented through the outgoing part of that animation; centering
-    // this overlay in the growing Stack sends the cover to the right before
-    // the hover page commits and snaps it back. Pin it to that same left edge.
     overlay.set_halign(Align::Start);
-    overlay.set_valign(Align::Center);
-    overlay.add_css_class("media-circle-compact");
+    overlay.set_valign(Align::Start);
     overlay.add_css_class("media-circle-art-tile");
     overlay.set_overflow(gtk::Overflow::Hidden);
     let image = gtk::Image::new();
@@ -619,8 +620,6 @@ fn hover_page(
     metrics: Metrics,
 ) -> (
     gtk::Box,
-    gtk::Picture,
-    gtk::Image,
     gtk::Label,
     gtk::Label,
     gtk::Button,
@@ -637,29 +636,10 @@ fn hover_page(
     root.add_css_class("media-circle-hover");
 
     let art_size = media_art_diameter(metrics);
-    let art_tile = gtk::Overlay::new();
-    art_tile.set_size_request(art_size, art_size);
-    art_tile.set_halign(Align::Start);
-    art_tile.set_valign(Align::Center);
-    art_tile.set_overflow(gtk::Overflow::Hidden);
-    art_tile.add_css_class("media-circle-art-tile");
-    let artwork = gtk::Picture::new();
-    artwork.set_content_fit(gtk::ContentFit::Cover);
-    artwork.set_can_shrink(true);
-    artwork.set_size_request(art_size, art_size);
-    artwork.set_halign(Align::Fill);
-    artwork.set_valign(Align::Fill);
-    artwork.set_can_target(false);
-    artwork.set_visible(false);
-    artwork.add_css_class("media-circle-artwork");
-    art_tile.set_child(Some(&artwork));
-    let icon = gtk::Image::new();
-    icon.set_pixel_size(metrics.spacing(24));
-    icon.set_size_request(metrics.spacing(24), metrics.spacing(24));
-    icon.set_halign(Align::Center);
-    icon.set_valign(Align::Center);
-    art_tile.add_overlay(&icon);
-    root.append(&art_tile);
+    let art_slot = gtk::Box::new(Orientation::Horizontal, 0);
+    art_slot.set_size_request(art_size, art_size);
+    art_slot.set_valign(Align::Center);
+    root.append(&art_slot);
     let text = gtk::Box::new(Orientation::Vertical, 0);
     text.set_hexpand(true);
     text.set_valign(Align::Center);
@@ -699,7 +679,7 @@ fn hover_page(
         }
         root.append(button);
     }
-    (root, artwork, icon, title, artist, previous, play, next)
+    (root, title, artist, previous, play, next)
 }
 
 #[cfg(test)]
@@ -846,6 +826,7 @@ mod tests {
             circle.host.commit_page(circle.host.revision());
             window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
+            circle.layout_artwork(0.0);
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             while circle.artwork_texture.borrow().is_none() && std::time::Instant::now() < deadline
@@ -861,7 +842,7 @@ mod tests {
             let diameter = metrics.spacing(32);
             let art_size = super::media_art_diameter(metrics);
             let decode_size = art_size;
-            let image = &circle.compact_icon;
+            let image = &circle.art_icon;
             let ring = &circle.progress_area;
             assert_eq!(image.width(), art_size, "file art width at scale {scale}");
             assert_eq!(image.height(), art_size, "file art height at scale {scale}");
@@ -903,16 +884,16 @@ mod tests {
                 "compact circle is targetable at scale {scale}"
             );
             let compact_art_x = bounds.x();
-            // A 420ms hover keeps the compact page presented while its frame
-            // grows. The art must not slide toward the middle of that frame
-            // before the expanded page replaces it.
+            let art_parent = circle.art_tile.parent();
             circle
                 .host
                 .dispatch(super::super::circle::Event::Pointer(true));
-            for design_width in [48, 120, 210] {
+            circle.host.commit_page(circle.host.revision());
+            for progress in [0.0, 0.1, 0.35, 0.8, 1.0, 0.6, 0.2, 0.0] {
                 let animated_frame = super::super::circle::Frame {
                     rect: super::super::circle::Rect {
-                        width: metrics.spacing(design_width) as f64,
+                        width: ((32.0 + 188.0 * progress) * scale).round(),
+                        height: ((32.0 + 8.0 * progress) * scale).round(),
                         ..frame.rect
                     },
                     ..frame
@@ -920,23 +901,38 @@ mod tests {
                 circle
                     .host
                     .render(circle.host.revision(), Some(animated_frame));
-                circle
-                    .host
-                    .widget()
-                    .allocate(animated_frame.rect.width as i32, diameter, -1, None);
+                circle.host.widget().allocate(
+                    animated_frame.rect.width as i32,
+                    animated_frame.rect.height as i32,
+                    -1,
+                    None,
+                );
+                circle.layout_artwork(progress);
                 fixed.queue_resize();
                 while gtk::glib::MainContext::default().iteration(false) {}
                 assert_eq!(
                     circle.host.presented_page(),
-                    Some(super::super::circle::Mode::Compact)
+                    Some(super::super::circle::Mode::HoverExpanded)
                 );
                 let moving_bounds = image
                     .compute_bounds(circle.host.widget())
-                    .expect("artwork during outgoing hover animation");
+                    .expect("persistent artwork during geometry animation");
                 assert!(
-                    (moving_bounds.x() - compact_art_x).abs() <= 1.0,
-                    "art slides at scale {scale}, width {design_width}: {moving_bounds:?} vs x={compact_art_x}"
+                    (moving_bounds.x()
+                        - compact_art_x
+                        - metrics.spacing(8) as f32 * progress as f32)
+                        .abs()
+                        <= 1.0,
+                    "art must follow expansion at scale {scale}, progress {progress}: {moving_bounds:?}"
                 );
+                assert!(
+                    (moving_bounds.y() * 2.0 + moving_bounds.height()
+                        - animated_frame.rect.height as f32)
+                        .abs()
+                        <= 1.0
+                );
+                assert_eq!(circle.art_tile.parent(), art_parent);
+                assert!(image.is_mapped());
             }
 
             window.close();
@@ -995,13 +991,14 @@ mod tests {
             hover_window.set_child(Some(&hover_fixed));
             hover_window.present();
             while gtk::glib::MainContext::default().iteration(false) {}
+            hover_circle.layout_artwork(1.0);
             assert!(
                 hover_circle.host.widget().height() <= metrics.spacing(40),
                 "media hover is shallow at scale {scale}: {}",
                 hover_circle.host.widget().height()
             );
             let expanded_art = hover_circle
-                .hover_artwork
+                .art_icon
                 .compute_bounds(hover_circle.host.widget())
                 .expect("circle-sized hover cover art bounds");
             assert!(
@@ -1018,7 +1015,7 @@ mod tests {
                     && expanded_art.y() + expanded_art.height() <= expanded.rect.height as f32,
                 "circle-sized hover art must fit within the pill at scale {scale}: {expanded_art:?} vs {expanded:?}"
             );
-            assert!(!hover_circle.hover_icon.is_visible());
+            assert!(hover_circle.art_icon.is_visible());
             for button in [
                 &hover_circle.previous,
                 &hover_circle.play_pause,
@@ -1061,7 +1058,7 @@ mod tests {
                         .is_some()
                 );
             }
-            let mut ancestor = hover_circle.hover_icon.parent();
+            let mut ancestor = hover_circle.play_pause.parent();
             let mut scroller = None;
             while let Some(widget) = ancestor {
                 if let Ok(found) = widget.clone().downcast::<gtk::ScrolledWindow>() {
@@ -1166,19 +1163,19 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             let next_art = hover_circle
-                .hover_icon
+                .art_icon
                 .paintable()
                 .expect("selected player's cover art");
             assert_eq!(next_art.intrinsic_width(), next_art.intrinsic_height());
             assert_eq!(
-                hover_circle.hover_icon.tooltip_text().as_deref(),
+                hover_circle.art_icon.tooltip_text().as_deref(),
                 Some("Track — VLC")
             );
             next_state.art_url = None;
             hover_circle.update(Some(&next_state));
             assert!(hover_circle.artwork_texture.borrow().is_none());
             assert_eq!(
-                hover_circle.hover_icon.icon_name().as_deref(),
+                hover_circle.art_icon.icon_name().as_deref(),
                 Some("audio-x-generic")
             );
             hover_circle
@@ -1194,6 +1191,7 @@ mod tests {
                 .host
                 .widget()
                 .allocate(diameter, diameter, -1, None);
+            hover_circle.layout_artwork(0.0);
             hover_fixed.queue_resize();
             hover_window.queue_resize();
             let wait = gtk::glib::MainLoop::new(None, false);
@@ -1204,15 +1202,15 @@ mod tests {
             wait.run();
             while gtk::glib::MainContext::default().iteration(false) {}
             assert_eq!(
-                hover_circle.compact_icon.width(),
+                hover_circle.art_icon.width(),
                 art_size,
                 "art after leave/update at {scale}: mode={:?} presented={:?} host={}x{} compact_visible={} compact_mapped={}",
                 hover_circle.host.mode(),
                 hover_circle.host.presented_page(),
                 hover_circle.host.widget().width(),
                 hover_circle.host.widget().height(),
-                hover_circle.compact_icon.is_visible(),
-                hover_circle.compact_icon.is_mapped()
+                hover_circle.art_icon.is_visible(),
+                hover_circle.art_icon.is_mapped()
             );
             assert_eq!(
                 hover_circle.progress_area.width(),

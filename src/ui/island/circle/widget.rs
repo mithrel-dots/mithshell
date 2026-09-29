@@ -20,6 +20,7 @@ type OnChange = Rc<dyn Fn(&CircleHost)>;
 
 pub(crate) struct CircleHost {
     surface: CircleSurface,
+    background: gtk::Box,
     stack: gtk::Stack,
     radius_style: gtk::CssProvider,
     state: Cell<State>,
@@ -76,10 +77,14 @@ impl CircleHost {
         surface.set_overflow(gtk::Overflow::Hidden);
         surface.set_focusable(false);
         background.set_parent(&surface);
-        surface.imp().child.replace(Some(background.upcast()));
+        surface
+            .imp()
+            .child
+            .replace(Some(background.clone().upcast()));
         surface.set_visible(false);
         let host = Rc::new(Self {
             surface,
+            background,
             stack,
             radius_style,
             state: Cell::new(State::new(supports_full)),
@@ -158,6 +163,24 @@ impl CircleHost {
         self.surface.upcast_ref()
     }
 
+    pub(crate) fn add_overlay(&self, child: &impl IsA<gtk::Widget>) {
+        let overlay = self
+            .stack
+            .parent()
+            .and_downcast::<gtk::Overlay>()
+            .unwrap_or_else(|| {
+                let overlay = gtk::Overlay::new();
+                overlay.set_hexpand(true);
+                overlay.set_vexpand(true);
+                self.background.remove(&self.stack);
+                overlay.set_child(Some(&self.stack));
+                self.background.append(&overlay);
+                overlay
+            });
+        overlay.add_overlay(child);
+        overlay.set_measure_overlay(child, false);
+    }
+
     pub(crate) fn mode(&self) -> Mode {
         self.state.get().mode()
     }
@@ -214,6 +237,15 @@ impl CircleHost {
     #[cfg(test)]
     pub(crate) fn test_opacity(&self) -> f64 {
         self.widget().opacity()
+    }
+
+    pub(crate) fn set_page_transition_duration(&self, duration_ms: u32) {
+        self.stack.set_transition_duration(duration_ms);
+        self.stack.set_transition_type(if duration_ms == 0 {
+            gtk::StackTransitionType::None
+        } else {
+            gtk::StackTransitionType::Crossfade
+        });
     }
 
     /// Commit the page captured for `revision` after the caller's outgoing

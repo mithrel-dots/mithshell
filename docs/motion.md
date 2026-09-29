@@ -114,6 +114,19 @@ retain their defaults; overriding one transition never changes another.
 | `island_fade_in` | 200 | standard | Island/date entrance opacity |
 | `island_fade_out` | 200 | standard | Island/date exit opacity |
 
+The tray circle derives its default geometry profiles from Peek (400/300 ms,
+standard with `shell.motion`, or the legacy pill profiles). Explicit
+`circle_enter`/`circle_exit` overrides still apply to it. Its backdrop stays
+opaque while the compact count and expanded icons crossfade inside it; geometry
+runs on the same GTK frame clock as the pill. Repeated tray snapshots preserve
+the active transition, and reversals start from the last painted bounds.
+
+The media circle uses symmetric 400 ms standard-eased expansion and collapse,
+also configurable through `circle_enter`/`circle_exit`. One persistent artwork
+tile moves to its expanded inset on the same geometry track and remains visible
+through collapse. The controls stay mounted until the container has closed;
+media snapshots and reversals preserve the current artwork position.
+
 Allowed easing strings are `standard`, `standard-decelerate`,
 `standard-accelerate`, `emphasized`, and `emphasized-accelerate`.
 

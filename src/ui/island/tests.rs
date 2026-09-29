@@ -1037,93 +1037,234 @@ fn circle_integration_real_widgets_and_callbacks() {
     assert!(!independent.search_window.is_visible());
     assert!(!independent.dismiss_window.is_visible());
 
-    // Exercise the real timer path. The GTK stack must retain the outgoing
-    // page during CONTENT_OUT, switch exactly at the phase boundary, then
-    // expose the incoming page at partial opacity.
+    let _styles = crate::ui::install_styles(&crate::theme::generate_gtk());
+    let pump = |duration| {
+        let main_loop = gtk::glib::MainLoop::new(None, false);
+        let quit = main_loop.clone();
+        gtk::glib::timeout_add_local_once(duration, move || quit.quit());
+        main_loop.run();
+    };
+    island.animations_enabled.set(false);
     island.update_media(Some(&media));
-    media_host.dispatch(super::circle::Event::Pointer(true));
-    let hover_revision = media_host.revision();
-    assert_eq!(media_host.mode(), super::circle::Mode::HoverExpanded);
-    assert!(media_host.commit_page(hover_revision));
-    island.relayout_circles();
-    while gtk::glib::MainContext::default().pending() {
-        gtk::glib::MainContext::default().iteration(false);
-    }
-    assert_eq!(
-        media_host.presented_page(),
-        Some(super::circle::Mode::HoverExpanded)
-    );
-    island.animation_ms.set(100);
-    island.animations_enabled.set(true);
-    let media_motion = motion_controller(media_host.widget());
-    let _: () = media_motion.emit_by_name("leave", &[]);
-    island.relayout_circles();
-    assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
-    assert!(media_host.test_opacity() > 0.9);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while media_host.test_visible_page().as_deref() == Some("hover")
-        && std::time::Instant::now() < deadline
-    {
-        island.relayout_circles();
-        while gtk::glib::MainContext::default().pending() {
-            gtk::glib::MainContext::default().iteration(false);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
-    assert!(media_host.test_opacity() <= 0.2);
-    let mut saw_partial_incoming = false;
-    while std::time::Instant::now() < deadline {
-        island.relayout_circles();
-        let opacity = media_host.test_opacity();
-        if opacity > 0.2 && opacity < 1.0 {
-            saw_partial_incoming = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(saw_partial_incoming);
-    while media_host.test_opacity() < 1.0 {
-        island.relayout_circles();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
-
-    // Media expansion animates its geometry for the configured 420ms
-    // without fading the cover. The hover page is visible immediately;
-    // reversing during the expansion still starts the normal collapse.
-    island.animation_ms.set(420);
-    media_host.dispatch(super::circle::Event::Pointer(true));
-    island.relayout_circles();
-    assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
-    assert_eq!(media_host.test_opacity(), 1.0);
-    let start_width = media_host
-        .frame()
-        .expect("expanding media frame")
-        .rect
-        .width;
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    island.relayout_circles();
-    let middle_width = media_host.frame().expect("animated media frame").rect.width;
-    assert!(middle_width > start_width, "media frame still expands");
-    for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        island.relayout_circles();
-        assert_eq!(media_host.test_opacity(), 1.0, "media cover must not fade");
-        assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
-    }
-    island.animation_ms.set(100);
     media_host.dispatch(super::circle::Event::Pointer(false));
     island.relayout_circles();
+    pump(std::time::Duration::from_millis(60));
+    let artwork = island
+        .circles
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .test_media_artwork()
+        .unwrap();
+    let art_parent = artwork.parent();
+    let compact_art = artwork.compute_bounds(media_host.widget()).unwrap();
+    let compact_frame = media_host.frame().unwrap();
+
+    // The very first expanded frame must retain the compact artwork position.
+    // Subsequent frames move the same widget with the geometry, even across
+    // MPRIS refreshes; a new page must never jump to its final inset.
+    island
+        .motion
+        .set(Some(crate::config::MotionConfig::default()));
+    island.animations_enabled.set(true);
+    media_host.dispatch(super::circle::Event::Pointer(true));
+    island.relayout_circles();
     assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
-    let collapse_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while media_host.test_visible_page().as_deref() != Some("compact")
-        && std::time::Instant::now() < collapse_deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        island.relayout_circles();
+    assert_eq!(
+        artwork.compute_bounds(media_host.widget()),
+        Some(compact_art)
+    );
+    let mut saw_intermediate = false;
+    let mut previous_x = compact_art.x();
+    for _ in 0..12 {
+        pump(std::time::Duration::from_millis(40));
+        let bounds = artwork.compute_bounds(media_host.widget()).unwrap();
+        let frame = media_host.frame().unwrap();
+        let progress =
+            (frame.rect.width - compact_frame.rect.width) / (220.0 - compact_frame.rect.width);
+        assert!((bounds.x() - compact_art.x() - 8.0 * progress as f32).abs() <= 1.0);
+        assert!((bounds.y() * 2.0 + bounds.height() - frame.rect.height as f32).abs() <= 1.0);
+        assert!(bounds.x() >= previous_x);
+        saw_intermediate |= bounds.x() > compact_art.x() && bounds.x() < compact_art.x() + 8.0;
+        previous_x = bounds.x();
+        assert_eq!(artwork.parent(), art_parent);
+        assert!(artwork.is_mapped());
+        assert_eq!(media_host.test_opacity(), 1.0);
+        island.update_media(Some(&media));
+    }
+    assert!(saw_intermediate, "artwork must move across multiple frames");
+    assert_eq!(media_host.frame().unwrap().rect.width, 220.0);
+    let expanded_art = artwork.compute_bounds(media_host.widget()).unwrap();
+
+    media_host.dispatch(super::circle::Event::Pointer(false));
+    island.relayout_circles();
+    assert_eq!(
+        artwork.compute_bounds(media_host.widget()),
+        Some(expanded_art)
+    );
+    pump(std::time::Duration::from_millis(220));
+    assert!(
+        media_host.frame().unwrap().rect.width > compact_frame.rect.width,
+        "default collapse must last longer than 200ms"
+    );
+    assert_eq!(media_host.test_visible_page().as_deref(), Some("hover"));
+    assert_eq!(media_host.test_opacity(), 1.0);
+    let reversing_frame = media_host.frame();
+    let reversing_art = artwork.compute_bounds(media_host.widget());
+    media_host.dispatch(super::circle::Event::Pointer(true));
+    island.relayout_circles();
+    assert_eq!(media_host.frame(), reversing_frame);
+    assert_eq!(artwork.compute_bounds(media_host.widget()), reversing_art);
+    pump(std::time::Duration::from_millis(450));
+    assert_eq!(
+        artwork.compute_bounds(media_host.widget()),
+        Some(expanded_art)
+    );
+    media_host.dispatch(super::circle::Event::Pointer(false));
+    island.relayout_circles();
+    for _ in 0..11 {
+        pump(std::time::Duration::from_millis(40));
+        assert_eq!(media_host.test_opacity(), 1.0);
+        assert_eq!(artwork.parent(), art_parent);
     }
     assert_eq!(media_host.test_visible_page().as_deref(), Some("compact"));
+    assert_eq!(
+        artwork.compute_bounds(media_host.widget()),
+        Some(compact_art)
+    );
+    island.animations_enabled.set(false);
+    media_host.dispatch(super::circle::Event::Pointer(true));
+    island.relayout_circles();
+    assert_eq!(
+        artwork.compute_bounds(media_host.widget()),
+        Some(expanded_art)
+    );
+    media_host.dispatch(super::circle::Event::Pointer(false));
+    island.relayout_circles();
+    assert_eq!(
+        artwork.compute_bounds(media_host.widget()),
+        Some(compact_art)
+    );
+
+    // Sample the mapped tray on the production frame clock, including updates
+    // faster than its transition and reversals before either endpoint.
+    let items: Vec<_> = (0..6)
+        .map(|index| TrayItem {
+            key: format!("test/item-{index}"),
+            ..tray.clone()
+        })
+        .collect();
+    for (scale, side) in [(1.0, 0), (1.9, 1)] {
+        let mut config = AppConfig::default();
+        config.shell.scale = scale;
+        config.shell.animation_ms = 0;
+        config.circles.left = if side == 0 {
+            CircleModule::Tray
+        } else {
+            CircleModule::None
+        };
+        config.circles.right = if side == 1 {
+            CircleModule::Tray
+        } else {
+            CircleModule::None
+        };
+        let fixture = IslandWindow::new_for_test(
+            &application,
+            &monitor,
+            "tray-motion".into(),
+            &config,
+            matrix_actions.clone(),
+            false,
+        );
+        fixture.update_tray(&items);
+        fixture.relayout_circles();
+        pump(std::time::Duration::from_millis(50));
+        let host = fixture
+            .circles
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .test_host(side)
+            .unwrap();
+        let compact = host.frame().unwrap();
+        host.dispatch(super::circle::Event::Pointer(true));
+        fixture.relayout_circles();
+        let expanded = host.frame().unwrap();
+        assert!(expanded.rect.width > compact.rect.width);
+        host.dispatch(super::circle::Event::Pointer(false));
+        fixture.relayout_circles();
+        pump(std::time::Duration::from_millis(50));
+        fixture
+            .motion
+            .set(Some(crate::config::MotionConfig::default()));
+        fixture.animations_enabled.set(true);
+
+        host.dispatch(super::circle::Event::Pointer(true));
+        fixture.relayout_circles();
+        let mut previous = compact;
+        let mut saw_intermediate = false;
+        for _ in 0..14 {
+            pump(std::time::Duration::from_millis(40));
+            let frame = host
+                .frame()
+                .expect("tray stays mapped throughout expansion");
+            assert!(host.widget().is_mapped());
+            assert_eq!(host.test_opacity(), 1.0, "tray backdrop must never blink");
+            assert!(frame.rect.width >= previous.rect.width);
+            saw_intermediate |=
+                frame.rect.width > compact.rect.width && frame.rect.width < expanded.rect.width;
+            previous = frame;
+            fixture.update_tray(&items);
+        }
+        assert!(
+            saw_intermediate,
+            "tray must expand over multiple painted frames"
+        );
+        assert_eq!(
+            host.frame(),
+            Some(expanded),
+            "snapshots must not restart the clock"
+        );
+
+        host.dispatch(super::circle::Event::Pointer(false));
+        fixture.relayout_circles();
+        assert_eq!(
+            host.frame(),
+            Some(expanded),
+            "reversal starts at the painted frame"
+        );
+        pump(std::time::Duration::from_millis(80));
+        let reversing = host.frame().unwrap();
+        assert!(reversing.rect.width < expanded.rect.width);
+        assert!(reversing.rect.width > compact.rect.width);
+        assert_eq!(host.test_opacity(), 1.0);
+        host.dispatch(super::circle::Event::Pointer(true));
+        fixture.relayout_circles();
+        assert_eq!(host.frame(), Some(reversing));
+        pump(std::time::Duration::from_millis(450));
+        assert_eq!(host.frame(), Some(expanded));
+        host.dispatch(super::circle::Event::Pointer(false));
+        fixture.relayout_circles();
+        for _ in 0..8 {
+            pump(std::time::Duration::from_millis(40));
+            assert_eq!(
+                host.test_opacity(),
+                1.0,
+                "tray backdrop must stay visible on exit"
+            );
+        }
+        assert_eq!(host.frame(), Some(compact));
+
+        fixture.animations_enabled.set(false);
+        host.dispatch(super::circle::Event::Pointer(true));
+        fixture.relayout_circles();
+        assert_eq!(host.frame(), Some(expanded));
+        assert_eq!(host.test_visible_page().as_deref(), Some("hover"));
+        fixture.update_tray(&[]);
+        assert!(host.frame().is_none());
+        assert!(!host.widget().is_visible());
+        fixture.destroy();
+    }
 }
 
 #[test]

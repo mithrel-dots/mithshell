@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::config::{MotionConfig, MotionEasing, MotionOverride};
 
-/// User-facing transition identities, independent of their default tokens.
+/// Shell transition identities, independent of their default tokens.
 #[derive(Clone, Copy, Debug)]
 pub enum Transition {
     PeekEnter,
@@ -19,6 +19,10 @@ pub enum Transition {
     LauncherClose,
     CircleEnter,
     CircleExit,
+    TrayEnter,
+    TrayExit,
+    MediaEnter,
+    MediaExit,
     HoverEnter,
     ContainerExpand,
     ContainerCollapse,
@@ -31,10 +35,11 @@ pub enum Transition {
 impl Transition {
     fn defaults(self, modern: bool) -> Profile {
         match self {
-            Self::PeekEnter if modern => Profile::PEEK_ENTER,
-            Self::PeekExit if modern => Profile::PEEK_EXIT,
-            Self::PeekEnter | Self::IslandOpen => Profile::ISLAND_EXPAND,
-            Self::PeekExit | Self::IslandClose => Profile::ISLAND_COLLAPSE,
+            Self::MediaEnter | Self::MediaExit => Profile::PEEK_ENTER,
+            Self::PeekEnter | Self::TrayEnter if modern => Profile::PEEK_ENTER,
+            Self::PeekExit | Self::TrayExit if modern => Profile::PEEK_EXIT,
+            Self::PeekEnter | Self::TrayEnter | Self::IslandOpen => Profile::ISLAND_EXPAND,
+            Self::PeekExit | Self::TrayExit | Self::IslandClose => Profile::ISLAND_COLLAPSE,
             Self::LauncherOpen | Self::CircleEnter | Self::ContainerExpand => {
                 Profile::CONTAINER_EXPAND
             }
@@ -57,8 +62,8 @@ impl Transition {
             Self::IslandClose => config.island_close,
             Self::LauncherOpen => config.launcher_open,
             Self::LauncherClose => config.launcher_close,
-            Self::CircleEnter => config.circle_enter,
-            Self::CircleExit => config.circle_exit,
+            Self::CircleEnter | Self::TrayEnter | Self::MediaEnter => config.circle_enter,
+            Self::CircleExit | Self::TrayExit | Self::MediaExit => config.circle_exit,
             Self::HoverEnter => config.hover_enter,
             Self::ContainerExpand => config.container_expand,
             Self::ContainerCollapse => config.container_collapse,
@@ -438,6 +443,10 @@ mod tests {
             (Transition::LauncherClose, 232),
             (Transition::CircleEnter, 234),
             (Transition::CircleExit, 236),
+            (Transition::TrayEnter, 234),
+            (Transition::TrayExit, 236),
+            (Transition::MediaEnter, 234),
+            (Transition::MediaExit, 236),
         ] {
             assert_eq!(
                 transition.resolve(config.shell.motion, true, 320).duration,
@@ -457,6 +466,32 @@ mod tests {
                 .duration,
             Duration::from_millis(200)
         );
+    }
+
+    #[test]
+    fn tray_defaults_follow_peek_and_respect_disabled_motion() {
+        for config in [None, Some(crate::config::MotionConfig::default())] {
+            for (tray, peek) in [
+                (Transition::TrayEnter, Transition::PeekEnter),
+                (Transition::TrayExit, Transition::PeekExit),
+            ] {
+                assert_eq!(
+                    tray.resolve(config, true, 280),
+                    peek.resolve(config, true, 280)
+                );
+                assert!(tray.resolve(config, false, 280).duration.is_zero());
+            }
+        }
+    }
+
+    #[test]
+    fn media_motion_is_symmetric_and_can_be_disabled() {
+        for config in [None, Some(crate::config::MotionConfig::default())] {
+            for transition in [Transition::MediaEnter, Transition::MediaExit] {
+                assert_eq!(transition.resolve(config, true, 280), Profile::PEEK_ENTER);
+                assert!(transition.resolve(config, false, 280).duration.is_zero());
+            }
+        }
     }
 
     #[test]

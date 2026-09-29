@@ -25,6 +25,7 @@ struct CircleAnimation {
     from_mode: circle::Mode,
     mode: circle::Mode,
     from: Visual,
+    current: Visual,
     target: Visual,
     started: Instant,
     geometry: crate::ui::motion::Profile,
@@ -294,6 +295,11 @@ impl CircleIntegration {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_media_artwork(&self) -> Option<gtk::Widget> {
+        self.media.as_ref().map(|media| media.test_artwork())
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_media_select_service(&self, service: &str) {
         if let Some(media) = &self.media {
             media.test_select_service(service);
@@ -347,6 +353,9 @@ impl CircleIntegration {
             .enumerate()
             .map(|(index, slot)| {
                 slot.as_ref().and_then(|slot| {
+                    let tray_transform = slot.module == CircleModule::Tray;
+                    let media_transform = slot.module == CircleModule::Media;
+                    let persistent_surface = tray_transform || media_transform;
                     let mut spec = slot.spec;
                     if slot.module == CircleModule::Tray
                         && let Some(tray) = &self.tray
@@ -372,41 +381,80 @@ impl CircleIntegration {
                             visual: target,
                         });
                     }
+                    // Snapshots and menu pins must not restart a transform
+                    // whose destination is already being painted.
+                    if persistent_surface
+                        && let Some(animation) = animations[index].as_mut()
+                        && animation.mode == mode
+                        && animation.target == target
+                    {
+                        animation.revision = slot.host.revision();
+                    }
                     let restart = animations[index].as_ref().is_none_or(|animation| {
-                        animation.revision != slot.host.revision() || animation.mode != mode
+                        animation.revision != slot.host.revision()
+                            || animation.mode != mode
+                            || (persistent_surface && animation.target != target)
                     });
                     if restart {
                         if presented.is_none() {
                             animations[index] = None;
                             commit[index] = true;
+                            slot.host.widget().set_opacity(1.0);
                             return Some(CircleRequest {
                                 spec,
                                 visual: target,
                             });
                         }
-                        let from = animations[index]
-                            .as_ref()
-                            .map(|animation| sample_visual(animation, now))
-                            .or_else(|| presented.and_then(|old| spec.visual(old)))
-                            .unwrap_or(target);
+                        let from = if media_transform {
+                            animations[index]
+                                .as_ref()
+                                .map(|animation| animation.current)
+                        } else if tray_transform {
+                            slot.host.frame().map(|frame| Visual {
+                                size: Size {
+                                    width: frame.rect.width / island.metrics.scale,
+                                    height: frame.rect.height / island.metrics.scale,
+                                },
+                                radius: frame.radius / island.metrics.scale,
+                            })
+                        } else {
+                            animations[index]
+                                .as_ref()
+                                .map(|animation| sample_visual(animation, now))
+                        }
+                        .or_else(|| presented.and_then(|old| spec.visual(old)))
+                        .unwrap_or(target);
                         let from_mode = animations[index]
                             .as_ref()
                             .map(|animation| animation.mode)
                             .or(presented)
                             .unwrap_or(circle::Mode::Compact);
                         let geometry_only = presented == Some(mode);
-                        // Media keeps its cover anchored at the left while
-                        // the pill grows. Switch to the matching hover page
-                        // immediately, then animate only the frame; fading
-                        // out the cover and back in makes it visibly blink.
-                        let no_fade_expand = slot.module == CircleModule::Media
-                            && mode == circle::Mode::HoverExpanded
-                            && mode_rank(mode) > mode_rank(from_mode);
                         let opacity_start = slot.host.widget().opacity();
-                        let geometry = island.motion_profile(circle_transition(from_mode, mode));
+                        let transition = if media_transform {
+                            if mode_rank(mode) < mode_rank(from_mode) {
+                                Transition::MediaExit
+                            } else {
+                                Transition::MediaEnter
+                            }
+                        } else if tray_transform {
+                            if mode_rank(mode) < mode_rank(from_mode) {
+                                Transition::TrayExit
+                            } else {
+                                Transition::TrayEnter
+                            }
+                        } else {
+                            circle_transition(from_mode, mode)
+                        };
+                        let geometry = island.motion_profile(transition);
                         let out = island.motion_profile(Transition::ContentOut);
                         let incoming = island.motion_profile(Transition::ContentIn);
-                        let total = geometry.duration.max(if no_fade_expand {
+                        if tray_transform {
+                            slot.host.set_page_transition_duration(
+                                incoming.duration.min(geometry.duration).as_millis() as u32,
+                            );
+                        }
+                        let total = geometry.duration.max(if persistent_surface {
                             Duration::ZERO
                         } else if geometry_only {
                             incoming.duration
@@ -422,7 +470,9 @@ impl CircleIntegration {
                                 visual: target,
                             });
                         }
-                        if no_fade_expand {
+                        let commit_immediately =
+                            tray_transform || (media_transform && mode != circle::Mode::Compact);
+                        if commit_immediately {
                             slot.host.commit_page(slot.host.revision());
                             slot.host.widget().set_opacity(1.0);
                         }
@@ -431,18 +481,19 @@ impl CircleIntegration {
                             from_mode,
                             mode,
                             from,
+                            current: from,
                             target,
                             started: now,
                             geometry,
                             out,
                             incoming,
-                            phase: if geometry_only || no_fade_expand {
+                            phase: if geometry_only || persistent_surface {
                                 AnimationPhase::Incoming
                             } else {
                                 AnimationPhase::Outgoing
                             },
-                            page_committed: geometry_only || no_fade_expand,
-                            fade: !no_fade_expand,
+                            page_committed: geometry_only || commit_immediately,
+                            fade: !persistent_surface,
                             opacity_start: if geometry_only { opacity_start } else { 1.0 },
                             total,
                         });
@@ -450,8 +501,12 @@ impl CircleIntegration {
                     let animation = animations[index].as_mut().expect("animation installed");
                     let elapsed = now.saturating_duration_since(animation.started);
                     let visual = sample_visual(animation, now);
+                    animation.current = visual;
                     let mut committed_now = false;
-                    if !animation.page_committed && elapsed >= animation.out.duration {
+                    if !media_transform
+                        && !animation.page_committed
+                        && elapsed >= animation.out.duration
+                    {
                         animation.phase = AnimationPhase::Incoming;
                         animation.page_committed = slot.host.commit_page(animation.revision);
                         animation.opacity_start = 0.0;
@@ -520,6 +575,14 @@ impl CircleIntegration {
                             )),
                         ),
                     );
+                    if slot.module == CircleModule::Media
+                        && let Some(media) = &self.media
+                        && let Some(request) = slots[index]
+                    {
+                        let expansion = (request.visual.size.height - request.spec.diameter)
+                            / (request.spec.hover.height - request.spec.diameter);
+                        media.layout_artwork(expansion);
+                    }
                 }
             }
         }
@@ -535,11 +598,14 @@ impl CircleIntegration {
     }
 
     fn ensure_tick(&self) {
+        let Some(island) = self.owner.upgrade() else {
+            return;
+        };
         if self.tick_scheduled.replace(true) {
             return;
         }
         let weak = self.owner.clone();
-        glib::timeout_add_local(Duration::from_millis(16), move || {
+        island.fixed.add_tick_callback(move |_, _| {
             let Some(island) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
