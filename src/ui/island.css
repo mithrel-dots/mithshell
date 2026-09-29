@@ -7,8 +7,12 @@
 .island-panel-viewport {
   border-radius: 0 0 30px 30px;
   background: @ms_surface;
-  border: 2px solid alpha(@ms_primary, 0.35);
+  border: 2px solid;
   border-top: none;
+}
+.island-panel-viewport,
+.circle-surface.circle-expanded {
+  border-color: alpha(@ms_primary, 0.35);
 }
 .island-panel-viewport .dashboard-content {
   padding: 28px 12px 12px;

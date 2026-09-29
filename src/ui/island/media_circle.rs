@@ -383,7 +383,7 @@ impl MediaCircle {
             self.artwork_texture.borrow_mut().take();
             self.fallback_icon.borrow_mut().take();
             self.art_icon.set_paintable(None::<&gdk::Paintable>);
-            self.host.widget().set_tooltip_text(None);
+            self.hover_title.set_tooltip_text(None);
             self.host.dispatch(super::circle::Event::Content(false));
         }
         self.redraw_progress();
@@ -402,7 +402,7 @@ impl MediaCircle {
         .filter(|value| !value.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-        self.host.widget().set_tooltip_text(Some(&info));
+        self.hover_title.set_tooltip_text(Some(&info));
         self.hover_title.set_label(&state.title);
         self.hover_artist
             .set_label(state.artist.as_deref().unwrap_or_default());
@@ -773,7 +773,7 @@ fn hover_page(
     gtk::Button,
     gtk::Button,
 ) {
-    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(8));
+    let root = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
     root.set_margin_start(metrics.spacing(PADDING));
     root.set_margin_end(metrics.spacing(PADDING));
     root.set_margin_top(metrics.spacing(PADDING));
@@ -817,7 +817,7 @@ fn hover_page(
     text.append(&title);
     text.append(&artist);
     details.append(&text);
-    let controls = gtk::Box::new(Orientation::Horizontal, metrics.spacing(2));
+    let controls = gtk::Box::new(Orientation::Horizontal, metrics.spacing(4));
     controls.set_halign(Align::Center);
     let previous = icon::icon_button(Icon::Previous, metrics.icons);
     let play = icon::icon_button(Icon::Play, metrics.icons);
@@ -1291,6 +1291,34 @@ mod tests {
                 "expanded art must fit within the card at scale {scale}: {expanded_art:?} vs {expanded:?}"
             );
             assert!(hover_circle.art_icon.is_visible());
+            for (widget, expects_info) in [
+                (hover_circle.hover_title.upcast_ref::<gtk::Widget>(), true),
+                (hover_circle.hover_artist.upcast_ref(), false),
+                (hover_circle.art_icon.upcast_ref(), false),
+                (hover_circle.previous.upcast_ref(), false),
+                (hover_circle.play_pause.upcast_ref(), false),
+                (hover_circle.next.upcast_ref(), false),
+            ] {
+                let bounds = widget.compute_bounds(hover_circle.host.widget()).unwrap();
+                let mut picked = hover_circle.host.widget().pick(
+                    f64::from(bounds.x() + bounds.width() / 2.0),
+                    f64::from(bounds.y() + bounds.height() / 2.0),
+                    gtk::PickFlags::DEFAULT,
+                );
+                let mut tooltip_owner = None;
+                while let Some(target) = picked {
+                    if target.has_tooltip() {
+                        tooltip_owner = Some(target);
+                        break;
+                    }
+                    picked = target.parent();
+                }
+                assert_eq!(
+                    tooltip_owner.as_ref(),
+                    expects_info.then_some(hover_circle.hover_title.upcast_ref()),
+                    "media tooltip hit area for {widget:?} at scale {scale}"
+                );
+            }
             for button in [
                 &hover_circle.previous,
                 &hover_circle.play_pause,
@@ -1477,7 +1505,7 @@ mod tests {
                 .expect("selected player's cover art");
             assert_eq!(next_art.intrinsic_width(), next_art.intrinsic_height());
             assert_eq!(
-                hover_circle.host.widget().tooltip_text().as_deref(),
+                hover_circle.hover_title.tooltip_text().as_deref(),
                 Some("Track\nArtist\nAlbum\nVLC")
             );
             next_state.art_url = None;

@@ -211,6 +211,11 @@ impl CircleHost {
             return;
         }
         self.state.set(state);
+        if matches!(state.mode(), Mode::HoverExpanded | Mode::FullExpanded) {
+            self.background.add_css_class("circle-expanded");
+        } else {
+            self.background.remove_css_class("circle-expanded");
+        }
         if state.mode() == Mode::Absent {
             self.frame.set(None);
             self.presented_page.set(None);
