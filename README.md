@@ -775,11 +775,16 @@ accepts `--no-animations` for debugging or reduced-motion setups.
 
 ### Rendering
 
-The daemon defaults to GTK's cairo renderer. The island is a small 2D surface,
-so GPU compositing gains little while mapping the whole driver stack into a
-session-long process; on an NVIDIA system this is the difference between
-224 MB and 85 MB of RSS. Export `GSK_RENDERER` to override it, for example
-`GSK_RENDERER=ngl`.
+The daemon uses GTK's automatic renderer selection, allowing Vulkan or OpenGL
+to accelerate compositing, clipping, textures, and CSS shadows during animation.
+GTK falls back to an available renderer if the preferred backend cannot be
+initialized. GPU rendering uses additional driver and graphics memory in
+exchange for lower CPU rendering cost.
+
+Set `GSK_RENDERER=gl` or `GSK_RENDERER=vulkan` to request a particular GPU
+backend, or `GSK_RENDERER=cairo` for software rendering. These are startup
+options, so restart the daemon after changing them. `mithshell status --json`
+reports the actual `renderer` for each island under `data.windows`.
 
 With Cairo, each island canvas caches static CSS shadows and converted texture
 pixels (at most 8 MiB / 128 entries), evicting content when it leaves the render
@@ -788,9 +793,18 @@ unchanged spectrum frames, unknown-duration rings, and hidden time labels do
 not trigger redundant redraws. The logical and native canvases remain fixed-size
 throughout hover and page transitions: only child widgets animate, avoiding
 compositor scaling of the entire layer surface when its buffer size changes.
-
 Closed launcher/click-catcher windows release their native buffers, and closing
 the launcher releases its result rows and display-sized preview pixels.
+The full-screen click catcher uses a one-pixel transparent Cairo node to avoid
+allocating and uploading a monitor-sized CPU image just to receive input.
+
+On glibc builds, the daemon pins the allocator's large-allocation threshold at
+128 KiB and its heap-trimming threshold at 256 KiB. This helps release temporary
+GPU-initialization and image buffers instead of retaining them in the heap;
+small-object caches remain available for animation. Explicit `MALLOC_*` or
+`GLIBC_TUNABLES=glibc.malloc.…` settings take precedence. Memory comparisons
+should use the same shader-cache state: cold GPU startup can load substantially
+more compiler code and scratch memory than a warm start.
 
 ### Benchmarking
 

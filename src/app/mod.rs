@@ -1,5 +1,6 @@
 mod client;
 mod events;
+mod memory;
 
 use std::{
     cell::{Cell, RefCell},
@@ -88,6 +89,7 @@ fn run_daemon(
     test_battery: Option<u8>,
     no_global_services: bool,
 ) -> Result<()> {
+    memory::configure_allocator();
     let config_path = config::config_path(config_override)?;
     let config = AppConfig::load(&config_path)?;
     ipc::prepare_runtime_socket(&socket_path)?;

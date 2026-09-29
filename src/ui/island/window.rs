@@ -132,10 +132,14 @@ impl IslandWindow {
         // forever without ever becoming a compositor pointer target, and
         // GDK consequently has nowhere to send its input region. Keep the
         // catcher visually transparent, but give it a real render node so
-        // the Wayland surface gets an attached buffer.
+        // the Wayland surface gets an attached buffer. One transparent pixel
+        // is enough: a monitor-sized Cairo node would allocate and upload a
+        // full-screen CPU image (about 32 MiB at 4K). The parent still covers
+        // the monitor for picking; GSK clears the rest of the native buffer.
         let dismiss_render = DrawingArea::new();
-        dismiss_render.set_hexpand(true);
-        dismiss_render.set_vexpand(true);
+        dismiss_render.set_size_request(1, 1);
+        dismiss_render.set_halign(gtk::Align::Start);
+        dismiss_render.set_valign(gtk::Align::Start);
         dismiss_render.set_draw_func(|_, context, width, height| {
             context.set_operator(gtk::cairo::Operator::Clear);
             context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
@@ -662,6 +666,7 @@ impl IslandWindow {
             "height": geometry.height.round() as i32,
             "surface_width": self.window.width(),
             "surface_height": self.window.height(),
+            "renderer": self.window.renderer().map(|renderer| renderer.type_().name().to_owned()),
             "y": geometry.y.round() as i32,
             "compact_visible": self.compact.is_visible(),
             "compact_opacity": self.compact.opacity(),
