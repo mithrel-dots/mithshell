@@ -226,9 +226,14 @@ fn media_player_from_properties(
         .filter(|value| {
             !value.is_empty() && (value.starts_with("file://") || value.starts_with("https://"))
         });
-    let length_us = metadata
-        .get("mpris:length")
-        .and_then(|value| value.get::<i64>());
+    let length_us = metadata.get("mpris:length").and_then(|value| {
+        // Spotify exposes this as uint64 rather than MPRIS' signed int64.
+        value.get::<i64>().or_else(|| {
+            value
+                .get::<u64>()
+                .and_then(|length| i64::try_from(length).ok())
+        })
+    });
     let position_us = properties
         .get("Position")
         .and_then(|value| value.get::<i64>())
@@ -366,6 +371,25 @@ mod tests {
         // Absent capability properties default to supported.
         assert!(state.can_play);
         assert!(state.can_pause);
+    }
+
+    #[test]
+    fn accepts_spotify_unsigned_duration_without_overflowing() {
+        for (length, expected) in [(125_831_000_u64, Some(125_831_000_i64)), (u64::MAX, None)] {
+            let mut properties = properties("Playing", "Track");
+            let metadata = HashMap::from([
+                ("xesam:title".to_owned(), "Track".to_variant()),
+                ("mpris:length".to_owned(), length.to_variant()),
+            ]);
+            properties.insert("Metadata".to_owned(), metadata.to_variant());
+            properties.insert("Position".to_owned(), 16_493_000_i64.to_variant());
+            let player =
+                media_player_from_properties("org.mpris.MediaPlayer2.spotify", &properties, None)
+                    .unwrap();
+            assert_eq!(player.length_us, expected);
+            assert_eq!(player.position_us, 16_493_000);
+            assert_eq!(player.status, PlaybackStatus::Playing);
+        }
     }
 
     #[test]
