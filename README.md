@@ -789,6 +789,9 @@ not trigger redundant redraws. The logical and native canvases remain fixed-size
 throughout hover and page transitions: only child widgets animate, avoiding
 compositor scaling of the entire layer surface when its buffer size changes.
 
+Closed launcher/click-catcher windows release their native buffers, and closing
+the launcher releases its result rows and display-sized preview pixels.
+
 ### Benchmarking
 
 Search latency is instrumented behind an environment variable, so it costs

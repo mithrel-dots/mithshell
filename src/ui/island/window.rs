@@ -811,6 +811,15 @@ impl IslandWindow {
         }
     }
 
+    pub(super) fn hide_dismiss_catcher(&self) {
+        self.dismiss_window.set_visible(false);
+        // Hiding a GTK window retains its wl_shm buffer. A 4K catcher keeps
+        // 32 MiB resident despite being entirely transparent and unmapped.
+        if self.dismiss_window.is_realized() {
+            gtk::prelude::WidgetExt::unrealize(&self.dismiss_window);
+        }
+    }
+
     /// Establish the layer/stack invariant needed by outside dismissal:
     /// `dismiss_window` is a full-screen Top-layer catcher and the interactive
     /// main window must be Overlay while the catcher is mapped. This is also

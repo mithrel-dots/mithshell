@@ -108,7 +108,7 @@ fn integrated_search_return_uses_real_finish_and_scheduler_path() {
         select: Rc::new(|_: TarragonSelection| {}),
         tarragon_status: Rc::new(|| {}),
         tarragon_reload: Rc::new(|| {}),
-        load_preview: Rc::new(|_, _| {}),
+        load_preview: Rc::new(|_, _, _| {}),
         media_play_pause: Rc::new(|_| {}),
         media_next: Rc::new(|_| {}),
         media_previous: Rc::new(|_| {}),
@@ -228,6 +228,36 @@ fn integrated_search_return_uses_real_finish_and_scheduler_path() {
     temporary_focus.grab_focus();
     gtk::prelude::RootExt::set_focus(&focus_window, Some(&temporary_focus));
 
+    let snapshot: crate::tarragon::TarragonSnapshot = serde_json::from_value(serde_json::json!({
+        "query_id": "memory-regression", "input": "preview",
+        "list": [{"id": "file", "plugin": "files", "label": "Preview"}]
+    }))
+    .unwrap();
+    island
+        .search_dispatched
+        .replace(Some(snapshot.input.clone()));
+    island.update_tarragon_results(&snapshot);
+    let old_row = island.search_results.row_at_index(0).unwrap().downgrade();
+    island.update_tarragon_results(&snapshot);
+    assert!(
+        old_row.upgrade().is_none(),
+        "replaced search row must be released"
+    );
+    let final_row = island.search_results.row_at_index(0).unwrap().downgrade();
+    let preview_generation = island.preview_generation.get();
+    let preview = crate::preview::PreviewData {
+        metadata: vec![],
+        content: crate::preview::PreviewContent::Image(crate::preview::PreviewImage {
+            width: 1,
+            height: 1,
+            stride: 4,
+            alpha: true,
+            pixels: vec![255; 4],
+        }),
+    };
+    island.apply_file_preview(preview_generation, Ok(preview.clone()));
+    assert!(island.search_preview_picture.paintable().is_some());
+
     island.osd_active.set(true);
     island.reconcile_view();
     assert_eq!(island.current_view.get(), View::Osd);
@@ -267,6 +297,11 @@ fn integrated_search_return_uses_real_finish_and_scheduler_path() {
     }
     assert!(!island.search_focus_pending.get());
     assert!(island.search_entry.has_focus());
+
+    assert!(
+        island.search_snapshot.borrow().is_some(),
+        "temporary OSD preserves the query"
+    );
 
     island.schedule_search_entry_focus();
     let queued_generation = island.search_focus_generation.get();
@@ -315,6 +350,22 @@ fn integrated_search_return_uses_real_finish_and_scheduler_path() {
     assert_eq!(island.compact.opacity(), 1.0);
     assert!(!island.search.is_visible());
     assert_eq!(island.search.opacity(), 0.0);
+
+    assert!(
+        final_row.upgrade().is_none(),
+        "closing releases search rows"
+    );
+    assert!(island.search_snapshot.borrow().is_none());
+    assert!(island.search_preview_picture.paintable().is_none());
+    assert!(
+        !island.dismiss_window.is_realized(),
+        "hidden catcher releases its native buffer"
+    );
+    island.apply_file_preview(preview_generation, Ok(preview));
+    assert!(
+        island.search_preview_picture.paintable().is_none(),
+        "late previews cannot repopulate a closed launcher"
+    );
 
     // Supersede an animated open immediately with close, then leave the
     // pointer stationary while the replacement transition settles.
@@ -412,7 +463,13 @@ fn integrated_search_return_uses_real_finish_and_scheduler_path() {
     while gtk::glib::MainContext::default().pending() {
         gtk::glib::MainContext::default().iteration(false);
     }
-    assert!(button.has_focus());
+    // Broadway may still be acknowledging activation after the independent
+    // window closes. Test the root's focus target, not compositor activation.
+    assert_eq!(
+        gtk::prelude::RootExt::focus(&focus_window),
+        Some(button.upcast::<gtk::Widget>()),
+        "a stale launcher callback stole the deliberate focus target"
+    );
     island.destroy();
 }
 
@@ -454,7 +511,7 @@ fn circle_integration_real_widgets_and_callbacks() {
         select: Rc::new(|_| {}),
         tarragon_status: Rc::new(|| {}),
         tarragon_reload: Rc::new(|| {}),
-        load_preview: Rc::new(|_, _| {}),
+        load_preview: Rc::new(|_, _, _| {}),
         media_play_pause: Rc::new(|_| {}),
         media_next: Rc::new(|_| {}),
         media_previous: Rc::new(|_| {}),
@@ -1441,7 +1498,7 @@ fn real_circle_allocations_and_gtk_picking_survive_scale_and_rebuilds() {
                 select: Rc::new(|_| {}),
                 tarragon_status: Rc::new(|| {}),
                 tarragon_reload: Rc::new(|| {}),
-                load_preview: Rc::new(|_, _| {}),
+                load_preview: Rc::new(|_, _, _| {}),
                 media_play_pause: Rc::new(|_| {}),
                 media_next: Rc::new(|_| {}),
                 media_previous: Rc::new(|_| {}),
@@ -1829,7 +1886,7 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
         select: Rc::new(|_| {}),
         tarragon_status: Rc::new(|| {}),
         tarragon_reload: Rc::new(|| {}),
-        load_preview: Rc::new(|_, _| {}),
+        load_preview: Rc::new(|_, _, _| {}),
         media_play_pause: Rc::new(|_| {}),
         media_next: Rc::new(|_| {}),
         media_previous: Rc::new(|_| {}),

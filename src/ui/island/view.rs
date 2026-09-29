@@ -93,7 +93,7 @@ impl IslandWindow {
         if self.dismiss_catcher_needed() {
             self.present_dismiss_catcher_behind_main();
         } else {
-            self.dismiss_window.set_visible(false);
+            self.hide_dismiss_catcher();
         }
     }
 
@@ -185,7 +185,7 @@ impl IslandWindow {
             self.window.present();
         } else if !self.dismiss_catcher_needed() {
             self.window.set_layer(gtk4_layer_shell::Layer::Top);
-            self.dismiss_window.set_visible(false);
+            self.hide_dismiss_catcher();
         }
         if self.current_view.get() == view && self.geometry.get() == target {
             self.refresh_keyboard_mode();
@@ -549,6 +549,7 @@ impl IslandWindow {
             } else {
                 finalize_integrated_search(&self.search, false);
                 self.restore_integrated_search_host();
+                self.release_search_content();
             }
         }
     }

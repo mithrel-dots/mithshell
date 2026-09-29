@@ -439,7 +439,7 @@ mod tests {
             select: Rc::new(|_: TarragonSelection| {}),
             tarragon_status: Rc::new(|| {}),
             tarragon_reload: Rc::new(|| {}),
-            load_preview: Rc::new(|_, _| {}),
+            load_preview: Rc::new(|_, _, _| {}),
             media_play_pause: Rc::new(|_| {}),
             media_next: Rc::new(|_| {}),
             media_previous: Rc::new(|_| {}),

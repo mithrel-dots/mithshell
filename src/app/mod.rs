@@ -1645,8 +1645,9 @@ impl Controller {
             });
             let preview_sender = self.preview_sender.clone();
             let preview_monitor = connector.clone();
-            let load_preview = Rc::new(move |generation: u64, path: String| {
+            let load_preview = Rc::new(move |generation: u64, path: String, image_size| {
                 let _ = preview_sender.try_send(PreviewRequest {
+                    image_size,
                     monitor: preview_monitor.clone(),
                     generation,
                     path: PathBuf::from(path),

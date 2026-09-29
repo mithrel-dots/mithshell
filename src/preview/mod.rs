@@ -61,6 +61,7 @@ pub struct PreviewRequest {
     pub monitor: String,
     pub generation: u64,
     pub path: PathBuf,
+    pub image_size: (i32, i32),
 }
 
 #[derive(Debug, Clone)]
@@ -82,9 +83,33 @@ pub enum PreviewContent {
         text: String,
         highlights: Vec<HighlightSpan>,
     },
-    Image(PathBuf),
-    VideoThumbnail(PathBuf),
+    Image(PreviewImage),
+    VideoThumbnail(PreviewImage),
     Generic,
+}
+
+/// Display-sized pixels decoded on the loader thread, never the original file
+/// handed to GtkPicture (which would decode and retain it at full resolution).
+#[derive(Debug, Clone)]
+pub struct PreviewImage {
+    pub width: i32,
+    pub height: i32,
+    pub stride: usize,
+    pub alpha: bool,
+    pub pixels: Vec<u8>,
+}
+
+fn preview_image(path: &Path, size: (i32, i32)) -> Result<PreviewImage, String> {
+    let pixbuf =
+        gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, size.0.max(1), size.1.max(1), true)
+            .map_err(|error| format!("cannot decode image preview: {error}"))?;
+    Ok(PreviewImage {
+        width: pixbuf.width(),
+        height: pixbuf.height(),
+        stride: pixbuf.rowstride() as usize,
+        alpha: pixbuf.has_alpha(),
+        pixels: pixbuf.read_pixel_bytes().as_ref().to_vec(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +132,7 @@ impl PreviewEngine {
         }
     }
 
-    fn load(&mut self, path: &Path) -> Result<PreviewData, String> {
+    fn load(&mut self, path: &Path, image_size: (i32, i32)) -> Result<PreviewData, String> {
         let path = path
             .canonicalize()
             .map_err(|error| format!("cannot resolve preview: {error}"))?;
@@ -119,10 +144,10 @@ impl PreviewEngine {
         }
 
         if is_image_path(&path) {
-            return load_image(&path, &file_metadata);
+            return load_image(&path, &file_metadata, image_size);
         }
         if is_video_path(&path) {
-            return load_video(&path, &file_metadata);
+            return load_video(&path, &file_metadata, image_size);
         }
         if let Some(language) = detect_language(&path, None) {
             return self.load_text(&path, &file_metadata, Some(language));
@@ -258,7 +283,7 @@ fn run_loader(receiver: Receiver<PreviewRequest>, sender: Sender<PreviewEvent>) 
     while let Ok(request) = receiver.recv_blocking() {
         let pending = coalesce_requests(request, std::iter::from_fn(|| receiver.try_recv().ok()));
         for request in pending {
-            let result = engine.load(&request.path);
+            let result = engine.load(&request.path, request.image_size);
             let _ = sender.send_blocking(PreviewEvent {
                 monitor: request.monitor,
                 generation: request.generation,
@@ -285,7 +310,11 @@ fn coalesce_requests(
     pending.into_values().collect()
 }
 
-fn load_image(path: &Path, metadata: &fs::Metadata) -> Result<PreviewData, String> {
+fn load_image(
+    path: &Path,
+    metadata: &fs::Metadata,
+    size: (i32, i32),
+) -> Result<PreviewData, String> {
     if extension(path) == "svg" {
         let mut source = String::new();
         File::open(path)
@@ -299,7 +328,7 @@ fn load_image(path: &Path, metadata: &fs::Metadata) -> Result<PreviewData, Strin
         }
         fields.push(("Format".into(), "SVG".into()));
         return Ok(PreviewData {
-            content: PreviewContent::Image(path.to_owned()),
+            content: PreviewContent::Image(preview_image(path, size)?),
             metadata: fields,
         });
     }
@@ -317,7 +346,7 @@ fn load_image(path: &Path, metadata: &fs::Metadata) -> Result<PreviewData, Strin
         fields.push(("Format".into(), format!("{format:?}").to_uppercase()));
     }
     Ok(PreviewData {
-        content: PreviewContent::Image(path.to_owned()),
+        content: PreviewContent::Image(preview_image(path, size)?),
         metadata: fields,
     })
 }
@@ -370,7 +399,11 @@ impl std::fmt::Display for SvgNumber {
     }
 }
 
-fn load_video(path: &Path, metadata: &fs::Metadata) -> Result<PreviewData, String> {
+fn load_video(
+    path: &Path,
+    metadata: &fs::Metadata,
+    size: (i32, i32),
+) -> Result<PreviewData, String> {
     let probe = run_ffprobe(path)?;
     let stream = probe
         .streams
@@ -419,7 +452,7 @@ fn load_video(path: &Path, metadata: &fs::Metadata) -> Result<PreviewData, Strin
     }
     let thumbnail = video_thumbnail(path, metadata)?;
     Ok(PreviewData {
-        content: PreviewContent::VideoThumbnail(thumbnail),
+        content: PreviewContent::VideoThumbnail(preview_image(&thumbnail, size)?),
         metadata: fields,
     })
 }
@@ -656,6 +689,7 @@ mod tests {
 
     fn request(monitor: &str, generation: u64, path: &str) -> PreviewRequest {
         PreviewRequest {
+            image_size: (640, 480),
             monitor: monitor.to_owned(),
             generation,
             path: PathBuf::from(path),
@@ -795,7 +829,7 @@ mod tests {
         let path = temporary_path("rs");
         fs::write(&path, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
         let mut engine = PreviewEngine::new();
-        let preview = engine.load(&path).unwrap();
+        let preview = engine.load(&path, (640, 480)).unwrap();
         fs::remove_file(path).unwrap();
         let PreviewContent::Text { text, highlights } = preview.content else {
             panic!("expected text preview");
@@ -815,13 +849,31 @@ mod tests {
         let path = temporary_path("png");
         image::RgbImage::new(3, 2).save(&path).unwrap();
         let mut engine = PreviewEngine::new();
-        let preview = engine.load(&path).unwrap();
+        let preview = engine.load(&path, (640, 480)).unwrap();
         fs::remove_file(path).unwrap();
         assert!(matches!(preview.content, PreviewContent::Image(_)));
         assert!(
             preview
                 .metadata
                 .contains(&("Resolution".into(), "3 x 2".into()))
+        );
+    }
+
+    #[test]
+    fn image_preview_retains_only_display_sized_pixels_and_original_metadata() {
+        let path = temporary_path("png");
+        image::RgbImage::new(2400, 1200).save(&path).unwrap();
+        let preview = PreviewEngine::new().load(&path, (320, 240)).unwrap();
+        fs::remove_file(path).unwrap();
+        let PreviewContent::Image(image) = preview.content else {
+            panic!("expected image")
+        };
+        assert_eq!((image.width, image.height), (320, 160));
+        assert!(image.pixels.len() <= 320 * 160 * 4);
+        assert!(
+            preview
+                .metadata
+                .contains(&("Resolution".into(), "2400 x 1200".into()))
         );
     }
 

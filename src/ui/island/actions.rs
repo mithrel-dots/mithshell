@@ -12,7 +12,7 @@ pub type ValueAction = Rc<dyn Fn(u8)>;
 pub type SearchAction = Rc<dyn Fn(String)>;
 pub type SelectionAction = Rc<dyn Fn(TarragonSelection)>;
 pub type UnitAction = Rc<dyn Fn()>;
-pub type PreviewAction = Rc<dyn Fn(u64, String)>;
+pub type PreviewAction = Rc<dyn Fn(u64, String, (i32, i32))>;
 /// Argument is the target MPRIS player's full D-Bus service name.
 pub type MediaAction = Rc<dyn Fn(String)>;
 pub type NotificationCloseAction = Rc<dyn Fn(u32)>;

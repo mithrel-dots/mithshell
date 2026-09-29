@@ -395,7 +395,7 @@ fn highlight_color(name: &str) -> &'static str {
 
 impl IslandWindow {
     /// Moves the modern launcher widget between its independent scroller and
-    /// the shared island canvas. The layer window itself never changes size.
+    /// the shared logical canvas, whose allocation stays fixed across views.
     pub(super) fn ensure_integrated_search_host(&self) {
         let shared_canvas = scrolled_window_contains(&self.surface, &self.content);
         if !shared_canvas {
@@ -481,7 +481,9 @@ impl IslandWindow {
         // Match the query this island actually asked for. Comparing against the
         // live entry text instead would drop every snapshot whenever the user
         // typed while results were in flight, pinning the UI on "SEARCHING".
-        if self.search_dispatched.borrow().as_deref() != Some(snapshot.input.as_str()) {
+        if !self.search_open.get()
+            || self.search_dispatched.borrow().as_deref() != Some(snapshot.input.as_str())
+        {
             return;
         }
         let selected_index = self
@@ -496,9 +498,11 @@ impl IslandWindow {
             let click = gtk::GestureClick::new();
             click.set_button(gtk::gdk::BUTTON_SECONDARY);
             let weak = Rc::downgrade(self);
-            let row_for_handler = row.clone();
+            let row_for_handler = row.downgrade();
             click.connect_pressed(move |_, _, _, _| {
-                if let Some(island) = weak.upgrade() {
+                if let Some(island) = weak.upgrade()
+                    && let Some(row_for_handler) = row_for_handler.upgrade()
+                {
                     island.search_results.select_row(Some(&row_for_handler));
                     island.open_search_actions(row_for_handler.index(), &row_for_handler);
                 }
@@ -591,7 +595,7 @@ impl IslandWindow {
         // widgets per plugin on every streamed snapshot is invisible work when
         // the pane is not on screen, and TarraGon sends one snapshot per plugin
         // completion.
-        if !self.search_plugin_toggle.is_active() {
+        if !self.search_open.get() || !self.search_plugin_toggle.is_active() {
             return;
         }
         clear_list_box(&self.search_plugins);
@@ -639,7 +643,7 @@ impl IslandWindow {
         self.search_preview_stack.set_visible_child_name("icon");
         set_preview_chrome_icon(&self.search_preview_icon, Icon::Search, self.metrics.icons);
         self.search_preview_picture
-            .set_filename(None::<&std::path::Path>);
+            .set_paintable(None::<&gtk::gdk::Paintable>);
         self.search_preview_text.buffer().set_text("");
         self.search_preview_file_meta.set_label("");
         self.search_preview_error.set_label("");
@@ -691,7 +695,7 @@ impl IslandWindow {
         self.search_preview_meta.set_label(&meta);
         if preview_changed {
             self.search_preview_picture
-                .set_filename(None::<&std::path::Path>);
+                .set_paintable(None::<&gtk::gdk::Paintable>);
             self.search_preview_text.buffer().set_text("");
             self.search_preview_error.set_label("");
             if result.icon.is_empty() {
@@ -717,9 +721,25 @@ impl IslandWindow {
                 let path = result.preview_path.clone();
                 glib::timeout_add_local_once(PREVIEW_DEBOUNCE, move || {
                     if let Some(island) = weak.upgrade()
+                        && island.search_open.get()
                         && island.preview_generation.get() == generation
                     {
-                        (island.actions.load_preview)(generation, path);
+                        // Decode at the panel's display resolution, including
+                        // output scaling, rather than retaining the source.
+                        let scale = island.search_preview_stack.scale_factor();
+                        let size = (
+                            island
+                                .search_preview_stack
+                                .width()
+                                .max(island.metrics.spacing(SEARCH_PREVIEW_MIN_WIDTH))
+                                * scale,
+                            island
+                                .search_preview_stack
+                                .height()
+                                .max(island.metrics.spacing(190))
+                                * scale,
+                        );
+                        (island.actions.load_preview)(generation, path, size);
                     }
                 });
             }
@@ -789,7 +809,7 @@ impl IslandWindow {
     }
 
     pub fn apply_file_preview(&self, generation: u64, result: Result<PreviewData, String>) {
-        if self.preview_generation.get() != generation {
+        if !self.search_open.get() || self.preview_generation.get() != generation {
             return;
         }
         let data = match result {
@@ -830,8 +850,19 @@ impl IslandWindow {
                 });
                 self.search_preview_stack.set_visible_child_name("text");
             }
-            PreviewContent::Image(path) | PreviewContent::VideoThumbnail(path) => {
-                self.search_preview_picture.set_filename(Some(path));
+            PreviewContent::Image(image) | PreviewContent::VideoThumbnail(image) => {
+                let texture = gtk::gdk::MemoryTexture::new(
+                    image.width,
+                    image.height,
+                    if image.alpha {
+                        gtk::gdk::MemoryFormat::R8g8b8a8
+                    } else {
+                        gtk::gdk::MemoryFormat::R8g8b8
+                    },
+                    &glib::Bytes::from_owned(image.pixels),
+                    image.stride,
+                );
+                self.search_preview_picture.set_paintable(Some(&texture));
                 self.search_preview_stack.set_visible_child_name("picture");
             }
             PreviewContent::Generic => {
@@ -1062,7 +1093,11 @@ impl IslandWindow {
             self.finish_view(destination);
         } else {
             self.search_window.set_visible(false);
+            if self.search_window.is_realized() {
+                gtk::prelude::WidgetExt::unrealize(&self.search_window);
+            }
         }
+        self.release_search_content();
         self.search.set_opacity(1.0);
         self.window
             .set_layer(if self.dashboard_open.get() || self.weather_open.get() {
@@ -1071,6 +1106,22 @@ impl IslandWindow {
                 Layer::Top
             });
         self.refresh_keyboard_mode();
+    }
+
+    pub(super) fn release_search_content(&self) {
+        // A temporary OSD can cover the launcher without closing its session.
+        if self.search_open.get() {
+            return;
+        }
+        self.search_generation
+            .set(self.search_generation.get().wrapping_add(1));
+        self.search_dispatched.borrow_mut().take();
+        self.search_snapshot.borrow_mut().take();
+        clear_list_box(&self.search_results);
+        clear_list_box(&self.search_plugins);
+        if self.search_preview_key.borrow().is_some() {
+            self.clear_search_preview();
+        }
     }
 
     pub(super) fn schedule_search(self: &Rc<Self>, text: String) {
