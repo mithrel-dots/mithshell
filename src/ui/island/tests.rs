@@ -2212,6 +2212,20 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
     );
     pump(Duration::from_millis(520));
     let resting = animated.geometry.get();
+    // The compositor may scale the entire layer surface while negotiating a
+    // resize. GTK-only geometry checks miss that squash/stretch, so sample the
+    // native allocation through hover, reversal, and page transitions too.
+    let native = animated.focus_root.borrow().clone();
+    let native_size = (native.width(), native.height());
+    let native_sizes = Rc::new(RefCell::new(Vec::new()));
+    let sizes = native_sizes.clone();
+    let weak = native.downgrade();
+    let clock = native.frame_clock().expect("mapped island frame clock");
+    let sample = clock.connect_after_paint(move |_| {
+        if let Some(native) = weak.upgrade() {
+            sizes.borrow_mut().push((native.width(), native.height()));
+        }
+    });
     animated.set_pointer_in_hover_region(true);
     assert!(animated.dashboard.is_visible());
     assert_eq!(
@@ -2422,6 +2436,13 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
         animated.presentation_target_geometry(View::Compact)
     );
     assert_eq!(animated.compact_date.opacity(), 1.0);
+    clock.disconnect(sample);
+    let sizes = native_sizes.borrow();
+    assert!(!sizes.is_empty(), "expected painted animation frames");
+    assert!(
+        sizes.iter().all(|size| *size == native_size),
+        "native canvas resized during animation: resting={native_size:?}, frames={sizes:?}"
+    );
     animated.destroy();
 }
 

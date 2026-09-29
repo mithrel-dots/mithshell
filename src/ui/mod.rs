@@ -1,3 +1,4 @@
+mod canvas;
 mod format;
 pub(crate) mod icon;
 mod island;

@@ -47,7 +47,8 @@ use crate::tarragon::{TarragonSnapshot, TarragonStatus};
 use crate::ui::icon::{self, Icon};
 
 const WINDOW_WIDTH: i32 = 860;
-// A stable backing canvas avoids stale opaque rectangles after launcher animations.
+// A stable native canvas avoids compositor squash/stretch on hover and stale
+// rectangles during launcher animations. Animate only the child widgets.
 const WINDOW_HEIGHT: i32 = 900;
 const COMPACT_WIDTH: i32 = 224;
 const COMPACT_HEIGHT: i32 = 32;

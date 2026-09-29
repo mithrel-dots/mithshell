@@ -65,9 +65,9 @@ impl IslandWindow {
         if let Some(class) = island.metrics.css_class() {
             focus_window.add_css_class(class);
         }
+        let canvas = island.window.child().expect("island canvas");
         island.window.set_child(None::<&gtk::Widget>);
-        focus_window.set_child(Some(&island.fixed));
-        focus_window.set_default_size(island.metrics.window_width, island.metrics.window_height);
+        focus_window.set_child(Some(&canvas));
         focus_window.present();
         *island.focus_root.borrow_mut() = focus_window.upcast::<gtk::Widget>();
         island
@@ -169,7 +169,9 @@ impl IslandWindow {
 
         let fixed = Fixed::new();
         fixed.set_size_request(metrics.window_width, metrics.window_height);
-        window.set_child(Some(&fixed));
+        let canvas =
+            crate::ui::canvas::Canvas::new(&fixed, metrics.window_width, metrics.window_height);
+        window.set_child(Some(&canvas));
 
         let hover_region = gtk::Box::new(Orientation::Vertical, 0);
         // Motion hot-zone only; it must never win GTK picking over the pill.
@@ -281,7 +283,11 @@ impl IslandWindow {
 
         let search_fixed = Fixed::new();
         search_fixed.set_size_request(metrics.search_window_width, metrics.search_window_height);
-        search_window.set_child(Some(&search_fixed));
+        search_window.set_child(Some(&crate::ui::canvas::Canvas::new(
+            &search_fixed,
+            metrics.search_window_width,
+            metrics.search_window_height,
+        )));
 
         let search_surface = gtk::ScrolledWindow::new();
         search_surface.add_css_class("island-surface");
@@ -654,6 +660,8 @@ impl IslandWindow {
             "scale": self.metrics.scale,
             "width": geometry.width.round() as i32,
             "height": geometry.height.round() as i32,
+            "surface_width": self.window.width(),
+            "surface_height": self.window.height(),
             "y": geometry.y.round() as i32,
             "compact_visible": self.compact.is_visible(),
             "compact_opacity": self.compact.opacity(),

@@ -217,6 +217,8 @@ pub(crate) struct MediaCircle {
     icon_style: crate::config::IconStyle,
     current_service: RefCell<Option<String>>,
     tick: RefCell<Option<glib::SourceId>>,
+    last_fraction: Cell<Option<f64>>,
+    last_time: Cell<Option<(i64, Option<i64>)>>,
     artwork_url: RefCell<Option<String>>,
     artwork_texture: RefCell<Option<gdk::Texture>>,
     artwork_generation: Cell<u64>,
@@ -298,6 +300,8 @@ impl MediaCircle {
             icon_style: metrics.icons,
             current_service: RefCell::new(None),
             tick: RefCell::new(None),
+            last_fraction: Cell::new(None),
+            last_time: Cell::new(None),
             artwork_url: RefCell::new(None),
             artwork_texture: RefCell::new(None),
             artwork_generation: Cell::new(0),
@@ -315,7 +319,7 @@ impl MediaCircle {
         self.host.clone()
     }
 
-    pub(super) fn layout_presentation(&self, expansion: f64) {
+    pub(super) fn layout_presentation(self: &Rc<Self>, expansion: f64) {
         let Some(frame) = self.host.frame() else {
             return;
         };
@@ -349,6 +353,8 @@ impl MediaCircle {
         self.time_label
             .set_opacity(((geometry.expansion - 0.7) / 0.3).clamp(0.0, 1.0));
         self.progress_area.queue_draw();
+        self.redraw_progress();
+        self.restart_timer();
     }
 
     /// `None` hides the circle. A titled paused/stopped player remains valid so
@@ -528,6 +534,20 @@ impl MediaCircle {
 
     fn connect_actions(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
+        self.progress_area.connect_map(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.last_fraction.set(None);
+                owner.redraw_progress();
+                owner.restart_timer();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.progress_area.connect_unmap(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.stop_timer();
+            }
+        });
+        let weak = Rc::downgrade(self);
         self.source_scroll.connect_scroll(move |_, dx, dy| {
             if weak
                 .upgrade()
@@ -555,8 +575,11 @@ impl MediaCircle {
     }
 
     fn restart_timer(self: &Rc<Self>) {
-        self.stop_timer();
-        if !timer_needed(&self.progress.borrow()) {
+        if !self.needs_tick() {
+            self.stop_timer();
+            return;
+        }
+        if self.tick.borrow().is_some() {
             return;
         }
         let weak = Rc::downgrade(self);
@@ -569,7 +592,7 @@ impl MediaCircle {
             let done = snapshot.length_us.is_some_and(|length| {
                 length > 0 && interpolated_progress(&snapshot, Instant::now()) >= 1.0
             });
-            if done {
+            if done || !owner.needs_tick() {
                 // The callback is already executing, so do not call remove on
                 // its own SourceId. Dropping the handle clears the slot; Drop
                 // only removes sources which are still registered.
@@ -589,11 +612,32 @@ impl MediaCircle {
         }
     }
     fn redraw_progress(&self) {
-        let text = time_readout(&self.progress.borrow(), Instant::now());
-        if self.time_label.label().as_str() != text {
-            self.time_label.set_label(&text);
+        if !self.progress_area.is_mapped() {
+            return;
         }
-        self.progress_area.queue_draw();
+        let progress = self.progress.borrow();
+        let now = Instant::now();
+        let fraction = interpolated_progress(&progress, now);
+        if self.last_fraction.replace(Some(fraction)) != Some(fraction) {
+            self.progress_area.queue_draw();
+        }
+        if self.time_label.is_mapped() && self.time_label.opacity() > 0.0 {
+            let time = (
+                interpolated_position(&progress, now) / 1_000_000,
+                progress.length_us,
+            );
+            if self.last_time.replace(Some(time)) != Some(time) {
+                self.time_label.set_label(&time_readout(&progress, now));
+            }
+        }
+    }
+
+    fn needs_tick(&self) -> bool {
+        let progress = self.progress.borrow();
+        timer_needed(&progress)
+            && self.progress_area.is_mapped()
+            && (progress.length_us.is_some_and(|length| length > 0)
+                || (self.time_label.is_mapped() && self.time_label.opacity() > 0.0))
     }
 
     /// Called by theme/config redraw integration; the ring takes its color
@@ -901,6 +945,27 @@ mod tests {
         circle.update(Some(&state));
         assert_eq!(selected.get(), 0, "snapshot update switched sources");
         assert!(
+            circle.tick.borrow().is_none(),
+            "unmapped media needs no timer"
+        );
+        let window = gtk::Window::new();
+        window.set_child(Some(circle.host.widget()));
+        circle.host.render(
+            circle.host.revision(),
+            Some(super::super::circle::Frame {
+                rect: super::super::circle::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0,
+                },
+                radius: 16.0,
+            }),
+        );
+        circle.host.commit_page(circle.host.revision());
+        window.present();
+        while gtk::glib::MainContext::default().iteration(false) {}
+        assert!(
             circle.tick.borrow().is_some(),
             "known duration starts timer"
         );
@@ -910,6 +975,13 @@ mod tests {
         assert_eq!(selected.get(), 1, "user selection emits exactly once");
 
         circle.update(Some(&test_media_state(PlaybackStatus::Playing, None)));
+        assert!(
+            circle.tick.borrow().is_none(),
+            "unknown duration and hidden time are static"
+        );
+        circle.time_label.set_opacity(1.0);
+        circle.redraw_progress();
+        circle.restart_timer();
         assert!(
             circle.tick.borrow().is_some(),
             "unknown duration still advances elapsed time"
@@ -923,6 +995,19 @@ mod tests {
         circle.update(Some(&state));
         assert!(circle.tick.borrow().is_some());
         assert_eq!(circle.time_label.label(), "0:00 / 0:10");
+        window.set_visible(false);
+        assert!(
+            circle.tick.borrow().is_none(),
+            "unmapping stops interpolation"
+        );
+        window.present();
+        while gtk::glib::MainContext::default().iteration(false) {}
+        assert!(
+            circle.tick.borrow().is_some(),
+            "mapping resumes interpolation"
+        );
+        window.set_child(None::<&gtk::Widget>);
+        window.destroy();
         drop(circle);
         assert!(
             drawing_area.upgrade().is_none(),

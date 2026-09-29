@@ -233,6 +233,9 @@ impl IslandWindow {
     }
 
     pub fn update_visualizer(&self, levels: VisualizerLevels) {
+        if *self.media_levels.borrow() == levels {
+            return;
+        }
         *self.media_levels.borrow_mut() = levels;
         for area in [&self.media_visualizer, &self.compact_visualizer] {
             if self.visualizer_enabled && area.is_mapped() {

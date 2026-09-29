@@ -781,6 +781,14 @@ session-long process; on an NVIDIA system this is the difference between
 224 MB and 85 MB of RSS. Export `GSK_RENDERER` to override it, for example
 `GSK_RENDERER=ngl`.
 
+With Cairo, each island canvas caches static CSS shadows and converted texture
+pixels (at most 8 MiB / 128 entries), evicting content when it leaves the render
+tree. The spectrum still runs at 30 Hz and visible media progress at 20 Hz;
+unchanged spectrum frames, unknown-duration rings, and hidden time labels do
+not trigger redundant redraws. The logical and native canvases remain fixed-size
+throughout hover and page transitions: only child widgets animate, avoiding
+compositor scaling of the entire layer surface when its buffer size changes.
+
 ### Benchmarking
 
 Search latency is instrumented behind an environment variable, so it costs
