@@ -226,7 +226,10 @@ impl IslandWindow {
         if let Some(circles) = self.circles.borrow().as_ref() {
             circles.update_media(selected.as_ref());
         }
-        *self.latest_media.borrow_mut() = selected;
+        // Source scrolling replays this snapshot through update_media. Keep
+        // discovery's playing-first state, not the circle's selected player,
+        // so browsing paused sources cannot hide the pill's live visualizer.
+        *self.latest_media.borrow_mut() = state.cloned();
     }
 
     pub fn update_visualizer(&self, levels: VisualizerLevels) {

@@ -583,6 +583,7 @@ fn circle_integration_real_widgets_and_callbacks() {
     };
     let mut paused = media.clone();
     paused.status = PlaybackStatus::Paused;
+    paused.players[0].status = PlaybackStatus::Paused;
     island.update_media(Some(&paused));
     assert!(
         island.compact_visualizer_revealer.reveals_child(),
@@ -599,7 +600,52 @@ fn circle_integration_real_widgets_and_callbacks() {
         *island.media_levels.borrow(),
         [75; crate::media::VISUALIZER_BARS]
     );
+    let controllers = island
+        .circles
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .test_host(0)
+        .unwrap()
+        .widget()
+        .observe_controllers();
+    let media_scroll = (0..controllers.n_items())
+        .find_map(|index| {
+            controllers
+                .item(index)
+                .and_downcast::<gtk::EventControllerScroll>()
+        })
+        .expect("production media source scroll controller");
+    // No new MPRIS snapshot arrives between wheel events. Browsing the paused
+    // player must not replace the playing snapshot that drives the visualizer.
+    for (direction, service) in [
+        (1.0_f64, "org.test.Second"),
+        (1.0_f64, "org.test.Player"),
+        (-1.0_f64, "org.test.Second"),
+    ] {
+        assert!(media_scroll.emit_by_name::<bool>("scroll", &[&0.0_f64, &direction]));
+        assert_eq!(
+            island
+                .circles
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .test_media_service()
+                .as_deref(),
+            Some(service),
+        );
+        drain_visualizer();
+        assert!(
+            island.compact_visualizer_revealer.reveals_child(),
+            "source scrolling must retain the visualizer while another player is playing"
+        );
+        assert!(island.compact_visualizer.is_mapped());
+        assert_eq!(island.current_view.get(), View::Compact);
+    }
+    assert_eq!(calls.get(), 0, "browsing sources must not change playback");
     island.update_media(Some(&paused));
+    // Scrolling during a real pause must not cancel its pending hide either.
+    assert!(media_scroll.emit_by_name::<bool>("scroll", &[&0.0_f64, &1.0_f64]));
     drain_visualizer();
     assert!(!island.compact_visualizer_revealer.reveals_child());
     assert!(island.compact_width.get() <= playing_width);
