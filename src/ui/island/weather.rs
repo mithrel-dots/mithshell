@@ -10,7 +10,6 @@ use crate::weather::WeatherProvider;
 
 pub(super) struct WeatherWidgets {
     pub(super) root: gtk::Box,
-    pub(super) back_button: gtk::Button,
     pub(super) eyebrow: gtk::Label,
     pub(super) location: gtk::Label,
     pub(super) hero_icon: gtk::DrawingArea,
@@ -32,10 +31,6 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
     root.set_valign(Align::Start);
 
     let header = gtk::Box::new(Orientation::Horizontal, metrics.spacing(12));
-    let back_button = icon::icon_button(Icon::Back, metrics.icons);
-    back_button.add_css_class("close-button");
-    back_button.set_tooltip_text(Some("Back to dashboard"));
-    back_button.set_valign(Align::Center);
 
     let heading = gtk::Box::new(Orientation::Vertical, 0);
     heading.set_hexpand(true);
@@ -55,7 +50,6 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
     hero_temp.add_css_class("weather-hero-temp");
     hero_temp.set_valign(Align::Center);
 
-    header.append(&back_button);
     header.append(&heading);
     header.append(&hero_icon);
     header.append(&hero_temp);
@@ -85,7 +79,6 @@ pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> Weath
 
     WeatherWidgets {
         root,
-        back_button,
         eyebrow,
         location,
         hero_icon,

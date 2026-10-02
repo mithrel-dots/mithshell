@@ -55,16 +55,12 @@ pub struct IslandActions {
     pub tray_menu_event: TrayMenuEventAction,
 }
 
-/// Buttons owned by `dashboard_view`/`search_view`/`weather_view` that need
+/// Buttons owned by `dashboard_view`/`search_view` that need
 /// click handlers wired up centrally in `connect_interactions`. Grouped into
 /// one struct instead of separate parameters purely to keep that function's
 /// signature manageable.
 pub(super) struct OverlayButtons<'a> {
-    pub(super) close_button: &'a gtk::Button,
-    pub(super) search_button: &'a gtk::Button,
-    pub(super) weather_button: &'a gtk::Button,
     pub(super) mute_button: &'a gtk::Button,
     pub(super) search_back_button: &'a gtk::Button,
     pub(super) search_reload_button: &'a gtk::Button,
-    pub(super) weather_back_button: &'a gtk::Button,
 }

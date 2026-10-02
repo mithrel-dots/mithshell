@@ -142,6 +142,15 @@ impl IslandWindow {
     }
 
     pub(super) fn set_view(self: &Rc<Self>, view: View) {
+        // Synchronize even on no-op reconciliation and external navigation.
+        // Toggled callbacks must not turn this projection into another open().
+        self.updating_view_switch.set(true);
+        if view == View::Weather {
+            self.weather_tab.set_active(true);
+        } else {
+            self.dashboard_tab.set_active(true);
+        }
+        self.updating_view_switch.set(false);
         if view != View::Search {
             self.search_focus_generation
                 .set(self.search_focus_generation.get().wrapping_add(1));

@@ -76,13 +76,9 @@ impl IslandWindow {
         _dismiss_area: &gtk::Box,
     ) {
         let OverlayButtons {
-            close_button,
-            search_button,
-            weather_button,
             mute_button,
             search_back_button,
             search_reload_button,
-            weather_back_button,
         } = buttons;
         for pill in [&self.compact, self.media.upcast_ref()] {
             let click = GestureClick::new();
@@ -220,25 +216,48 @@ impl IslandWindow {
         }
 
         let weak = Rc::downgrade(self);
-        search_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.open_search();
-            }
-        });
-
-        let weak = Rc::downgrade(self);
         search_back_button.connect_clicked(move |_| {
             if let Some(island) = weak.upgrade() {
                 island.open();
             }
         });
 
-        let weak = Rc::downgrade(self);
-        weather_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.open_weather();
-            }
-        });
+        for (tab, weather) in [(&self.dashboard_tab, false), (&self.weather_tab, true)] {
+            let weak = Rc::downgrade(self);
+            tab.connect_toggled(move |tab| {
+                if let Some(island) = weak.upgrade()
+                    && tab.is_active()
+                    && !island.updating_view_switch.get()
+                {
+                    if weather {
+                        island.open_weather();
+                    } else {
+                        island.open();
+                    }
+                }
+            });
+            let keys = gtk::EventControllerKey::new();
+            let weak = Rc::downgrade(self);
+            keys.connect_key_pressed(move |_, key, _, _| {
+                let target_weather = match key {
+                    gdk::Key::Left | gdk::Key::Right => !weather,
+                    gdk::Key::Home => false,
+                    gdk::Key::End => true,
+                    _ => return glib::Propagation::Proceed,
+                };
+                if let Some(island) = weak.upgrade() {
+                    let target = if target_weather {
+                        &island.weather_tab
+                    } else {
+                        &island.dashboard_tab
+                    };
+                    target.set_active(true);
+                    target.grab_focus();
+                }
+                glib::Propagation::Stop
+            });
+            tab.add_controller(keys);
+        }
 
         let weak = Rc::downgrade(self);
         mute_button.connect_clicked(move |_| {
@@ -250,15 +269,6 @@ impl IslandWindow {
                     .volume_generation
                     .set(island.volume_generation.get().wrapping_add(1));
                 (island.actions.toggle_mute)();
-            }
-        });
-
-        let weak = Rc::downgrade(self);
-        weather_back_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.weather_open.set(false);
-                island.dashboard_open.set(true);
-                island.reconcile_view();
             }
         });
 
@@ -527,13 +537,6 @@ impl IslandWindow {
             }
         });
         self.weather.add_controller(weather_header_click);
-
-        let weak = Rc::downgrade(self);
-        close_button.connect_clicked(move |_| {
-            if let Some(island) = weak.upgrade() {
-                island.close();
-            }
-        });
 
         let clear_notifications = self.actions.notification_clear_all.clone();
         self.notification_clear_button

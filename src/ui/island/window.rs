@@ -453,6 +453,9 @@ impl IslandWindow {
             latest_media: RefCell::new(None),
             selected_media_service: RefCell::new(None),
             uptime_value: dashboard_widgets.uptime_value,
+            dashboard_tab: dashboard_widgets.dashboard_tab,
+            weather_tab: dashboard_widgets.weather_tab,
+            updating_view_switch: Cell::new(false),
             last_update_value: dashboard_widgets.last_update_value,
             active_eyebrow: dashboard_widgets.active_eyebrow,
             active_title: dashboard_widgets.active_title,
@@ -585,13 +588,9 @@ impl IslandWindow {
 
         island.connect_interactions(
             OverlayButtons {
-                close_button: &dashboard_widgets.close_button,
-                search_button: &dashboard_widgets.search_button,
-                weather_button: &dashboard_widgets.weather_button,
                 mute_button: &island.mute_button,
                 search_back_button: &search_widgets.back_button,
                 search_reload_button: &search_widgets.reload_button,
-                weather_back_button: &weather_widgets.back_button,
             },
             &dismiss_area,
         );

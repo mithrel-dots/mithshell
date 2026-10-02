@@ -547,6 +547,39 @@ scale.control-scale slider {
   box-shadow: 0 2px 8px alpha(black, 0.34);
 }
 
+.dashboard-view-switch {
+  padding: 2px;
+  border: 1px solid alpha(@ms_outline_variant, 0.24);
+  border-radius: 8px;
+  background: alpha(@ms_surface_container, 0.8);
+}
+
+.dashboard-view-switch button {
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: @ms_on_surface_variant;
+  font-size: 10px;
+  box-shadow: none;
+}
+
+.dashboard-view-switch button:hover,
+.dashboard-view-switch button:checked {
+  background: alpha(@ms_on_surface, 0.12);
+  color: @ms_on_surface;
+}
+
+.dashboard-view-switch button:focus-visible {
+  outline: 2px solid @ms_primary;
+  outline-offset: -2px;
+}
+
+.scale-medium .dashboard-view-switch button { min-height: 30px; padding: 0 8px; font-size: 12px; }
+.scale-large .dashboard-view-switch button { min-height: 36px; padding: 0 9px; font-size: 14px; }
+
 .close-button {
   min-width: 26px;
   min-height: 26px;

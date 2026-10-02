@@ -28,9 +28,8 @@ pub(super) struct DashboardWidgets {
     pub(super) notification_inhibit_button: gtk::ToggleButton,
     pub(super) notification_list: gtk::Box,
     pub(super) notification_scroll: gtk::ScrolledWindow,
-    pub(super) weather_button: gtk::Button,
-    pub(super) search_button: gtk::Button,
-    pub(super) close_button: gtk::Button,
+    pub(super) dashboard_tab: gtk::ToggleButton,
+    pub(super) weather_tab: gtk::ToggleButton,
     pub(super) mute_button: gtk::Button,
 }
 
@@ -326,21 +325,20 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
     heading.append(&uptime_block);
     heading.append(&last_update_block);
 
-    let close_button = icon::icon_button(Icon::Close, metrics.icons);
-    close_button.add_css_class("close-button");
-    close_button.set_valign(Align::Center);
-    let search_button = icon::icon_button(Icon::Search, metrics.icons);
-    search_button.add_css_class("close-button");
-    search_button.set_tooltip_text(Some("Search with TarraGon"));
-    search_button.set_valign(Align::Center);
-    let weather_button = icon::icon_button(Icon::WeatherClear, metrics.icons);
-    weather_button.add_css_class("close-button");
-    weather_button.set_tooltip_text(Some("Weather forecast"));
-    weather_button.set_valign(Align::Center);
+    let view_switch = gtk::Box::new(Orientation::Horizontal, 0);
+    view_switch.add_css_class("dashboard-view-switch");
+    view_switch.set_valign(Align::Center);
+    view_switch.update_property(&[gtk::accessible::Property::Label("Dashboard or Weather")]);
+    let dashboard_tab = gtk::ToggleButton::with_label("Dashboard");
+    let weather_tab = gtk::ToggleButton::with_label("Weather");
+    weather_tab.set_group(Some(&dashboard_tab));
+    dashboard_tab.set_active(true);
+    dashboard_tab.set_tooltip_text(Some("Show dashboard"));
+    weather_tab.set_tooltip_text(Some("Show weather forecast"));
+    view_switch.append(&dashboard_tab);
+    view_switch.append(&weather_tab);
     header.append(&heading);
-    header.append(&weather_button);
-    header.append(&search_button);
-    header.append(&close_button);
+    header.append(&view_switch);
     let header_section = dashboard_section(&root, &header, true);
 
     let hardware = hardware_panel(metrics);
@@ -473,9 +471,8 @@ pub(super) fn dashboard_view(metrics: Metrics) -> DashboardWidgets {
         notification_inhibit_button,
         notification_list,
         notification_scroll,
-        weather_button,
-        search_button,
-        close_button,
+        dashboard_tab,
+        weather_tab,
         mute_button,
     }
 }

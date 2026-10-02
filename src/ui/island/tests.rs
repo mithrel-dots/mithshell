@@ -139,7 +139,7 @@ fn hover_geometry_is_forward_and_reversible() {
 
 #[test]
 #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
-fn weather_retains_dashboard_chrome_across_scales_and_transitions() {
+fn dashboard_weather_switch_retains_chrome_across_scales_and_transitions() {
     run_weather_regression(false);
 }
 
@@ -198,6 +198,11 @@ fn run_weather_regression(exit_lifecycle: bool) {
         for animated in [false, true] {
             let mut config = AppConfig::default();
             config.shell.scale = scale;
+            config.launcher.presentation = if animated {
+                LauncherPresentation::Integrated
+            } else {
+                LauncherPresentation::Independent
+            };
             let island = IslandWindow::new_for_test(
                 &app,
                 &monitor,
@@ -211,7 +216,60 @@ fn run_weather_regression(exit_lifecycle: bool) {
             pump(600);
             let header = &island.dashboard_sections[0];
             let header_parent = header.content.parent();
+            let switch = header.content.last_child().unwrap();
+            assert_eq!(
+                switch.first_child(),
+                Some(island.dashboard_tab.clone().upcast())
+            );
+            assert_eq!(
+                switch.last_child(),
+                Some(island.weather_tab.clone().upcast())
+            );
+            assert!(switch.next_sibling().is_none());
+            assert!(island.dashboard_tab.is_active());
+            assert!(!island.weather_tab.is_active());
+            assert_eq!(island.dashboard_tab.label().as_deref(), Some("Dashboard"));
+            assert_eq!(island.weather_tab.label().as_deref(), Some("Weather"));
+            assert!(island.dashboard_tab.tooltip_text().is_some());
+            assert!(island.weather_tab.tooltip_text().is_some());
+            // Clicking the selected segment must not restart a transition or
+            // run open() again (including its launcher dismissal side effects).
+            let generation = island.view_animation_generation.get();
+            let search_generation = island.search_animation_generation.get();
+            island.dashboard_tab.emit_clicked();
+            assert!(island.dashboard_tab.is_active());
+            assert_eq!(island.view_animation_generation.get(), generation);
+            assert_eq!(island.search_animation_generation.get(), search_generation);
+            island.weather_tab.emit_clicked();
+            assert_eq!(island.current_view.get(), View::Weather);
+            assert!(island.weather_tab.is_active());
+            let generation = island.view_animation_generation.get();
+            island.weather_tab.emit_clicked();
+            assert!(island.weather_tab.is_active());
+            assert_eq!(island.view_animation_generation.get(), generation);
+            // Reverse before the first animation frame, then navigate from
+            // the launcher and from the public IPC/programmatic entry points.
+            island.dashboard_tab.emit_clicked();
+            assert_eq!(island.current_view.get(), View::Dashboard);
+            island.open_search();
+            pump(600);
+            island.open();
+            assert!(island.dashboard_tab.is_active());
+            // Integrated launcher return restores its reparented pill on the
+            // scheduler/frame clock, independently of page animation settings.
+            pump(600);
             island.open_weather();
+            assert!(island.weather_tab.is_active());
+            assert!(!island.dashboard_tab.is_active());
+            assert!(
+                island
+                    .weather
+                    .first_child()
+                    .unwrap()
+                    .first_child()
+                    .unwrap()
+                    .is::<gtk::Box>()
+            );
             // The existing widgets remain mapped, opaque and interactive even
             // before the first frame of the forecast transition.
             assert!(island.compact.is_visible());
@@ -274,8 +332,7 @@ fn run_weather_regression(exit_lifecycle: bool) {
                     if outside_click {
                         island.test_emit_dismiss_click();
                     } else {
-                        let back = island.weather.first_child().unwrap().first_child().unwrap();
-                        assert!(back.grab_focus());
+                        assert!(island.weather_tab.grab_focus());
                         let controllers = island.window.observe_controllers();
                         assert!(
                             (0..controllers.n_items())
@@ -293,6 +350,7 @@ fn run_weather_regression(exit_lifecycle: bool) {
                         );
                     }
                     assert_eq!(island.current_view.get(), View::Compact);
+                    assert!(island.dashboard_tab.is_active());
                     assert!(!island.island_hovered.get());
                     if animated {
                         assert_outgoing();
@@ -323,11 +381,13 @@ fn run_weather_regression(exit_lifecycle: bool) {
                             <= f64::from(island.metrics.compact_height + 1)
                     );
                     island.open_weather();
+                    assert!(island.weather_tab.is_active());
                     pump(600);
                 }
-                // Back/Dashboard has the same outgoing-body ownership. A
+                // The Dashboard segment has the same outgoing-body ownership. A
                 // second logical target change must not discard that body.
-                island.open();
+                island.dashboard_tab.emit_clicked();
+                assert!(island.dashboard_tab.is_active());
                 if animated {
                     assert_outgoing();
                     pump(80);
@@ -394,30 +454,35 @@ fn run_weather_regression(exit_lifecycle: bool) {
                 f64::from(scroll_bounds.y() + scroll_bounds.height())
                     <= island.geometry.get().y + island.geometry.get().height + 1.0
             );
-            // Back remains wired to the dashboard, and its original close
-            // action remains available while weather is expanded.
-            let back = island
-                .weather
-                .first_child()
-                .unwrap()
-                .first_child()
-                .unwrap()
-                .downcast::<gtk::Button>()
-                .unwrap();
-            back.emit_clicked();
+            let switch_bounds = switch.compute_bounds(&header.content).unwrap();
+            assert!(switch_bounds.x() >= 0.0);
+            assert!(
+                switch_bounds.x() + switch_bounds.width() <= header.content.width() as f32 + 1.0
+            );
+            // Keyboard navigation selects and focuses the other segment.
+            let controllers = island.weather_tab.observe_controllers();
+            assert!(
+                (0..controllers.n_items())
+                    .filter_map(|index| controllers
+                        .item(index)
+                        .and_downcast::<gtk::EventControllerKey>())
+                    .any(|controller| controller.emit_by_name::<bool>(
+                        "key-pressed",
+                        &[
+                            &gtk::gdk::Key::Left,
+                            &0_u32,
+                            &gtk::gdk::ModifierType::empty()
+                        ]
+                    ))
+            );
             pump(600);
             assert_eq!(island.current_view.get(), View::Dashboard);
             assert!(island.hardware.root.is_visible());
             assert!(!island.weather_scroll.is_visible());
             island.open_weather();
             pump(80);
-            let close = header
-                .content
-                .last_child()
-                .unwrap()
-                .downcast::<gtk::Button>()
-                .unwrap();
-            close.emit_clicked();
+            // The persistent pill still dismisses without a header Exit.
+            island.toggle();
             pump(600);
             assert_eq!(island.current_view.get(), View::Compact);
             assert!(!island.weather_scroll.is_visible());
