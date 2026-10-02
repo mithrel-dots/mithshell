@@ -10,6 +10,18 @@ use gtk::{GestureClick, gdk, glib};
 use super::{IslandWindow, OverlayButtons, dominant_scroll_direction};
 
 impl IslandWindow {
+    fn dismiss_from_outside(self: &Rc<Self>) {
+        if self.dismiss_full_circle() {
+            return;
+        }
+        // Search can inherit a pinned Dashboard/Weather hover. Its pointer
+        // setter deliberately does not change that pin, so clear it explicitly
+        // before close() chooses the Compact destination, regardless of page.
+        self.set_pointer_in_hover_region(false);
+        self.island_hovered.set(false);
+        self.close();
+    }
+
     /// Exclusive layer focus on Hyprland routes pointer events outside the
     /// input region back to the exclusive native window, bypassing the Top
     /// catcher. Observe that native root too (including negative/out-of-window
@@ -38,12 +50,8 @@ impl IslandWindow {
             if started_outside.replace(false)
                 && let Some(island) = weak.upgrade()
                 && island.exclusive_click_is_outside(gesture, x, y, search)
-                && !island.dismiss_full_circle()
             {
-                // A redirected event need not produce a leave on the fixed
-                // canvas. Do not restore its stale pinned hover on close.
-                island.set_pointer_in_hover_region(false);
-                island.close();
+                island.dismiss_from_outside();
             }
         });
         root.add_controller(click);
@@ -582,11 +590,8 @@ impl IslandWindow {
             if super::window::trace_catcher() {
                 log::info!("dismiss catcher GTK release received");
             }
-            if let Some(island) = weak.upgrade()
-                && !island.dismiss_full_circle()
-            {
-                island.set_pointer_in_hover_region(false);
-                island.close();
+            if let Some(island) = weak.upgrade() {
+                island.dismiss_from_outside();
             }
         });
         // Listen at the window root.  The full-size child remains pickable for

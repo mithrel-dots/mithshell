@@ -87,6 +87,9 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
         and item.get("executable")
         and "lib" in item["target"]["kind"]
     )
+    frozen_binary = runtime / "gtk-tests"
+    shutil.copy2(binary, frozen_binary)
+    binary = str(frozen_binary)
     listed = subprocess.run(
         [binary, "--list", "--ignored"],
         cwd=ROOT,
@@ -107,6 +110,8 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
     )
     if available.get("ui::island::tests::exclusive_outside_click_routes_through_native_input", 0) != 1:
         raise RuntimeError("stale shared-cache build: expected new outside-dismiss native regression")
+    if available.get("ui::island::tests::dashboard_and_weather_search_outside_dismiss_returns_to_idle", 0) != 1:
+        raise RuntimeError("stale shared-cache build: expected pinned-search outside-dismiss regression")
     if not tests:
         raise RuntimeError("no ignored GTK regressions were discovered")
     invalid = [test for test in tests if available.get(test, 0) != 1]
@@ -161,6 +166,7 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                 command = [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"]
                 test_env = env.copy()
                 if test in (
+                    "ui::island::tests::dashboard_and_weather_search_outside_dismiss_returns_to_idle",
                     "app::tests::notification_history_actions_reach_dbus_after_popup_timeout",
                     "app::tests::notification_revisions_survive_burst_eviction_and_queued_commands",
                     "app::tests::notification_reload_reconciles_transients_and_history_bound",
@@ -168,8 +174,8 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                     "app::tests::notification_pill_backlog_and_transient_lifetimes_are_bounded",
                     "app::tests::notification_unpresented_transients_have_an_independent_lifetime_bound",
                 ):
-                    # This test serves notifications; it must never acquire
-                    # the real desktop's notification service name.
+                    # Notification-serving tests and the cross-page dismissal
+                    # fixture must not share the real desktop's session bus.
                     command = ["dbus-run-session", "--", *command]
                     test_env["MITHSHELL_PRIVATE_NOTIFICATION_BUS"] = "1"
                 completed = subprocess.run(

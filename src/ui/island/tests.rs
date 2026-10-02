@@ -12,6 +12,29 @@ use crate::weather::WeatherProvider;
 use gtk::prelude::*;
 use std::{cell::RefCell, rc::Rc};
 
+fn assert_outside_dismiss_idle(island: &IslandWindow) {
+    assert_eq!(island.current_view.get(), View::Compact);
+    assert!(!island.search_open.get());
+    assert!(!island.dashboard_open.get());
+    assert!(!island.weather_open.get());
+    assert!(!island.pointer_in_hover_region.get());
+    assert!(!island.island_hovered.get());
+    assert!(!island.tray_hovered.get());
+    assert!(!island.view_transition_active.get());
+    assert_eq!(
+        island.geometry.get(),
+        island.geometry_for_view(View::Compact)
+    );
+    assert!(!island.panel_scroll.is_visible());
+    assert!(!island.dashboard.is_visible());
+    assert!(!island.dashboard.can_target());
+    assert!(!island.hardware.root.is_drawable());
+    assert!(!island.weather_body_active.get());
+    assert!(!island.weather_scroll.is_visible());
+    assert!(!island.weather_scroll.can_target());
+    assert!(!island.dismiss_window.is_visible());
+}
+
 #[test]
 #[ignore = "requires scripts/run-outside-dismiss-hyprland.py; never run on the live desktop"]
 fn exclusive_outside_click_routes_through_native_input() {
@@ -100,9 +123,109 @@ fn exclusive_outside_click_routes_through_native_input() {
                 actions.clone(),
                 animations,
             );
+            if matches!(
+                std::env::var("MITHSHELL_TEST_PINNED_SOURCE").as_deref(),
+                Ok("dashboard" | "weather")
+            ) {
+                // Prime the intended modal stacking invariant before mapping
+                // its catcher. The nested backend can withhold the main frame
+                // acknowledgement if Overlay promotion is still uncommitted
+                // when the Top catcher maps, leaving header allocations stale.
+                gtk4_layer_shell::LayerShell::set_layer(
+                    &island.window,
+                    gtk4_layer_shell::Layer::Overlay,
+                );
+                island.window.queue_draw();
+            }
             app.activate();
             island.window.present();
             pump(Duration::from_millis(150));
+            let widget_point = |widget: &gtk::Widget| {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    let bounds = widget.compute_bounds(&island.fixed).unwrap();
+                    let x = f64::from(bounds.x() + bounds.width() / 2.0);
+                    let y = f64::from(bounds.y() + bounds.height() / 2.0);
+                    let picked = island.fixed.pick(x, y, gtk::PickFlags::DEFAULT);
+                    if island
+                        .island_input_region(island.geometry.get())
+                        .contains_point(x.floor() as i32, y.floor() as i32)
+                        && picked
+                            .as_ref()
+                            .is_some_and(|picked| picked == widget || picked.is_ancestor(widget))
+                    {
+                        return (
+                            (monitor.geometry().width() - island.window.width()) / 2 + x as i32,
+                            island.metrics.spacing(config.shell.top_margin) + y as i32,
+                        );
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "native widget not allocated/pickable in current input shape: bounds={bounds:?} geometry={:?} picked={picked:?}",
+                        island.geometry.get()
+                    );
+                    pump(Duration::from_millis(20));
+                }
+            };
+            let click_segment = |view| {
+                let button = if view == View::Weather {
+                    &island.weather_tab
+                } else {
+                    &island.dashboard_tab
+                };
+                let (x, y) = widget_point(button.upcast_ref());
+                click(x, y);
+                pump(Duration::from_millis(200));
+                assert_eq!(
+                    island.current_view.get(),
+                    view,
+                    "inside segment click must switch, never dismiss"
+                );
+                assert_eq!(island.dashboard_tab.is_active(), view == View::Dashboard);
+                assert_eq!(island.weather_tab.is_active(), view == View::Weather);
+            };
+            // Each pinned-source navigation fixture gets a fresh native client
+            // and compositor: the nested backend can otherwise retain stale
+            // allocations after an earlier integrated Search reparent/return.
+            if let Some(source) =
+                std::env::var("MITHSHELL_TEST_PINNED_SOURCE")
+                    .ok()
+                    .and_then(|source| match source.as_str() {
+                        "dashboard" => Some(View::Dashboard),
+                        "weather" => Some(View::Weather),
+                        _ => None,
+                    })
+            {
+                island.open();
+                pump(Duration::from_millis(800));
+                click_segment(View::Weather);
+                if source == View::Dashboard {
+                    click_segment(View::Dashboard);
+                }
+                assert!(
+                    island.island_hovered.get(),
+                    "physical segment click must pin the source page"
+                );
+                if presentation == LauncherPresentation::Integrated {
+                    island.open_search();
+                    pump(Duration::from_millis(800));
+                    assert!(island.search_open.get());
+                    assert_eq!(island.current_view.get(), View::Search);
+                    assert!(
+                        island.island_hovered.get(),
+                        "integrated Search inherits the page pin"
+                    );
+                }
+                // Independent Search's existing native coverage starts from
+                // Idle below; the reviewed inherited-pin case is integrated.
+                // Both presentations physically exercise the combined switch.
+                click(3700, 2050);
+                pump(Duration::from_millis(800));
+                assert_outside_dismiss_idle(&island);
+                island.destroy();
+                pump(Duration::from_millis(100));
+                continue;
+            }
             for weather in [false, true] {
                 if weather {
                     island.open_weather();
@@ -125,13 +248,8 @@ fn exclusive_outside_click_routes_through_native_input() {
                     "inside click dismissed page"
                 );
                 if !weather {
-                    let bounds = island.volume_scale.compute_bounds(&island.fixed).unwrap();
-                    click(
-                        (3840 - island.window.width()) / 2
-                            + (bounds.x() + bounds.width() / 2.0) as i32,
-                        island.metrics.spacing(config.shell.top_margin)
-                            + (bounds.y() + bounds.height() / 2.0) as i32,
-                    );
+                    let (x, y) = widget_point(island.volume_scale.upcast_ref());
+                    click(x, y);
                     assert_eq!(
                         island.current_view.get(),
                         expected,
@@ -380,16 +498,22 @@ fn hover_geometry_is_forward_and_reversible() {
 #[test]
 #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
 fn dashboard_weather_switch_retains_chrome_across_scales_and_transitions() {
-    run_weather_regression(false);
+    run_weather_regression(false, false);
 }
 
 #[test]
 #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
 fn weather_exit_preserves_body_and_reconciles_hover_on_escape_and_outside_click() {
-    run_weather_regression(true);
+    run_weather_regression(true, false);
 }
 
-fn run_weather_regression(exit_lifecycle: bool) {
+#[test]
+#[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
+fn dashboard_and_weather_search_outside_dismiss_returns_to_idle() {
+    run_weather_regression(false, true);
+}
+
+fn run_weather_regression(exit_lifecycle: bool, search_exit_only: bool) {
     use std::time::Duration;
     gtk::init().expect("GTK display");
     let _styles = crate::ui::install_styles(&crate::theme::generate_gtk());
@@ -456,6 +580,31 @@ fn run_weather_regression(exit_lifecycle: bool) {
                 animated,
             );
             app.activate();
+            if search_exit_only {
+                if presentation == LauncherPresentation::Integrated {
+                    for source in [View::Dashboard, View::Weather] {
+                        if source == View::Weather {
+                            island.open_weather();
+                        } else {
+                            island.open();
+                        }
+                        island.set_pointer_in_hover_region(true);
+                        pump(600);
+                        assert!(island.island_hovered.get());
+                        island.open_search();
+                        pump(600);
+                        assert_eq!(island.current_view.get(), View::Search);
+                        assert!(island.island_hovered.get());
+                        // Production catcher callback/lifecycle; native fixture
+                        // separately validates real exclusive pointer delivery.
+                        island.test_emit_dismiss_click();
+                        pump(600);
+                        assert_outside_dismiss_idle(&island);
+                    }
+                }
+                island.destroy();
+                continue;
+            }
             island.open();
             pump(600);
             let header = &island.dashboard_sections[0];
