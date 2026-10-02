@@ -425,10 +425,27 @@ impl IslandWindow {
         text.add_controller(click);
 
         row.append(&icon);
-        row.append(&text);
+        let content = gtk::Box::new(Orientation::Vertical, self.metrics.spacing(4));
+        content.set_hexpand(true);
+        content.append(&text);
+        // Real buttons expose every offered action to keyboard/AT users;
+        // keep them outside the content gesture so clicks cannot invoke twice.
+        for action in &notification.actions {
+            let button = gtk::Button::with_label(action.display_label());
+            button.add_css_class("close-button");
+            let invoke = self.actions.notification_invoke.clone();
+            let key = action.key.clone();
+            button.connect_clicked(move |_| invoke(id, key.clone()));
+            content.append(&button);
+        }
+        if notification.default_action().is_some() {
+            text.set_cursor_from_name(Some("pointer"));
+        }
+        row.append(&content);
 
         let dismiss = icon::icon_button(Icon::Close, self.metrics.icons);
         dismiss.add_css_class("notification-row-dismiss");
+        dismiss.set_tooltip_text(Some("Dismiss notification"));
         dismiss.set_valign(Align::Start);
         let action = self.actions.notification_dismiss.clone();
         dismiss.connect_clicked(move |_| action(id));
@@ -684,7 +701,7 @@ impl IslandWindow {
                     invoke_action(id, "default".to_owned());
                 }
             });
-            row.add_controller(click);
+            text.add_controller(click);
         }
 
         row

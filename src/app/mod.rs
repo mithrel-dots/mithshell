@@ -267,7 +267,10 @@ impl StartupServices {
 #[derive(Default)]
 struct NotificationEpochRegistry {
     next: u64,
+    /// Popup generations, removed when presentation times out.
     active: HashMap<u32, u64>,
+    /// Protocol-live records, including retained history after popup timeout.
+    live: HashMap<u32, Notification>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,10 +317,11 @@ impl NotificationEpochRegistry {
     }
 
     fn remove(&mut self, id: u32) -> bool {
-        self.active.remove(&id).is_some()
+        let presented = self.active.remove(&id).is_some();
+        self.live.remove(&id).is_some() || presented
     }
 
-    fn clear(&mut self) {
+    fn clear_presentations(&mut self) {
         self.active.clear();
     }
 }
@@ -744,9 +748,20 @@ impl Controller {
                 match event {
                     NotificationEvent::Show(notification) => {
                         if !controller.config.borrow().notifications.enabled {
+                            let _ = controller.notification_command_sender.try_send(
+                                NotificationCommand::Close {
+                                    id: notification.id,
+                                    reason: CloseReason::Expired,
+                                },
+                            );
                             continue;
                         }
                         let (epoch, replacing) = controller.register_notification(notification.id);
+                        controller
+                            .notification_epochs
+                            .borrow_mut()
+                            .live
+                            .insert(notification.id, notification.clone());
                         controller.record_notification(notification.clone());
                         if controller.notification_inhibition.get().active() {
                             if replacing {
@@ -820,16 +835,28 @@ impl Controller {
         });
     }
 
-    fn notification_expired(&self, id: u32, epoch: u64) {
+    fn notification_expired(self: &Rc<Self>, id: u32, epoch: u64) {
         if !self.notification_epochs.borrow_mut().expire(id, epoch) {
             return;
         }
-        let _ = self
-            .notification_command_sender
-            .try_send(NotificationCommand::Close {
-                id,
-                reason: CloseReason::Expired,
-            });
+        // A popup timeout is not a protocol close: retained notifications
+        // must remain live so clients still accept their history actions.
+        let transient = self
+            .notification_epochs
+            .borrow()
+            .live
+            .get(&id)
+            .is_some_and(|notification| notification.transient);
+        if transient {
+            self.notification_epochs.borrow_mut().remove(id);
+            let _ = self
+                .notification_command_sender
+                .try_send(NotificationCommand::Close {
+                    id,
+                    reason: CloseReason::Expired,
+                });
+            self.remove_notification_record(id);
+        }
         for island in self.islands.borrow().values() {
             island.close_notification(id);
         }
@@ -839,12 +866,18 @@ impl Controller {
     /// the front of the history and trims it back to
     /// `notifications.max_history`.
     fn record_notification(self: &Rc<Self>, notification: Notification) {
+        let mut evicted = Vec::new();
         {
             let mut history = self.notifications.borrow_mut();
             history.retain(|existing| existing.id != notification.id);
             history.insert(0, notification);
             let max_history = self.config.borrow().notifications.max_history;
-            history.truncate(max_history.max(1));
+            if history.len() > max_history.max(1) {
+                evicted.extend(history.drain(max_history.max(1)..).map(|item| item.id));
+            }
+        }
+        for id in evicted {
+            self.dismiss_notification(id);
         }
         self.refresh_notification_dashboard();
     }
@@ -987,27 +1020,35 @@ impl Controller {
         self.remove_notification_record(id);
     }
 
-    /// A notification (or one of its actions) was activated. Announces
-    /// `ActionInvoked` and then tears it down the same way
-    /// `dismiss_notification` does, matching the common desktop convention
-    /// that activating a notification also closes it.
+    /// Only offered actions on live notifications may be invoked. Resident
+    /// notifications remain available; other notifications close after the
+    /// action signal, never before it (clients retire their action handlers
+    /// on NotificationClosed).
     fn invoke_notification_action(self: &Rc<Self>, id: u32, action_key: String) {
-        let was_active = self.notification_epochs.borrow_mut().remove(id);
-        let is_in_history = self
-            .notifications
-            .borrow()
-            .iter()
-            .any(|notification| notification.id == id);
-        if !was_active && !is_in_history {
+        let resident = {
+            let registry = self.notification_epochs.borrow();
+            let Some(notification) = registry.live.get(&id) else {
+                return;
+            };
+            if !notification
+                .actions
+                .iter()
+                .any(|action| action.key == action_key)
+            {
+                return;
+            }
+            notification.resident
+        };
+        if self
+            .notification_command_sender
+            .try_send(NotificationCommand::InvokeAction { id, action_key })
+            .is_err()
+        {
             return;
         }
-        let _ = self
-            .notification_command_sender
-            .try_send(NotificationCommand::InvokeAction { id, action_key });
-        for island in self.islands.borrow().values() {
-            island.close_notification(id);
+        if !resident {
+            self.dismiss_notification(id);
         }
-        self.remove_notification_record(id);
     }
 
     fn attach_theme(self: &Rc<Self>, receiver: Receiver<Result<Palette, String>>) {
@@ -1524,7 +1565,9 @@ impl Controller {
         }
         *self.config.borrow_mut() = config;
         *self.theme_config.borrow_mut() = theme_config.clone();
-        self.notification_epochs.borrow_mut().clear();
+        // Rebuilding the surfaces hides popups, but does not close protocol
+        // records or invalidate the actions of retained history.
+        self.notification_epochs.borrow_mut().clear_presentations();
         ui::reload_user_styles(
             &self.user_css_provider,
             &crate::config::colors_css_path(&self.config_path),
@@ -1990,6 +2033,349 @@ mod tests {
         assert!(!registry.expire(42, first));
         assert!(registry.expire(42, replacement));
         assert!(!registry.expire(42, replacement));
+    }
+
+    /// Real history button -> controller -> worker -> D-Bus regression.
+    /// The GTK runner supplies a private dbus-run-session and opt-in marker;
+    /// direct execution must do the same. Never contact the desktop daemon.
+    #[test]
+    #[ignore = "requires isolated GTK and D-Bus; see test source"]
+    #[allow(deprecated)]
+    fn notification_history_actions_reach_dbus_after_popup_timeout() {
+        use std::time::Instant;
+        assert_eq!(
+            std::env::var("MITHSHELL_PRIVATE_NOTIFICATION_BUS").as_deref(),
+            Ok("1")
+        );
+        gtk::init().unwrap();
+        let application = Application::builder()
+            .application_id("dev.mithrel.mithshell.notification-test")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join("target/tmp")
+            .join(format!("notification-dbus-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = AppConfig::default();
+        config.shell.monitors = vec!["notification-test-no-output".into()];
+        config.notifications.max_history = 2;
+        let controller = Controller::new(
+            &application,
+            directory.join("config.toml"),
+            config,
+            directory.join("control.sock"),
+            false,
+            None,
+            false,
+            StartupHooks {
+                notifications: notifications::start_server,
+                ..isolated_startup_hooks()
+            },
+        )
+        .unwrap();
+        let connection =
+            gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>).unwrap();
+        let signals = Rc::new(RefCell::new(Vec::<String>::new()));
+        let received = signals.clone();
+        connection.signal_subscribe(
+            None,
+            Some("org.freedesktop.Notifications"),
+            None,
+            Some("/org/freedesktop/Notifications"),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |_, _, _, _, name, parameters| {
+                if name == "ActionInvoked" {
+                    let (id, key) = parameters.get::<(u32, String)>().unwrap();
+                    received.borrow_mut().push(format!("action:{id}:{key}"));
+                } else if name == "NotificationClosed" {
+                    let (id, reason) = parameters.get::<(u32, u32)>().unwrap();
+                    received.borrow_mut().push(format!("closed:{id}:{reason}"));
+                }
+            },
+        );
+        fn drain_until(mut ready: impl FnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !ready() {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for notification bus"
+                );
+                while glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        use glib::variant::ToVariant;
+        drain_until(|| {
+            connection
+                .call_sync(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "NameHasOwner",
+                    Some(&("org.freedesktop.Notifications",).to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                    None::<&gio::Cancellable>,
+                )
+                .unwrap()
+                .get::<(bool,)>()
+                .unwrap()
+                .0
+        });
+        let notify = |replaces_id: u32, resident: bool, transient: bool, key: &str| {
+            let hints = HashMap::from([
+                ("resident".to_owned(), resident.to_variant()),
+                ("transient".to_owned(), transient.to_variant()),
+            ]);
+            connection
+                .call_sync(
+                    Some("org.freedesktop.Notifications"),
+                    "/org/freedesktop/Notifications",
+                    "org.freedesktop.Notifications",
+                    "Notify",
+                    Some(
+                        &(
+                            "test",
+                            replaces_id,
+                            "",
+                            "summary",
+                            "not a shell command",
+                            vec![key, "Open"],
+                            hints,
+                            0_i32,
+                        )
+                            .to_variant(),
+                    ),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                    None::<&gio::Cancellable>,
+                )
+                .unwrap()
+                .get::<(u32,)>()
+                .unwrap()
+                .0
+        };
+        let id = notify(0, false, false, "default");
+        drain_until(|| {
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&id)
+        });
+        let epoch = controller.notification_epochs.borrow().active[&id];
+        controller.notification_expired(id, epoch);
+        controller
+            .notification_epochs
+            .borrow_mut()
+            .clear_presentations();
+        assert!(
+            signals.borrow().is_empty(),
+            "popup timeout must not retire client action handlers"
+        );
+        assert_eq!(controller.notifications.borrow().len(), 1);
+        controller.invoke_notification_action(id, "not-offered".into());
+        assert!(
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&id)
+        );
+        use crate::ui::{NotificationCircle, NotificationCircleCallbacks};
+        let weak = Rc::downgrade(&controller);
+        let circle = NotificationCircle::new(
+            &crate::config::NotificationConfig::default(),
+            crate::config::IconStyle::default(),
+            1.0,
+            NotificationCircleCallbacks {
+                invoke: Rc::new(move |id, key| {
+                    if let Some(controller) = weak.upgrade() {
+                        controller.invoke_notification_action(id, key);
+                    }
+                }),
+                dismiss: Rc::new(|_| {}),
+                clear: Rc::new(|| {}),
+                inhibit: Rc::new(|_| {}),
+                open_full: Rc::new(|| {}),
+            },
+        )
+        .unwrap();
+        fn action_button(root: &gtk::Widget) -> gtk::Button {
+            let mut pending = vec![root.clone()];
+            while let Some(widget) = pending.pop() {
+                if let Some(button) = widget.downcast_ref::<gtk::Button>()
+                    && button.label().as_deref() == Some("Open")
+                {
+                    return button.clone();
+                }
+                let mut child = widget.first_child();
+                while let Some(widget) = child {
+                    child = widget.next_sibling();
+                    pending.push(widget);
+                }
+            }
+            panic!("offered action must have an accessible history button");
+        }
+        circle.update(&controller.notifications.borrow());
+        action_button(circle.host.widget()).emit_clicked();
+        drain_until(|| signals.borrow().len() == 2);
+        assert_eq!(
+            &*signals.borrow(),
+            &[format!("action:{id}:default"), format!("closed:{id}:2")]
+        );
+        controller.invoke_notification_action(id, "default".into());
+        assert!(controller.notifications.borrow().is_empty());
+
+        let resident = notify(0, true, false, "reply");
+        drain_until(|| {
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&resident)
+        });
+        let epoch = controller.notification_epochs.borrow().active[&resident];
+        controller.notification_expired(resident, epoch);
+        circle.update(&controller.notifications.borrow());
+        let old_reply = action_button(circle.host.widget());
+        old_reply.emit_clicked();
+        old_reply.emit_clicked();
+        drain_until(|| signals.borrow().len() == 4);
+        assert_eq!(
+            &signals.borrow()[2..],
+            &[
+                format!("action:{resident}:reply"),
+                format!("action:{resident}:reply")
+            ]
+        );
+        assert!(
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&resident)
+        );
+        // Replacements invalidate formerly offered actions and old timers.
+        assert_eq!(notify(resident, true, false, "new"), resident);
+        drain_until(|| {
+            controller.notification_epochs.borrow().live[&resident].actions[0].key == "new"
+        });
+        controller.notification_expired(resident, epoch);
+        assert!(
+            controller
+                .notification_epochs
+                .borrow()
+                .active
+                .contains_key(&resident)
+        );
+        old_reply.emit_clicked();
+        circle.update(&controller.notifications.borrow());
+        action_button(circle.host.widget()).emit_clicked();
+        drain_until(|| signals.borrow().len() == 5);
+        controller.clear_notification_history();
+        drain_until(|| signals.borrow().len() == 6);
+        assert_eq!(signals.borrow()[5], format!("closed:{resident}:2"));
+
+        let transient = notify(0, false, true, "default");
+        drain_until(|| {
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&transient)
+        });
+        let epoch = controller.notification_epochs.borrow().active[&transient];
+        controller.notification_expired(transient, epoch);
+        drain_until(|| signals.borrow().len() == 7);
+        assert_eq!(signals.borrow()[6], format!("closed:{transient}:1"));
+        assert!(controller.notifications.borrow().is_empty());
+        controller.invoke_notification_action(transient, "default".into());
+
+        let closed = notify(0, false, false, "default");
+        drain_until(|| {
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&closed)
+        });
+        connection
+            .call_sync(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "CloseNotification",
+                Some(&(closed,).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                1000,
+                None::<&gio::Cancellable>,
+            )
+            .unwrap();
+        drain_until(|| {
+            !controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&closed)
+        });
+        controller.invoke_notification_action(closed, "default".into());
+        drain_until(|| signals.borrow().len() == 8);
+        assert_eq!(signals.borrow()[7], format!("closed:{closed}:3"));
+        // The worker independently rejects dead IDs and invented keys.
+        controller
+            .notification_command_sender
+            .try_send(NotificationCommand::InvokeAction {
+                id: closed,
+                action_key: "default".into(),
+            })
+            .unwrap();
+        let first = notify(0, false, false, "default");
+        let second = notify(0, false, false, "default");
+        let third = notify(0, false, false, "default");
+        drain_until(|| {
+            controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&third)
+        });
+        assert!(
+            !controller
+                .notification_epochs
+                .borrow()
+                .live
+                .contains_key(&first)
+        );
+        assert_eq!(
+            controller
+                .notifications
+                .borrow()
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            [third, second]
+        );
+        drain_until(|| signals.borrow().len() == 9);
+        assert_eq!(signals.borrow()[8], format!("closed:{first}:2"));
+        controller
+            .notification_command_sender
+            .try_send(NotificationCommand::InvokeAction {
+                id: third,
+                action_key: "invented".into(),
+            })
+            .unwrap();
+        controller.clear_notification_history();
+        drain_until(|| signals.borrow().len() == 11);
+        assert_eq!(
+            &signals.borrow()[9..],
+            &[format!("closed:{third}:2"), format!("closed:{second}:2")]
+        );
     }
 
     #[test]

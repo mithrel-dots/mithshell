@@ -12,6 +12,8 @@ use log::warn;
 
 use crate::state::Palette;
 
+#[cfg(test)]
+pub(crate) use island::notification_circle::{NotificationCircle, NotificationCircleCallbacks};
 pub use island::{IslandActions, IslandWindow};
 pub use lock::{
     LockActions, LockAnimation, LockEndedAction, LockPowerAction, LockSession, LockStateAction,

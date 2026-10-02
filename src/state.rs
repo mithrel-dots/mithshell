@@ -342,7 +342,20 @@ pub struct NotificationAction {
     pub label: String,
 }
 
-/// How long a notification stays visible before it is treated as expired.
+impl NotificationAction {
+    pub fn display_label(&self) -> &str {
+        if !self.label.is_empty() {
+            &self.label
+        } else if self.key == "default" {
+            "Open"
+        } else {
+            &self.key
+        }
+    }
+}
+
+/// How long the popup stays visible. Non-transient notifications remain
+/// live in history after the popup hides, until an explicit close/dismissal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum NotificationTimeout {
     /// The sender did not request a specific duration; fall back to
@@ -445,6 +458,10 @@ pub struct Notification {
     pub urgency: Urgency,
     pub actions: Vec<NotificationAction>,
     pub timeout: NotificationTimeout,
+    /// Keep the notification alive after invoking an action.
+    pub resident: bool,
+    /// Do not retain this notification when its popup times out.
+    pub transient: bool,
     #[serde(skip_serializing)]
     pub received_at_unix_seconds: u64,
 }

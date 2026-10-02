@@ -153,10 +153,17 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                 time.sleep(0.5)
                 if browser.poll() is not None:
                     raise RuntimeError("Broadway rendering client exited: " + browser_log.read_text())
+                command = [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"]
+                test_env = env.copy()
+                if test == "app::tests::notification_history_actions_reach_dbus_after_popup_timeout":
+                    # This test serves notifications; it must never acquire
+                    # the real desktop's notification service name.
+                    command = ["dbus-run-session", "--", *command]
+                    test_env["MITHSHELL_PRIVATE_NOTIFICATION_BUS"] = "1"
                 completed = subprocess.run(
-                    [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"],
+                    command,
                     cwd=ROOT,
-                    env=env,
+                    env=test_env,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,

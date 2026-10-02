@@ -285,18 +285,14 @@ fn row(
         text.append(&body);
     }
     if let Some(action) = notification.default_action() {
-        let button = gtk::Button::with_label(if action.label.is_empty() {
-            "Open"
-        } else {
-            &action.label
-        });
+        let button = gtk::Button::with_label(action.display_label());
         let invoke = callbacks.invoke.clone();
         let target = action_target(notification.id, &action.key);
         button.connect_clicked(move |_| invoke(target.0, target.1.clone()));
         text.append(&button);
     }
     for action in notification.actions.iter().filter(|a| a.key != "default") {
-        let button = gtk::Button::with_label(&action.label);
+        let button = gtk::Button::with_label(action.display_label());
         let invoke = callbacks.invoke.clone();
         let target = action_target(notification.id, &action.key);
         button.connect_clicked(move |_| invoke(target.0, target.1.clone()));
@@ -352,6 +348,8 @@ mod tests {
                 label: "Open".to_owned(),
             }],
             timeout: NotificationTimeout::Default,
+            resident: false,
+            transient: false,
         }
     }
 
@@ -608,6 +606,33 @@ mod tests {
             .unwrap();
         dismiss.emit_clicked();
         assert_eq!(&*events.borrow(), &["invoke:20:default", "dismiss:20"]);
+
+        let mut named = notification(30, "named actions only");
+        named.actions = vec![NotificationAction {
+            key: "reply".into(),
+            label: "".into(),
+        }];
+        circle.update(&[named.clone()]);
+        let text = children(&children(&circle.full_list.clone().upcast())[0])[1].clone();
+        let reply = children(&text)
+            .last()
+            .unwrap()
+            .clone()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        assert_eq!(reply.label().as_deref(), Some("reply"));
+        assert!(reply.is_focusable());
+        reply.emit_clicked();
+        assert_eq!(events.borrow().last().unwrap(), "invoke:30:reply");
+        events.borrow_mut().pop();
+        named.actions.clear();
+        circle.update(&[named]);
+        let text = children(&children(&circle.full_list.clone().upcast())[0])[1].clone();
+        assert!(
+            children(&text)
+                .iter()
+                .all(|widget| !widget.is::<gtk::Button>())
+        );
 
         let header = children(&circle.full.clone().upcast())[0].clone();
         children(&header)[1]

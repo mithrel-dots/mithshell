@@ -819,6 +819,15 @@ fn circle_integration_real_widgets_and_callbacks() {
         callback_services.borrow_mut().push(service);
     });
     let matrix_actions = actions.clone();
+    let notification_events = Rc::new(RefCell::new(Vec::new()));
+    let invoked = notification_events.clone();
+    actions.notification_invoke = Rc::new(move |id, key| {
+        invoked.borrow_mut().push(format!("invoke:{id}:{key}"));
+    });
+    let dismissed = notification_events.clone();
+    actions.notification_dismiss = Rc::new(move |id| {
+        dismissed.borrow_mut().push(format!("dismiss:{id}"));
+    });
     let mut config = AppConfig::default();
     config.shell.animation_ms = 0;
     config.shell.scale = 1.0;
@@ -912,6 +921,8 @@ fn circle_integration_real_widgets_and_callbacks() {
             label: "Open".into(),
         }],
         timeout: NotificationTimeout::Never,
+        resident: false,
+        transient: false,
     };
     island.update_media(Some(&media));
     assert!(island.compact_visualizer_revealer.reveals_child());
@@ -1001,6 +1012,53 @@ fn circle_integration_real_widgets_and_callbacks() {
     );
     island.update_media(Some(&media));
     island.update_tray(std::slice::from_ref(&tray));
+    island.update_notification_history(std::slice::from_ref(&notification));
+    // The dashboard must expose named-only actions as actual focusable
+    // controls, not just a default-only mouse gesture.
+    let mut named = notification.clone();
+    named.actions = vec![NotificationAction {
+        key: "reply".into(),
+        label: "Reply".into(),
+    }];
+    island.update_notification_history(std::slice::from_ref(&named));
+    let mut pending = vec![island.notification_list.clone().upcast::<gtk::Widget>()];
+    let mut buttons = Vec::new();
+    while let Some(widget) = pending.pop() {
+        if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+            buttons.push(button.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            pending.push(widget);
+        }
+    }
+    let reply = buttons
+        .iter()
+        .find(|button| button.label().as_deref() == Some("Reply"))
+        .unwrap();
+    assert!(reply.is_focusable());
+    reply.emit_clicked();
+    buttons
+        .iter()
+        .find(|button| button.has_css_class("notification-row-dismiss"))
+        .unwrap()
+        .emit_clicked();
+    assert_eq!(
+        &*notification_events.borrow(),
+        &["invoke:1:reply", "dismiss:1"]
+    );
+    named.actions.clear();
+    island.update_notification_history(&[named]);
+    assert!(
+        island
+            .notification_list
+            .first_child()
+            .unwrap()
+            .tooltip_text()
+            .unwrap()
+            .contains("dismiss")
+    );
     island.update_notification_history(std::slice::from_ref(&notification));
     island.update_notification_inhibition(true, Some(std::time::Duration::from_secs(65)));
     island.relayout_circles();
@@ -2398,6 +2456,8 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
             urgency: crate::state::Urgency::Normal,
             actions: vec![],
             timeout: crate::state::NotificationTimeout::Never,
+            resident: false,
+            transient: false,
         }).collect();
         let mut representative = history[..2].to_vec();
         for notification in &mut representative {

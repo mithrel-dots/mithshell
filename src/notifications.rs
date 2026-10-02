@@ -16,7 +16,12 @@
 //! name keep talking to whichever daemon got there first, exactly like two
 //! competing daemons launched by hand.
 
-use std::{cell::Cell, collections::HashMap, rc::Rc, thread};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+    thread,
+};
 
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender};
@@ -85,8 +90,8 @@ pub enum NotificationEvent {
 }
 
 /// Requests sent from the GTK main thread back to the D-Bus worker thread,
-/// purely to emit the corresponding signal on the bus. The UI updates its
-/// own state directly rather than waiting for a round trip through here.
+/// validated against live notifications before emitting signals. The UI
+/// updates its own state directly rather than waiting for a round trip.
 #[derive(Debug, Clone)]
 pub enum NotificationCommand {
     Close { id: u32, reason: CloseReason },
@@ -135,6 +140,8 @@ fn run_server(
         .context("notifications interface missing from introspection XML")?;
 
     let next_id = Rc::new(Cell::new(1u32));
+    let live = Rc::new(RefCell::new(HashMap::<u32, Notification>::new()));
+    let method_live = live.clone();
     let method_events = events.clone();
     let registration = connection
         .register_object(OBJECT_PATH, &interface_info)
@@ -147,6 +154,7 @@ fn run_server(
                     invocation,
                     &method_events,
                     &next_id,
+                    &method_live,
                 );
             },
         )
@@ -170,9 +178,19 @@ fn run_server(
         while let Ok(command) = commands.recv().await {
             match command {
                 NotificationCommand::Close { id, reason } => {
-                    emit_closed(&signal_connection, id, reason);
+                    if live.borrow_mut().remove(&id).is_some() {
+                        emit_closed(&signal_connection, id, reason);
+                    }
                 }
                 NotificationCommand::InvokeAction { id, action_key } => {
+                    if !live.borrow().get(&id).is_some_and(|notification| {
+                        notification
+                            .actions
+                            .iter()
+                            .any(|action| action.key == action_key)
+                    }) {
+                        continue;
+                    }
                     let _ = signal_connection.emit_signal(
                         None,
                         OBJECT_PATH,
@@ -208,9 +226,10 @@ fn handle_method_call(
     invocation: gio::DBusMethodInvocation,
     events: &Sender<NotificationEvent>,
     next_id: &Rc<Cell<u32>>,
+    live: &RefCell<HashMap<u32, Notification>>,
 ) {
     match method {
-        "Notify" => handle_notify(parameters, invocation, events, next_id),
+        "Notify" => handle_notify(parameters, invocation, events, next_id, live),
         "CloseNotification" => {
             let Some((id,)) = parameters.get::<(u32,)>() else {
                 invocation.return_dbus_error(
@@ -220,6 +239,9 @@ fn handle_method_call(
                 return;
             };
             invocation.return_value(None);
+            if live.borrow_mut().remove(&id).is_none() {
+                return;
+            }
             emit_closed(connection, id, CloseReason::ClosedByCall);
             let _ = events.try_send(NotificationEvent::Closed {
                 id,
@@ -253,6 +275,7 @@ fn handle_notify(
     invocation: gio::DBusMethodInvocation,
     events: &Sender<NotificationEvent>,
     next_id: &Rc<Cell<u32>>,
+    live: &RefCell<HashMap<u32, Notification>>,
 ) {
     type NotifyArgs = (
         String,
@@ -274,7 +297,7 @@ fn handle_notify(
         return;
     };
 
-    let id = if replaces_id != 0 {
+    let id = if replaces_id != 0 && live.borrow().contains_key(&replaces_id) {
         replaces_id
     } else {
         let id = next_id.get();
@@ -309,6 +332,14 @@ fn handle_notify(
         urgency,
         actions: parse_actions(&raw_actions),
         timeout,
+        resident: hints
+            .get("resident")
+            .and_then(|value| value.get::<bool>())
+            .unwrap_or(false),
+        transient: hints
+            .get("transient")
+            .and_then(|value| value.get::<bool>())
+            .unwrap_or(false),
         received_at_unix_seconds: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -316,13 +347,16 @@ fn handle_notify(
     };
 
     invocation.return_value(Some(&(id,).to_variant()));
+    live.borrow_mut().insert(id, notification.clone());
     let _ = events.try_send(NotificationEvent::Show(notification));
 }
 
 /// The `actions` array alternates `key`, `label` pairs. A trailing unpaired
 /// entry (a malformed call) is dropped rather than panicking.
 fn parse_actions(raw: &[String]) -> Vec<NotificationAction> {
+    let mut seen = std::collections::HashSet::new();
     raw.chunks_exact(2)
+        .filter(|pair| !pair[0].is_empty() && seen.insert(pair[0].clone()))
         .map(|pair| NotificationAction {
             key: pair[0].clone(),
             label: pair[1].clone(),
@@ -355,6 +389,25 @@ mod tests {
                     label: "Reply".into()
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn ignores_empty_and_duplicate_action_keys() {
+        let actions = parse_actions(&[
+            "".into(),
+            "Invalid".into(),
+            "reply".into(),
+            "Reply".into(),
+            "reply".into(),
+            "Duplicate".into(),
+        ]);
+        assert_eq!(
+            actions,
+            vec![NotificationAction {
+                key: "reply".into(),
+                label: "Reply".into()
+            }]
         );
     }
 }
