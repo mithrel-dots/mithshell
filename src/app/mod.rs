@@ -271,6 +271,12 @@ struct NotificationEpochRegistry {
     active: HashMap<u32, u64>,
     /// Protocol-live records, including retained history after popup timeout.
     live: HashMap<u32, Notification>,
+    /// Transients have no history lifetime bound; track a separate newest-
+    /// first budget, also covering inhibited/no-output/persistent deliveries.
+    transient_order: Vec<crate::state::NotificationIdentity>,
+    /// Timeouts for deliveries without a presentation. Removed on expiry,
+    /// replacement, discard, or reload instead of accumulating dead sources.
+    unpresented_timeouts: HashMap<u32, glib::SourceId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +309,9 @@ impl NotificationInhibition {
 
 impl NotificationEpochRegistry {
     fn register(&mut self, id: u32) -> (u64, bool) {
+        if let Some(source) = self.unpresented_timeouts.remove(&id) {
+            source.remove();
+        }
         self.next = self.next.wrapping_add(1).max(1);
         let replacing = self.active.insert(id, self.next).is_some();
         (self.next, replacing)
@@ -313,15 +322,25 @@ impl NotificationEpochRegistry {
             return false;
         }
         self.active.remove(&id);
+        if let Some(source) = self.unpresented_timeouts.remove(&id) {
+            source.remove();
+        }
         true
     }
 
     fn remove(&mut self, id: u32) -> bool {
+        if let Some(source) = self.unpresented_timeouts.remove(&id) {
+            source.remove();
+        }
+        self.transient_order.retain(|target| target.id != id);
         let presented = self.active.remove(&id).is_some();
         self.live.remove(&id).is_some() || presented
     }
 
     fn clear_presentations(&mut self) {
+        for source in self.unpresented_timeouts.drain().map(|(_, source)| source) {
+            source.remove();
+        }
         self.active.clear();
     }
 }
@@ -762,6 +781,16 @@ impl Controller {
                             .borrow_mut()
                             .live
                             .insert(notification.id, notification.clone());
+                        {
+                            let mut registry = controller.notification_epochs.borrow_mut();
+                            registry
+                                .transient_order
+                                .retain(|target| target.id != notification.id);
+                            if notification.transient {
+                                registry.transient_order.insert(0, notification.identity());
+                            }
+                        }
+                        controller.trim_transient_notifications();
                         controller.record_notification(notification.clone());
                         if controller.notification_inhibition.get().active() {
                             if replacing {
@@ -794,6 +823,8 @@ impl Controller {
                                     island.close_notification(notification.id);
                                 }
                                 warn!("cannot show notification: {error:#}");
+                                controller
+                                    .schedule_inhibited_notification_expiry(&notification, epoch);
                             }
                         }
                     }
@@ -824,11 +855,22 @@ impl Controller {
         };
         let id = notification.id;
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
+        let source = glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
             if let Some(controller) = weak.upgrade() {
+                {
+                    let mut registry = controller.notification_epochs.borrow_mut();
+                    if registry.active.get(&id).copied() != Some(epoch) {
+                        return;
+                    }
+                    registry.unpresented_timeouts.remove(&id);
+                }
                 controller.notification_expired(id, epoch);
             }
         });
+        self.notification_epochs
+            .borrow_mut()
+            .unpresented_timeouts
+            .insert(id, source);
     }
 
     fn notification_expired(self: &Rc<Self>, id: u32, epoch: u64) {
@@ -878,6 +920,24 @@ impl Controller {
             .collect();
         for target in evicted {
             self.dismiss_notification(target);
+        }
+    }
+
+    fn trim_transient_notifications(self: &Rc<Self>) {
+        // Reuse the existing history-sized budget as an independent lifetime
+        // limit, including unpresented deliveries; never mix transients into
+        // the archive or evict legitimate retained history/residents.
+        let capacity = self.config.borrow().notifications.max_history.max(1);
+        let discarded: Vec<_> = self
+            .notification_epochs
+            .borrow()
+            .transient_order
+            .iter()
+            .skip(capacity)
+            .copied()
+            .collect();
+        for target in discarded {
+            self.close_notification_record(target, CloseReason::Expired);
         }
     }
 
@@ -1895,6 +1955,7 @@ impl Controller {
 
 impl Drop for Controller {
     fn drop(&mut self) {
+        self.notification_epochs.get_mut().clear_presentations();
         // Never unlock on teardown: ext-session-lock-v1 must remain fail-locked.
         self.tarragon_sender.close();
         self.preview_sender.close();
@@ -2074,10 +2135,31 @@ mod tests {
         run_notification_bus_regression(NotificationRegression::Reload);
     }
 
+    #[test]
+    #[ignore = "requires isolated GTK and D-Bus; run the GTK runner"]
+    fn notification_toast_overflow_retires_transients_revision_safely() {
+        run_notification_bus_regression(NotificationRegression::ToastBounds);
+    }
+
+    #[test]
+    #[ignore = "requires isolated GTK and D-Bus; run the GTK runner"]
+    fn notification_pill_backlog_and_transient_lifetimes_are_bounded() {
+        run_notification_bus_regression(NotificationRegression::PillBounds);
+    }
+
+    #[test]
+    #[ignore = "requires isolated GTK and D-Bus; run the GTK runner"]
+    fn notification_unpresented_transients_have_an_independent_lifetime_bound() {
+        run_notification_bus_regression(NotificationRegression::UnpresentedBounds);
+    }
+
     enum NotificationRegression {
         Actions,
         Replacements,
         Reload,
+        ToastBounds,
+        PillBounds,
+        UnpresentedBounds,
     }
 
     #[allow(deprecated)]
@@ -2165,41 +2247,378 @@ mod tests {
                 .unwrap()
                 .0
         });
-        let notify = |replaces_id: u32, resident: bool, transient: bool, key: &str| {
-            let hints = HashMap::from([
-                ("resident".to_owned(), resident.to_variant()),
-                ("transient".to_owned(), transient.to_variant()),
-            ]);
-            connection
-                .call_sync(
-                    Some("org.freedesktop.Notifications"),
-                    "/org/freedesktop/Notifications",
-                    "org.freedesktop.Notifications",
-                    "Notify",
-                    Some(
-                        &(
-                            "test",
-                            replaces_id,
-                            "",
-                            "summary",
-                            "not a shell command",
-                            vec![key, "Open"],
-                            hints,
-                            0_i32,
-                        )
-                            .to_variant(),
-                    ),
-                    None,
-                    gio::DBusCallFlags::NONE,
-                    1000,
-                    None::<&gio::Cancellable>,
-                )
-                .unwrap()
-                .get::<(u32,)>()
-                .unwrap()
-                .0
-        };
+        let notify_with_timeout =
+            |replaces_id: u32, resident: bool, transient: bool, key: &str, timeout: i32| {
+                let hints = HashMap::from([
+                    ("resident".to_owned(), resident.to_variant()),
+                    ("transient".to_owned(), transient.to_variant()),
+                ]);
+                connection
+                    .call_sync(
+                        Some("org.freedesktop.Notifications"),
+                        "/org/freedesktop/Notifications",
+                        "org.freedesktop.Notifications",
+                        "Notify",
+                        Some(
+                            &(
+                                "test",
+                                replaces_id,
+                                "",
+                                "summary",
+                                "not a shell command",
+                                vec![key, "Open"],
+                                hints,
+                                timeout,
+                            )
+                                .to_variant(),
+                        ),
+                        None,
+                        gio::DBusCallFlags::NONE,
+                        1000,
+                        None::<&gio::Cancellable>,
+                    )
+                    .unwrap()
+                    .get::<(u32,)>()
+                    .unwrap()
+                    .0
+            };
+        let notify =
+            |id, resident, transient, key| notify_with_timeout(id, resident, transient, key, 0);
         let identity = |id| controller.notification_epochs.borrow().live[&id].identity();
+        if matches!(
+            scenario,
+            NotificationRegression::ToastBounds | NotificationRegression::PillBounds
+        ) {
+            use crate::config::NotificationPosition;
+            application.connect_activate(|_| {});
+            application.register(None::<&gio::Cancellable>).unwrap();
+            let monitor = gdk::Display::default()
+                .unwrap()
+                .monitors()
+                .item(0)
+                .and_downcast::<gdk::Monitor>()
+                .unwrap();
+            let mut config = controller.config.borrow().clone();
+            config.notifications.position =
+                if matches!(scenario, NotificationRegression::ToastBounds) {
+                    NotificationPosition::BelowPill
+                } else {
+                    NotificationPosition::Pill
+                };
+            config.notifications.max_visible = 1;
+            config.notifications.timeout_ms = 60_000;
+            *controller.config.borrow_mut() = config.clone();
+            let weak = Rc::downgrade(&controller);
+            let expired = Rc::new(move |id, epoch| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.notification_expired(id, epoch);
+                }
+            });
+            let weak = Rc::downgrade(&controller);
+            let dismiss = Rc::new(move |target| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.dismiss_notification(target);
+                }
+            });
+            let weak = Rc::downgrade(&controller);
+            let invoke = Rc::new(move |target, key| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.invoke_notification_action(target, key);
+                }
+            });
+            let island = IslandWindow::test_notification_window(
+                &application,
+                &monitor,
+                &config,
+                expired,
+                dismiss,
+                invoke,
+            );
+            controller
+                .islands
+                .borrow_mut()
+                .insert("notification-test".into(), island.clone());
+            let r1 = notify(0, true, false, "default");
+            let r2 = notify(0, true, false, "default");
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&r2)
+            });
+            let resident_target = identity(r2);
+            // The worker accepts the replacement before GTK processes any
+            // presentation. Overflow's old-ID expiry must not retire A'.
+            let a = notify_with_timeout(0, false, true, "default", 1000);
+            let b = notify_with_timeout(0, false, true, "default", 1000);
+            let c = notify_with_timeout(0, false, true, "default", 1000);
+            assert_eq!(notify_with_timeout(a, false, true, "default", 1000), a);
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .get(&a)
+                    .is_some_and(|item| {
+                        island
+                            .test_notification_deliveries()
+                            .iter()
+                            .any(|(target, _)| *target == item.identity())
+                    })
+            });
+            assert!(
+                signals
+                    .borrow()
+                    .iter()
+                    .all(|signal| signal != &format!("closed:{a}:1")),
+                "trim of A must not close A'"
+            );
+            let mut transient_ids = vec![a, b, c];
+            for _ in 0..8 {
+                let id = notify_with_timeout(0, false, true, "default", 1000);
+                transient_ids.push(id);
+                drain_until(|| {
+                    controller
+                        .notification_epochs
+                        .borrow()
+                        .live
+                        .contains_key(&id)
+                });
+                let deliveries = island.test_notification_deliveries();
+                let limit = if matches!(scenario, NotificationRegression::ToastBounds) {
+                    1
+                } else {
+                    3
+                };
+                assert!(
+                    deliveries.len() <= limit,
+                    "actual presentation/backlog exceeds its budget"
+                );
+                assert!(
+                    controller
+                        .notification_epochs
+                        .borrow()
+                        .transient_order
+                        .len()
+                        <= 2
+                );
+                assert!(
+                    controller
+                        .notification_epochs
+                        .borrow()
+                        .live
+                        .values()
+                        .filter(|item| item.transient)
+                        .count()
+                        <= 2
+                );
+            }
+            assert_eq!(
+                controller
+                    .notifications
+                    .borrow()
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                [r2, r1]
+            );
+            // R2's popup was discarded, not its legitimate resident actions.
+            assert!(
+                !island
+                    .test_notification_deliveries()
+                    .iter()
+                    .any(|(target, _)| *target == resident_target)
+            );
+            controller.invoke_notification_action(resident_target, "default".into());
+            drain_until(|| signals.borrow().contains(&format!("action:{r2}:default")));
+            assert!(
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&r2)
+            );
+            if matches!(scenario, NotificationRegression::PillBounds) {
+                controller.clear_notification_history(); // release the persistent current pill
+            }
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .transient_order
+                    .is_empty()
+                    && transient_ids
+                        .iter()
+                        .all(|id| signals.borrow().contains(&format!("closed:{id}:1")))
+            });
+            assert!(island.test_notification_deliveries().is_empty());
+            for id in &transient_ids {
+                assert_eq!(
+                    signals
+                        .borrow()
+                        .iter()
+                        .filter(|signal| *signal == &format!("closed:{id}:1"))
+                        .count(),
+                    1,
+                    "each real worker delivery must retire once, never its replacement prematurely"
+                );
+                assert!(
+                    !controller
+                        .notification_epochs
+                        .borrow()
+                        .live
+                        .contains_key(id)
+                );
+            }
+            if matches!(scenario, NotificationRegression::ToastBounds) {
+                controller.clear_notification_history();
+            }
+            drain_until(|| {
+                signals.borrow().contains(&format!("closed:{r1}:2"))
+                    && signals.borrow().contains(&format!("closed:{r2}:2"))
+            });
+            assert!(controller.notification_epochs.borrow().live.is_empty());
+            assert_eq!(signals.borrow().len(), transient_ids.len() + 3);
+            assert!(
+                signals
+                    .borrow()
+                    .iter()
+                    .position(|signal| signal == &format!("action:{r2}:default"))
+                    .unwrap()
+                    < signals
+                        .borrow()
+                        .iter()
+                        .position(|signal| signal == &format!("closed:{r2}:2"))
+                        .unwrap()
+            );
+            // Replacements and discards must cancel actual GLib sources, not
+            // merely invalidate generation counters and accumulate dead timers.
+            let timed = notify_with_timeout(0, false, true, "default", 1000);
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&timed)
+            });
+            let old_target = identity(timed);
+            let old_sources = island.test_notification_timeout_sources();
+            assert_eq!(old_sources.len(), 1);
+            assert_eq!(
+                notify_with_timeout(timed, false, true, "default", 1000),
+                timed
+            );
+            drain_until(|| identity(timed).revision != old_target.revision);
+            assert!(old_sources.iter().all(glib::Source::is_destroyed));
+            assert!(
+                !signals.borrow().contains(&format!("closed:{timed}:1")),
+                "replacement removal is not expiry"
+            );
+            let replaced_sources = island.test_notification_timeout_sources();
+            let next = notify_with_timeout(0, false, true, "default", 1000);
+            let last = notify_with_timeout(0, false, true, "default", 1000);
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&last)
+            });
+            assert!(
+                replaced_sources.iter().all(glib::Source::is_destroyed),
+                "discarded delivery's timeout must be cancelled"
+            );
+            drain_until(|| {
+                controller.notification_epochs.borrow().live.is_empty()
+                    && [timed, next, last]
+                        .iter()
+                        .all(|id| signals.borrow().contains(&format!("closed:{id}:1")))
+            });
+            assert!(island.test_notification_timeout_sources().is_empty());
+            island.destroy();
+            return;
+        }
+        if matches!(scenario, NotificationRegression::UnpresentedBounds) {
+            // Even never-expiring/inhibited/no-output transients need a
+            // lifetime budget independent of archive capacity and UI timers.
+            let mut ids = Vec::new();
+            for _ in 0..8 {
+                let id = notify(0, true, true, "default");
+                ids.push(id);
+                drain_until(|| {
+                    controller
+                        .notification_epochs
+                        .borrow()
+                        .live
+                        .contains_key(&id)
+                });
+                assert!(controller.notification_epochs.borrow().live.len() <= 2);
+                assert!(controller.notifications.borrow().is_empty());
+            }
+            drain_until(|| signals.borrow().len() == 6);
+            for id in &ids[..6] {
+                assert!(signals.borrow().contains(&format!("closed:{id}:1")));
+            }
+            let remaining: Vec<_> = controller
+                .notification_epochs
+                .borrow()
+                .live
+                .values()
+                .map(Notification::identity)
+                .collect();
+            for target in remaining {
+                controller.dismiss_notification(target);
+            }
+            drain_until(|| signals.borrow().len() == 8);
+            assert!(controller.notification_epochs.borrow().live.is_empty());
+            for inhibited in [false, true] {
+                if inhibited {
+                    controller.set_notification_inhibition(NotificationInhibition::Indefinite);
+                }
+                let mut sources = Vec::new();
+                let before = signals.borrow().len();
+                for _ in 0..8 {
+                    let id = notify_with_timeout(0, true, true, "default", 60_000);
+                    drain_until(|| {
+                        controller
+                            .notification_epochs
+                            .borrow()
+                            .live
+                            .contains_key(&id)
+                    });
+                    let registry = controller.notification_epochs.borrow();
+                    assert!(registry.live.len() <= 2);
+                    assert!(registry.unpresented_timeouts.len() <= 2);
+                    sources.extend(registry.unpresented_timeouts.values().filter_map(|source| {
+                        glib::MainContext::default().find_source_by_id(source)
+                    }));
+                }
+                let remaining: Vec<_> = controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .values()
+                    .map(Notification::identity)
+                    .collect();
+                for target in remaining {
+                    controller.dismiss_notification(target);
+                }
+                drain_until(|| signals.borrow().len() == before + 8);
+                assert!(
+                    controller
+                        .notification_epochs
+                        .borrow()
+                        .unpresented_timeouts
+                        .is_empty()
+                );
+                assert!(
+                    sources.iter().all(glib::Source::is_destroyed),
+                    "discarded unpresented timers must not accumulate"
+                );
+            }
+            return;
+        }
         if matches!(scenario, NotificationRegression::Replacements) {
             // All four Notify calls complete on the worker before GTK drains
             // any Show event. C will evict A's old revision, not A'.

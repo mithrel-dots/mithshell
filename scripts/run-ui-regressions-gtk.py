@@ -159,6 +159,9 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                     "app::tests::notification_history_actions_reach_dbus_after_popup_timeout",
                     "app::tests::notification_revisions_survive_burst_eviction_and_queued_commands",
                     "app::tests::notification_reload_reconciles_transients_and_history_bound",
+                    "app::tests::notification_toast_overflow_retires_transients_revision_safely",
+                    "app::tests::notification_pill_backlog_and_transient_lifetimes_are_bounded",
+                    "app::tests::notification_unpresented_transients_have_an_independent_lifetime_bound",
                 ):
                     # This test serves notifications; it must never acquire
                     # the real desktop's notification service name.

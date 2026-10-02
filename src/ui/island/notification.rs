@@ -42,6 +42,8 @@ pub(super) struct ToastEntry {
     /// Cancelled on manual dismissal so an already-removed row can't be
     /// double-removed when its timer later fires.
     timeout_source: Option<glib::SourceId>,
+    epoch: u64,
+    target: crate::state::NotificationIdentity,
 }
 
 #[derive(Clone)]
@@ -53,6 +55,7 @@ pub(super) struct PendingNotification {
 pub(super) struct CurrentNotification {
     pub(super) pending: PendingNotification,
     pub(super) overlay: bool,
+    timeout_source: Option<glib::SourceId>,
 }
 
 pub(super) struct PillOverlay {
@@ -241,6 +244,100 @@ pub(super) fn build_notification_toasts(
 }
 
 impl IslandWindow {
+    /// Exercise production notification rendering without a real compositor.
+    #[cfg(test)]
+    pub(crate) fn test_notification_window(
+        application: &Application,
+        monitor: &gdk::Monitor,
+        config: &crate::config::AppConfig,
+        expired: super::actions::NotificationExpireAction,
+        dismiss: super::actions::NotificationCloseAction,
+        invoke: super::actions::NotificationInvokeAction,
+    ) -> Rc<Self> {
+        Self::new_for_test(
+            application,
+            monitor,
+            "notification-test".into(),
+            config,
+            IslandActions {
+                switch_workspace: Rc::new(|_, _| {}),
+                set_volume: Rc::new(|_| {}),
+                toggle_mute: Rc::new(|| {}),
+                search: Rc::new(|_| {}),
+                select: Rc::new(|_| {}),
+                tarragon_status: Rc::new(|| {}),
+                tarragon_reload: Rc::new(|| {}),
+                load_preview: Rc::new(|_, _, _| {}),
+                media_play_pause: Rc::new(|_| {}),
+                media_next: Rc::new(|_| {}),
+                media_previous: Rc::new(|_| {}),
+                notification_expired: expired,
+                notification_dismiss: dismiss,
+                notification_invoke: invoke,
+                notification_clear_all: Rc::new(|| {}),
+                notification_inhibit: Rc::new(|_| {}),
+                tray_activate: Rc::new(|_, _, _, _| {}),
+                tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+                tray_context_menu: Rc::new(|_, _, _, _| {}),
+                tray_scroll: Rc::new(|_, _, _, _| {}),
+                tray_menu_event: Rc::new(|_, _, _| {}),
+            },
+            false,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_notification_deliveries(
+        &self,
+    ) -> Vec<(crate::state::NotificationIdentity, u64)> {
+        let mut deliveries = Vec::new();
+        if let Some(current) = self.notification_current.borrow().as_ref() {
+            deliveries.push((
+                current.pending.notification.identity(),
+                current.pending.epoch,
+            ));
+        }
+        deliveries.extend(
+            self.notification_queue
+                .borrow()
+                .iter()
+                .map(|pending| (pending.notification.identity(), pending.epoch)),
+        );
+        if let Some(toasts) = &self.notification_toasts {
+            deliveries.extend(
+                toasts
+                    .entries
+                    .borrow()
+                    .values()
+                    .map(|entry| (entry.target, entry.epoch)),
+            );
+        }
+        deliveries
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_notification_timeout_sources(&self) -> Vec<glib::Source> {
+        let context = glib::MainContext::default();
+        let mut sources = Vec::new();
+        if let Some(source) = self
+            .notification_current
+            .borrow()
+            .as_ref()
+            .and_then(|current| current.timeout_source.as_ref())
+            .and_then(|source| context.find_source_by_id(source))
+        {
+            sources.push(source);
+        }
+        if let Some(toasts) = &self.notification_toasts {
+            sources.extend(toasts.entries.borrow().values().filter_map(|entry| {
+                entry
+                    .timeout_source
+                    .as_ref()
+                    .and_then(|source| context.find_source_by_id(source))
+            }));
+        }
+        sources
+    }
     /// Displays an incoming notification according to
     /// `notifications.position`. `pill` queues it into the island or its
     /// overlay counterpart; every other position pushes a toast into the
@@ -471,12 +568,27 @@ impl IslandWindow {
             .find(|queued| queued.notification.id == pending.notification.id)
         {
             *queued = pending;
-            return;
+        } else {
+            queue.push_back(pending);
         }
-        queue.push_back(pending);
+        // History limits retained protocol records, not the presentation
+        // backlog. Bound the latter separately (including mixed transient
+        // and retained deliveries), keeping the most recent queued entries.
+        let capacity = self.notifications.max_history.max(1);
+        let mut discarded = Vec::new();
+        while queue.len() > capacity {
+            if let Some(pending) = queue.pop_front() {
+                discarded.push((pending.notification.id, pending.epoch));
+            }
+        }
         drop(queue);
         if !self.notification_active.get() {
             self.advance_notification();
+        }
+        // May synchronously close notifications on every island. Never call
+        // the controller while holding queue/current/toast RefCell borrows.
+        for (id, epoch) in discarded {
+            (self.actions.notification_expired)(id, epoch);
         }
     }
 
@@ -490,7 +602,9 @@ impl IslandWindow {
     /// otherwise block the queue forever. `below-pill`/corner toasts do
     /// honor persistence, since those have a close button.
     fn advance_notification(self: &Rc<Self>) {
-        let Some(pending) = self.notification_queue.borrow_mut().pop_front() else {
+        self.cancel_current_notification_timeout();
+        let pending = self.notification_queue.borrow_mut().pop_front();
+        let Some(pending) = pending else {
             self.notification_active.set(false);
             self.notification_current.borrow_mut().take();
             if let Some(overlay) = &self.pill_overlay {
@@ -503,6 +617,7 @@ impl IslandWindow {
     }
 
     fn present_notification_pill(self: &Rc<Self>, pending: PendingNotification) {
+        self.cancel_current_notification_timeout();
         let fullscreen = self
             .latest_hyprland
             .borrow()
@@ -546,19 +661,56 @@ impl IslandWindow {
         *self.notification_current.borrow_mut() = Some(CurrentNotification {
             pending,
             overlay: overlay_active,
+            timeout_source: None,
         });
         self.reconcile_view();
 
         let generation = self.notification_generation.get().wrapping_add(1);
         self.notification_generation.set(generation);
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
+        let source = glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
             if let Some(island) = weak.upgrade()
                 && island.notification_generation.get() == generation
             {
+                // The running source will remove itself. Detach it before
+                // expiry synchronously advances/closes this presentation.
+                if let Some(current) = island.notification_current.borrow_mut().as_mut() {
+                    current.timeout_source.take();
+                }
                 (island.actions.notification_expired)(id, epoch);
             }
         });
+        if let Some(current) = self.notification_current.borrow_mut().as_mut() {
+            current.timeout_source = Some(source);
+        }
+    }
+
+    fn cancel_current_notification_timeout(&self) {
+        let source = self
+            .notification_current
+            .borrow_mut()
+            .as_mut()
+            .and_then(|current| current.timeout_source.take());
+        if let Some(source) = source {
+            source.remove();
+        }
+    }
+
+    /// Teardown only cancels owned timers; it must not re-enter the controller
+    /// while its island map is being rebuilt/destroyed.
+    pub(super) fn cancel_notification_timeouts(&self) {
+        self.cancel_current_notification_timeout();
+        if let Some(toasts) = &self.notification_toasts {
+            let sources: Vec<_> = toasts
+                .entries
+                .borrow_mut()
+                .values_mut()
+                .filter_map(|entry| entry.timeout_source.take())
+                .collect();
+            for source in sources {
+                source.remove();
+            }
+        }
     }
 
     /// Moves a fullscreen-overlay notification back into the island before
@@ -634,6 +786,15 @@ impl IslandWindow {
                 let weak = Rc::downgrade(self);
                 glib::timeout_add_local_once(Duration::from_millis(timeout_ms), move || {
                     if let Some(island) = weak.upgrade() {
+                        if let Some(toasts) = &island.notification_toasts
+                            && let Some(entry) = toasts
+                                .entries
+                                .borrow_mut()
+                                .get_mut(&id)
+                                .filter(|entry| entry.epoch == epoch)
+                        {
+                            entry.timeout_source.take();
+                        }
                         (island.actions.notification_expired)(id, epoch);
                     }
                 })
@@ -644,6 +805,8 @@ impl IslandWindow {
                 row,
                 urgency: notification.urgency,
                 timeout_source,
+                epoch,
+                target: notification.identity(),
             },
         );
 
@@ -770,6 +933,7 @@ impl IslandWindow {
             return;
         }
         let max_visible = self.notifications.max_visible.max(1);
+        let mut discarded = Vec::new();
         loop {
             let Some(toasts) = &self.notification_toasts else {
                 return;
@@ -777,11 +941,25 @@ impl IslandWindow {
             let oldest = {
                 let order = toasts.order.borrow();
                 if order.len() <= max_visible {
-                    return;
+                    break;
                 }
                 *order.last().expect("checked non-empty above")
             };
+            let delivery = toasts
+                .entries
+                .borrow()
+                .get(&oldest)
+                .map(|entry| (entry.target.id, entry.epoch));
             self.remove_toast(oldest);
+            if let Some(delivery) = delivery {
+                discarded.push(delivery);
+            }
+        }
+        // Generic remove_toast is also used for replacements and explicit
+        // closes, so only overflow retirement invokes expiry. All UI borrows
+        // have ended before re-entering the controller here.
+        for (id, epoch) in discarded {
+            (self.actions.notification_expired)(id, epoch);
         }
     }
 }

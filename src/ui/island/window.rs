@@ -809,6 +809,7 @@ impl IslandWindow {
     }
 
     pub fn destroy(&self) {
+        self.cancel_notification_timeouts();
         #[cfg(test)]
         if let Ok(window) = self.focus_root.borrow().clone().downcast::<gtk::Window>() {
             window.close();
