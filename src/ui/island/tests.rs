@@ -140,6 +140,16 @@ fn hover_geometry_is_forward_and_reversible() {
 #[test]
 #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
 fn weather_retains_dashboard_chrome_across_scales_and_transitions() {
+    run_weather_regression(false);
+}
+
+#[test]
+#[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
+fn weather_exit_preserves_body_and_reconciles_hover_on_escape_and_outside_click() {
+    run_weather_regression(true);
+}
+
+fn run_weather_regression(exit_lifecycle: bool) {
     use std::time::Duration;
     gtk::init().expect("GTK display");
     let _styles = crate::ui::install_styles(&crate::theme::generate_gtk());
@@ -241,6 +251,111 @@ fn weather_retains_dashboard_chrome_across_scales_and_transitions() {
                     .iter()
                     .all(|section| !section.viewport.is_visible())
             );
+            if exit_lifecycle {
+                let assert_outgoing = || {
+                    assert!(island.weather_scroll.is_visible());
+                    assert!(!island.weather_scroll.can_target());
+                    assert!(island.weather.is_visible());
+                    assert!(!island.weather.can_target());
+                    assert!(island.weather.opacity() > 0.0);
+                    assert!(!island.hardware.root.is_visible());
+                    assert!(
+                        island.dashboard_sections[1..]
+                            .iter()
+                            .all(|section| !section.viewport.is_visible()
+                                && !section.viewport.can_target())
+                    );
+                };
+                for outside_click in [false, true] {
+                    island.set_pointer_in_hover_region(true);
+                    island.set_pointer_in_hover_region(false);
+                    assert!(island.island_hovered.get());
+                    assert!(!island.pointer_in_hover_region.get());
+                    if outside_click {
+                        island.test_emit_dismiss_click();
+                    } else {
+                        let back = island.weather.first_child().unwrap().first_child().unwrap();
+                        assert!(back.grab_focus());
+                        let controllers = island.window.observe_controllers();
+                        assert!(
+                            (0..controllers.n_items())
+                                .filter_map(|index| controllers
+                                    .item(index)
+                                    .and_downcast::<gtk::EventControllerKey>())
+                                .any(|controller| controller.emit_by_name::<bool>(
+                                    "key-pressed",
+                                    &[
+                                        &gtk::gdk::Key::Escape,
+                                        &0_u32,
+                                        &gtk::gdk::ModifierType::empty()
+                                    ]
+                                ))
+                        );
+                    }
+                    assert_eq!(island.current_view.get(), View::Compact);
+                    assert!(!island.island_hovered.get());
+                    if animated {
+                        assert_outgoing();
+                        pump(80);
+                        assert_outgoing();
+                        // Reverse an in-flight close without unmounting its
+                        // body or leaving old dashboard controls targetable.
+                        island.open_weather();
+                        assert!(island.weather_scroll.is_visible());
+                        assert!(!island.hardware.root.is_visible());
+                        pump(600);
+                        assert_eq!(island.weather.opacity(), 1.0);
+                        assert!(island.weather.can_target());
+                        island.set_pointer_in_hover_region(false);
+                        island.close();
+                        pump(80);
+                        assert_outgoing();
+                    }
+                    pump(600);
+                    assert!(!island.weather_body_active.get());
+                    assert!(!island.weather_scroll.is_visible());
+                    assert!(!island.weather_scroll.can_target());
+                    assert!(!island.weather.is_visible());
+                    assert!(!island.weather.can_target());
+                    assert!(!island.dashboard.is_visible());
+                    assert!(
+                        island.geometry.get().height
+                            <= f64::from(island.metrics.compact_height + 1)
+                    );
+                    island.open_weather();
+                    pump(600);
+                }
+                // Back/Dashboard has the same outgoing-body ownership. A
+                // second logical target change must not discard that body.
+                island.open();
+                if animated {
+                    assert_outgoing();
+                    pump(80);
+                    assert_outgoing();
+                    island.close();
+                    assert_outgoing();
+                    island.open_weather();
+                    pump(600);
+                    assert!(island.weather.can_target());
+                    island.open();
+                    pump(80);
+                    assert_outgoing();
+                }
+                pump(600);
+                assert!(island.hardware.root.is_visible());
+                assert!(!island.weather_scroll.is_visible());
+                assert!(!island.weather_scroll.can_target());
+                assert!(!island.weather.can_target());
+                assert!(
+                    island
+                        .dashboard_sections
+                        .iter()
+                        .all(|section| section.viewport.can_target())
+                );
+                island.destroy();
+                pump(20);
+                continue;
+            }
             let header_bounds = header.content.compute_bounds(&island.fixed).unwrap();
             let forecast_bounds = island.weather_scroll.compute_bounds(&island.fixed).unwrap();
             let pill_bounds = island.compact.compute_bounds(&island.fixed).unwrap();

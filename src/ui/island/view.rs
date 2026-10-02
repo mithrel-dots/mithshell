@@ -224,6 +224,9 @@ impl IslandWindow {
             0.0
         };
         self.current_view.set(view);
+        if view == View::Weather {
+            self.weather_body_active.set(true);
+        }
         if matches!(view, View::Dashboard | View::Weather) {
             self.dashboard.set_visible(true);
             self.dashboard.set_opacity(1.0);
@@ -435,6 +438,13 @@ impl IslandWindow {
                     if peek { 1.0 } else { 0.0 },
                     if peek { in_progress } else { out_progress },
                 ));
+            } else if widget_view == View::Weather
+                && self.weather_body_active.get()
+                && target != View::Weather
+            {
+                // An interrupted exit still owns the outgoing forecast even
+                // when the previous logical view has already become Compact.
+                widget.set_opacity(lerp(start_opacity, 0.0, out_progress));
             } else if widget_view == target {
                 widget.set_opacity(lerp(start_opacity, 1.0, in_progress));
             } else if widget_view == previous && previous != target {
@@ -530,6 +540,7 @@ impl IslandWindow {
     pub(super) fn finish_view(self: &Rc<Self>, view: View) {
         self.view_transition_active.set(false);
         self.view_animation_target.set(None);
+        self.weather_body_active.set(view == View::Weather);
         let geometry = self.presentation_target_geometry(view);
         let amount = if matches!(view, View::Dashboard | View::Weather) {
             1.0
@@ -723,7 +734,7 @@ impl IslandWindow {
     }
 
     fn layout_dashboard_sections(&self, amount: f64, width: f64) {
-        self.layout_dashboard_page(amount, width, self.current_view.get() == View::Weather);
+        self.layout_dashboard_page(amount, width, self.weather_body_active.get());
     }
 
     fn layout_dashboard_page(&self, amount: f64, width: f64, weather: bool) {
@@ -745,6 +756,8 @@ impl IslandWindow {
         let gap = (f64::from(self.metrics.spacing(8)) * amount).round() as i32;
         self.hardware.root.set_visible(!weather);
         self.weather_scroll.set_visible(weather);
+        self.weather_scroll
+            .set_can_target(weather && self.current_view.get() == View::Weather);
         if weather {
             let header = &self.dashboard_sections[0].content;
             let header_height = header.measure(Orientation::Vertical, inner_width).1;
@@ -858,7 +871,10 @@ impl IslandWindow {
                 .viewport
                 .set_opacity(if shared_header { 1.0 } else { opacity });
             section.viewport.set_can_target(
-                (self.current_view.get() == View::Dashboard && opacity > 0.0) || shared_header,
+                (self.current_view.get() == View::Dashboard
+                    && opacity > 0.0
+                    && (!self.weather_body_active.get() || index == 0))
+                    || shared_header,
             );
         }
     }

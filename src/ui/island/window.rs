@@ -415,6 +415,7 @@ impl IslandWindow {
             dashboard_section_opacity: Cell::new(0.0),
             panel_scroll,
             weather_scroll,
+            weather_body_active: Cell::new(false),
             notification_scroll: dashboard_widgets.notification_scroll,
             search: search_widgets.root,
             weather: weather_widgets.root,
@@ -723,7 +724,7 @@ impl IslandWindow {
     }
 
     pub fn close(self: &Rc<Self>) {
-        if self.current_view.get() == View::Dashboard {
+        if matches!(self.current_view.get(), View::Dashboard | View::Weather) {
             self.island_hovered.set(self.pointer_in_hover_region.get());
         }
         self.dashboard_open.set(false);

@@ -152,6 +152,8 @@ pub struct IslandWindow {
     dashboard_section_opacity: Cell<f64>,
     panel_scroll: gtk::ScrolledWindow,
     weather_scroll: gtk::ScrolledWindow,
+    // Presented body can outlive the incoming view during a weather exit.
+    weather_body_active: Cell<bool>,
     notification_scroll: gtk::ScrolledWindow,
     search: gtk::Box,
     weather: gtk::Box,
