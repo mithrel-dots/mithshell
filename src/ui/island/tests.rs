@@ -195,14 +195,18 @@ fn run_weather_regression(exit_lifecycle: bool) {
         main_loop.run();
     };
     for scale in [0.75, 1.0, 1.4, 1.9] {
-        for animated in [false, true] {
+        for (animated, presentation) in [
+            (false, LauncherPresentation::Independent),
+            (false, LauncherPresentation::Integrated),
+            (true, LauncherPresentation::Independent),
+            (true, LauncherPresentation::Integrated),
+        ] {
+            eprintln!(
+                "weather regression: scale={scale}, animated={animated}, presentation={presentation:?}"
+            );
             let mut config = AppConfig::default();
             config.shell.scale = scale;
-            config.launcher.presentation = if animated {
-                LauncherPresentation::Integrated
-            } else {
-                LauncherPresentation::Independent
-            };
+            config.launcher.presentation = presentation;
             let island = IslandWindow::new_for_test(
                 &app,
                 &monitor,
@@ -216,6 +220,17 @@ fn run_weather_regression(exit_lifecycle: bool) {
             pump(600);
             let header = &island.dashboard_sections[0];
             let header_parent = header.content.parent();
+            let assert_shared_chrome = |view| {
+                assert_eq!(island.current_view.get(), view);
+                assert!(island.compact.is_visible());
+                assert!(island.compact.can_target());
+                assert_eq!(island.compact.opacity(), 1.0);
+                assert!(header.viewport.is_visible());
+                assert!(header.viewport.can_target());
+                assert_eq!(header.viewport.opacity(), 1.0);
+                assert_eq!(island.weather_tab.is_active(), view == View::Weather);
+                assert_eq!(island.dashboard_tab.is_active(), view == View::Dashboard);
+            };
             let switch = header.content.last_child().unwrap();
             assert_eq!(
                 switch.first_child(),
@@ -253,11 +268,19 @@ fn run_weather_regression(exit_lifecycle: bool) {
             assert_eq!(island.current_view.get(), View::Dashboard);
             island.open_search();
             pump(600);
+            if presentation == LauncherPresentation::Integrated {
+                assert_eq!(island.current_view.get(), View::Search);
+                assert_eq!(island.compact.opacity(), 0.0);
+            }
             island.open();
             assert!(island.dashboard_tab.is_active());
+            if !animated {
+                assert_shared_chrome(View::Dashboard);
+            }
             // Integrated launcher return restores its reparented pill on the
             // scheduler/frame clock, independently of page animation settings.
             pump(600);
+            assert_shared_chrome(View::Dashboard);
             island.open_weather();
             assert!(island.weather_tab.is_active());
             assert!(!island.dashboard_tab.is_active());
@@ -299,6 +322,32 @@ fn run_weather_regression(exit_lifecycle: bool) {
                     .collect(),
             }));
             pump(600);
+            assert_shared_chrome(View::Weather);
+            // Direct launcher -> Weather must restore the pill too, without
+            // relying on Dashboard having restored it first.
+            island.open_search();
+            pump(600);
+            island.open_weather();
+            assert!(island.weather_tab.is_active());
+            if !animated {
+                assert_shared_chrome(View::Weather);
+            }
+            pump(600);
+            assert_shared_chrome(View::Weather);
+            // Reverse both launcher and page transitions before they settle;
+            // stale generations must not finalize an older page afterward.
+            island.open_search();
+            pump(80);
+            island.open_weather();
+            assert!(island.weather_tab.is_active());
+            pump(80);
+            island.open();
+            assert!(island.dashboard_tab.is_active());
+            pump(80);
+            island.open_weather();
+            assert!(island.weather_tab.is_active());
+            pump(600);
+            assert_shared_chrome(View::Weather);
             assert!(!island.view_transition_active.get());
             assert_eq!(header.content.parent(), header_parent);
             assert!(island.weather.is_visible());

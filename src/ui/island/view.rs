@@ -568,9 +568,9 @@ impl IslandWindow {
                     && widget_view == View::Dashboard);
             widget.set_visible(active);
             widget.set_can_target(active);
-            if !(matches!(view, View::Dashboard | View::Weather) && widget_view == View::Compact) {
-                widget.set_opacity(if active { 1.0 } else { 0.0 });
-            }
+            // Terminal state must not depend on an animation tick restoring
+            // the shared pill after Search (instant transitions have no tick).
+            widget.set_opacity(if active { 1.0 } else { 0.0 });
         }
         if matches!(view, View::Dashboard | View::Weather)
             || (view == View::Compact && self.island_hovered.get())
