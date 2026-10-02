@@ -10,11 +10,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::IslandWindow;
 use super::circle::{self, CircleHost, CircleRequest, CircleSpec, Event, Rect, Size, Visual};
 use super::media_circle::{MediaCircle, MediaCircleActions};
 use super::notification_circle::{NotificationCircle, NotificationCircleCallbacks};
 use super::tray_circle::TrayCircle;
+use super::{IslandWindow, View};
 use crate::config::{CircleModule, NotificationConfig, TrayConfig};
 use crate::state::{MediaState, Notification, TrayItem};
 use crate::ui::motion::Transition;
@@ -742,6 +742,10 @@ impl IslandWindow {
         let Some(surface) = self.window.surface() else {
             return;
         };
+        surface.set_input_region(Some(&self.circle_input_region()));
+    }
+
+    pub(super) fn circle_input_region(&self) -> gtk::cairo::Region {
         let geometry = self.geometry.get();
         let region = gtk::cairo::Region::create();
         let central = gtk::cairo::RectangleInt::new(
@@ -750,7 +754,13 @@ impl IslandWindow {
             geometry.width.round().max(1.0) as i32,
             geometry.height.round().max(1.0) as i32,
         );
-        let central_region = gtk::cairo::Region::create_rectangle(&central);
+        let central_region = if matches!(self.current_view.get(), View::Dashboard | View::Weather) {
+            // Circles augment the page's shape; they must not turn its
+            // transparent gutters/corners back into main-window targets.
+            self.island_input_region(geometry)
+        } else {
+            gtk::cairo::Region::create_rectangle(&central)
+        };
         let _ = region.union(&central_region);
         let hover = gtk::cairo::RectangleInt::new(
             (f64::from(self.metrics.window_width - self.metrics.media_max_width) / 2.0
@@ -774,7 +784,7 @@ impl IslandWindow {
                 }
             }
         }
-        surface.set_input_region(Some(&region));
+        region
     }
 }
 

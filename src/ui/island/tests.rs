@@ -13,6 +13,246 @@ use gtk::prelude::*;
 use std::{cell::RefCell, rc::Rc};
 
 #[test]
+#[ignore = "requires scripts/run-outside-dismiss-hyprland.py; never run on the live desktop"]
+fn exclusive_outside_click_routes_through_native_input() {
+    use std::time::{Duration, Instant};
+    let pointer = std::env::var("MITHSHELL_PRIVATE_POINTER").expect("private compositor runner");
+    gtk::init().unwrap();
+    let _styles = crate::ui::install_styles(&crate::theme::generate_gtk());
+    let app = gtk::Application::new(None::<&str>, gtk::gio::ApplicationFlags::NON_UNIQUE);
+    app.connect_activate(|_| {});
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let monitor = gtk::gdk::Display::default()
+        .unwrap()
+        .monitors()
+        .item(0)
+        .and_downcast::<gtk::gdk::Monitor>()
+        .unwrap();
+    let actions = IslandActions {
+        switch_workspace: Rc::new(|_, _| {}),
+        set_volume: Rc::new(|_| {}),
+        toggle_mute: Rc::new(|| {}),
+        search: Rc::new(|_| {}),
+        select: Rc::new(|_: TarragonSelection| {}),
+        tarragon_status: Rc::new(|| {}),
+        tarragon_reload: Rc::new(|| {}),
+        load_preview: Rc::new(|_, _, _| {}),
+        media_play_pause: Rc::new(|_| {}),
+        media_next: Rc::new(|_| {}),
+        media_previous: Rc::new(|_| {}),
+        notification_expired: Rc::new(|_, _| {}),
+        notification_dismiss: Rc::new(|_| {}),
+        notification_invoke: Rc::new(|_, _| {}),
+        notification_clear_all: Rc::new(|| {}),
+        notification_inhibit: Rc::new(|_| {}),
+        tray_activate: Rc::new(|_, _, _, _| {}),
+        tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+        tray_context_menu: Rc::new(|_, _, _, _| {}),
+        tray_scroll: Rc::new(|_, _, _, _| {}),
+        tray_menu_event: Rc::new(|_, _, _| {}),
+    };
+    let pump = |duration| {
+        let until = Instant::now() + duration;
+        while Instant::now() < until {
+            while gtk::glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    let deliver = |x: i32, y: i32, button: bool| {
+        // This is a real virtual pointer -> compositor -> wl_pointer -> GDK
+        // delivery, not a gesture signal or a close-state helper.
+        let mut args = vec![x.to_string(), y.to_string(), "3840".into(), "2160".into()];
+        if !button {
+            args.push("move-only".into());
+        }
+        let mut child = std::process::Command::new(&pointer)
+            .args(args)
+            .spawn()
+            .unwrap();
+        while child.try_wait().unwrap().is_none() {
+            pump(Duration::from_millis(10));
+        }
+        assert!(child.wait().unwrap().success());
+        pump(Duration::from_millis(80));
+    };
+    let click = |x, y| deliver(x, y, true);
+    for animations in [false] {
+        for presentation in [
+            LauncherPresentation::Integrated,
+            LauncherPresentation::Independent,
+        ] {
+            if (presentation == LauncherPresentation::Independent)
+                != (std::env::var("MITHSHELL_TEST_INDEPENDENT").as_deref() == Ok("1"))
+            {
+                continue;
+            }
+            let mut config = AppConfig::default();
+            config.launcher.presentation = presentation;
+            if std::env::var("MITHSHELL_TEST_CIRCLES").as_deref() == Ok("1") {
+                config.circles.left = CircleModule::Notifications;
+                config.circles.right = CircleModule::Tray;
+            }
+            let island = IslandWindow::new(
+                &app,
+                &monitor,
+                "HEADLESS-1".into(),
+                &config,
+                actions.clone(),
+                animations,
+            );
+            app.activate();
+            island.window.present();
+            pump(Duration::from_millis(150));
+            for weather in [false, true] {
+                if weather {
+                    island.open_weather();
+                } else {
+                    island.open();
+                }
+                pump(Duration::from_millis(800));
+                assert!(island.dismiss_window.is_mapped());
+                let expected = if weather {
+                    View::Weather
+                } else {
+                    View::Dashboard
+                };
+                assert_eq!(island.current_view.get(), expected);
+                // Interior hardware content is not a dismissal target.
+                click(1920, 250);
+                assert_eq!(
+                    island.current_view.get(),
+                    expected,
+                    "inside click dismissed page"
+                );
+                if !weather {
+                    let bounds = island.volume_scale.compute_bounds(&island.fixed).unwrap();
+                    click(
+                        (3840 - island.window.width()) / 2
+                            + (bounds.x() + bounds.width() / 2.0) as i32,
+                        island.metrics.spacing(config.shell.top_margin)
+                            + (bounds.y() + bounds.height() / 2.0) as i32,
+                    );
+                    assert_eq!(
+                        island.current_view.get(),
+                        expected,
+                        "control click dismissed page"
+                    );
+                    // Like a tray menu, a native popup can extend outside
+                    // the page while its controls still propagate to the root.
+                    let popup = gtk::Popover::new();
+                    popup.set_parent(&island.mute_button);
+                    popup.set_autohide(false);
+                    popup.set_has_arrow(false);
+                    popup.set_position(gtk::PositionType::Right);
+                    popup.set_offset(1100, 0);
+                    let button = gtk::Button::with_label("popup control");
+                    button.set_size_request(200, 80);
+                    let activated = Rc::new(std::cell::Cell::new(false));
+                    let observed = activated.clone();
+                    button.connect_clicked(move |_| observed.set(true));
+                    popup.set_child(Some(&button));
+                    popup.popup();
+                    pump(Duration::from_millis(250));
+                    let native = popup
+                        .surface()
+                        .unwrap()
+                        .downcast::<gtk::gdk::Popup>()
+                        .unwrap();
+                    let bounds = button.compute_bounds(&popup).unwrap();
+                    let transform = popup.surface_transform();
+                    let x = native.position_x()
+                        + (f64::from(bounds.x() + bounds.width() / 2.0) + transform.0) as i32;
+                    let y = native.position_y()
+                        + (f64::from(bounds.y() + bounds.height() / 2.0) + transform.1) as i32;
+                    assert!(
+                        !island
+                            .island_input_region(island.geometry.get())
+                            .contains_point(x, y),
+                        "popup fixture must extend outside page: x={x} y={y} native={},{} bounds={bounds:?} transform={transform:?}",
+                        native.position_x(),
+                        native.position_y(),
+                    );
+                    click(
+                        (3840 - island.window.width()) / 2 + x,
+                        island.metrics.spacing(config.shell.top_margin) + y,
+                    );
+                    assert!(
+                        activated.get(),
+                        "native popup control must receive its click"
+                    );
+                    assert_eq!(
+                        island.current_view.get(),
+                        expected,
+                        "popup control dismissed page"
+                    );
+                    popup.popdown();
+                    popup.unparent();
+                    pump(Duration::from_millis(100));
+                }
+                // Inside the page's bounding box and native canvas, but in
+                // its transparent gutter. Circles must not widen this target.
+                let page = island.geometry.get();
+                click(
+                    (3840 - island.window.width()) / 2
+                        + (island.metrics.window_width - page.width.round() as i32) / 2
+                        + 2,
+                    island.metrics.spacing(config.shell.top_margin)
+                        + page.y.round() as i32
+                        + island.persistent_header_height(page)
+                        + 100,
+                );
+                pump(Duration::from_millis(800));
+                assert_eq!(island.current_view.get(), View::Compact);
+                assert!(!island.island_hovered.get());
+                assert!(!island.pointer_in_hover_region.get());
+                assert!(!island.dismiss_window.is_visible());
+                for far_x in [100, 3700] {
+                    if weather {
+                        island.open_weather();
+                    } else {
+                        island.open();
+                    }
+                    // Far outside the native allocation: compositor fallback
+                    // coordinates exceed its width/height, not just page bounds.
+                    pump(Duration::from_millis(800));
+                    click(far_x, 2050);
+                    pump(Duration::from_millis(800));
+                    assert_eq!(
+                        island.current_view.get(),
+                        View::Compact,
+                        "far outside click failed"
+                    );
+                    assert!(!island.island_hovered.get());
+                    assert!(!island.weather_body_active.get());
+                }
+            }
+            island.open_search();
+            pump(Duration::from_millis(800));
+            assert!(island.search_open.get());
+            click(3700, 2050);
+            pump(Duration::from_millis(800));
+            assert!(!island.search_open.get(), "launcher outside click failed");
+            island.open_weather();
+            pump(Duration::from_millis(800));
+            let pill = island.compact.compute_bounds(&island.fixed).unwrap();
+            click(
+                (3840 - island.window.width()) / 2 + (pill.x() + pill.width() / 2.0) as i32,
+                island.metrics.spacing(config.shell.top_margin)
+                    + (pill.y() + pill.height() / 2.0) as i32,
+            );
+            pump(Duration::from_millis(800));
+            assert_eq!(
+                island.current_view.get(),
+                View::Compact,
+                "persistent pill must dismiss"
+            );
+            island.destroy();
+            pump(Duration::from_millis(100));
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
 fn dashboard_escape_captures_keys_with_focused_child_controls() {
     gtk::init().expect("GTK display");

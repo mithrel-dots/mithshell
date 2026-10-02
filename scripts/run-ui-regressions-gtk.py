@@ -101,7 +101,12 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
         match = re.fullmatch(r"(.+): test", line)
         if match:
             available[match.group(1)] = available.get(match.group(1), 0) + 1
-    tests = sys.argv[1:] or sorted(available)
+    tests = sys.argv[1:] or sorted(
+        test for test in available
+        if test != "ui::island::tests::exclusive_outside_click_routes_through_native_input"
+    )
+    if available.get("ui::island::tests::exclusive_outside_click_routes_through_native_input", 0) != 1:
+        raise RuntimeError("stale shared-cache build: expected new outside-dismiss native regression")
     if not tests:
         raise RuntimeError("no ignored GTK regressions were discovered")
     invalid = [test for test in tests if available.get(test, 0) != 1]

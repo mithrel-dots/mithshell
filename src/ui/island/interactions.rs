@@ -10,6 +10,101 @@ use gtk::{GestureClick, gdk, glib};
 use super::{IslandWindow, OverlayButtons, dominant_scroll_direction};
 
 impl IslandWindow {
+    /// Exclusive layer focus on Hyprland routes pointer events outside the
+    /// input region back to the exclusive native window, bypassing the Top
+    /// catcher. Observe that native root too (including negative/out-of-window
+    /// coordinates), without claiming clicks on content or popup controls.
+    pub(super) fn connect_exclusive_outside_click(
+        self: &Rc<Self>,
+        root: &gtk::Widget,
+        search: bool,
+    ) {
+        let click = GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let started_outside = Rc::new(Cell::new(false));
+        let weak = Rc::downgrade(self);
+        let pressed_outside = started_outside.clone();
+        click.connect_pressed(move |gesture, _, x, y| {
+            let outside = weak
+                .upgrade()
+                .is_some_and(|island| island.exclusive_click_is_outside(gesture, x, y, search));
+            pressed_outside.set(outside);
+            if outside {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        click.connect_released(move |gesture, _, x, y| {
+            if started_outside.replace(false)
+                && let Some(island) = weak.upgrade()
+                && island.exclusive_click_is_outside(gesture, x, y, search)
+                && !island.dismiss_full_circle()
+            {
+                // A redirected event need not produce a leave on the fixed
+                // canvas. Do not restore its stale pinned hover on close.
+                island.set_pointer_in_hover_region(false);
+                island.close();
+            }
+        });
+        root.add_controller(click);
+    }
+
+    fn exclusive_click_is_outside(
+        &self,
+        gesture: &GestureClick,
+        x: f64,
+        y: f64,
+        search: bool,
+    ) -> bool {
+        let active = if search {
+            self.search_open.get()
+                && self.launcher_presentation == crate::config::LauncherPresentation::Independent
+        } else {
+            matches!(
+                self.current_view.get(),
+                View::Dashboard | View::Weather | View::Search
+            )
+        };
+        if !active {
+            return false;
+        }
+        let Some(root) = gesture.widget() else {
+            return false;
+        };
+        // A tray/search popover has its own native surface, but GTK can
+        // propagate its controls through this root. Its content may extend
+        // beyond the main input shape; only redirected main-surface events
+        // are outside clicks, never events delivered to a native popup.
+        if gesture.current_event().and_then(|event| event.surface())
+            != root.native().and_then(|native| native.surface())
+        {
+            return false;
+        }
+        let fixed = if search {
+            &self.search_fixed
+        } else {
+            &self.fixed
+        };
+        let Some(point) = root.compute_point(fixed, &gtk::graphene::Point::new(x as f32, y as f32))
+        else {
+            return false;
+        };
+        let region = if search {
+            let geometry = self.search_geometry.get();
+            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                (self.metrics.search_window_width - geometry.width.round() as i32) / 2,
+                geometry.y.round() as i32,
+                geometry.width.round() as i32,
+                geometry.height.round() as i32,
+            ))
+        } else if self.circles.borrow().is_some() {
+            self.circle_input_region()
+        } else {
+            self.island_input_region(self.geometry.get())
+        };
+        !region.contains_point(point.x().floor() as i32, point.y().floor() as i32)
+    }
+
     pub(super) fn update_pointer_from_root(self: &Rc<Self>, x: f64, y: f64) {
         // The layer/root is intentionally much larger than the visible pill
         // (it also hosts the dashboard and overlay controls). Use the current
@@ -75,6 +170,8 @@ impl IslandWindow {
         buttons: OverlayButtons<'_>,
         _dismiss_area: &gtk::Box,
     ) {
+        self.connect_exclusive_outside_click(self.window.upcast_ref(), false);
+        self.connect_exclusive_outside_click(self.search_window.upcast_ref(), true);
         let OverlayButtons {
             mute_button,
             search_back_button,
@@ -488,6 +585,7 @@ impl IslandWindow {
             if let Some(island) = weak.upgrade()
                 && !island.dismiss_full_circle()
             {
+                island.set_pointer_in_hover_region(false);
                 island.close();
             }
         });

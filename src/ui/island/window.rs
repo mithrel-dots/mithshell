@@ -68,6 +68,7 @@ impl IslandWindow {
         let canvas = island.window.child().expect("island canvas");
         island.window.set_child(None::<&gtk::Widget>);
         focus_window.set_child(Some(&canvas));
+        island.connect_exclusive_outside_click(focus_window.upcast_ref(), false);
         focus_window.present();
         *island.focus_root.borrow_mut() = focus_window.upcast::<gtk::Widget>();
         island
