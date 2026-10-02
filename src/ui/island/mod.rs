@@ -151,6 +151,7 @@ pub struct IslandWindow {
     dashboard_expansion: Cell<f64>,
     dashboard_section_opacity: Cell<f64>,
     panel_scroll: gtk::ScrolledWindow,
+    weather_scroll: gtk::ScrolledWindow,
     notification_scroll: gtk::ScrolledWindow,
     search: gtk::Box,
     weather: gtk::Box,

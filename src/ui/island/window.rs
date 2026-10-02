@@ -373,10 +373,16 @@ impl IslandWindow {
         .then(|| build_pill_overlay(application, monitor, shell, metrics));
 
         let weather_widgets = weather_view(metrics, config.weather.provider);
-        content.put(
-            &weather_widgets.root,
-            f64::from((metrics.window_width - metrics.weather_width) / 2),
-            0.0,
+        let weather_scroll = gtk::ScrolledWindow::new();
+        weather_scroll.add_css_class("island-weather-scroll");
+        weather_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        weather_scroll.set_has_frame(false);
+        weather_scroll.set_kinetic_scrolling(false);
+        weather_scroll.set_child(Some(&weather_widgets.root));
+        weather_scroll.set_visible(false);
+        dashboard_widgets.root.insert_child_after(
+            &weather_scroll,
+            Some(&dashboard_widgets.sections[0].viewport),
         );
         weather_widgets.root.set_opacity(0.0);
         weather_widgets.root.set_visible(false);
@@ -408,6 +414,7 @@ impl IslandWindow {
             dashboard_expansion: Cell::new(0.0),
             dashboard_section_opacity: Cell::new(0.0),
             panel_scroll,
+            weather_scroll,
             notification_scroll: dashboard_widgets.notification_scroll,
             search: search_widgets.root,
             weather: weather_widgets.root,

@@ -26,7 +26,8 @@ pub(super) fn weather_provider_label(prefix: &str, provider: WeatherProvider) ->
 
 pub(super) fn weather_view(metrics: Metrics, provider: WeatherProvider) -> WeatherWidgets {
     let root = gtk::Box::new(Orientation::Vertical, metrics.spacing(7));
-    root.set_size_request(metrics.weather_width, metrics.weather_height);
+    // The shared dashboard panel supplies width and bounds the scroll viewport.
+    root.set_size_request(-1, -1);
     root.add_css_class("weather-content");
     root.set_valign(Align::Start);
 
@@ -347,7 +348,7 @@ pub(super) fn draw_weather_condition(area: &gtk::DrawingArea, condition: Weather
 impl IslandWindow {
     /// Renders a forecast pushed by `Controller::attach_weather`, or `None`
     /// when a fetch failed and there is nothing cached yet.
-    pub fn update_weather(&self, state: Option<&WeatherState>) {
+    pub fn update_weather(self: &Rc<Self>, state: Option<&WeatherState>) {
         let Some(state) = state else {
             if self.latest_weather.borrow().is_none() {
                 self.weather_status.set_label("WEATHER UNAVAILABLE");
@@ -373,5 +374,10 @@ impl IslandWindow {
         }
         *self.weather_icons.borrow_mut() = icons;
         *self.latest_weather.borrow_mut() = Some(state.clone());
+        // A forecast arriving after the loading page is mapped changes its
+        // natural height. Retarget the shared panel instead of clipping new rows.
+        if self.current_view.get() == View::Weather {
+            self.reconcile_view();
+        }
     }
 }

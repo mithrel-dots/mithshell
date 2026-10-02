@@ -26,7 +26,9 @@ impl IslandWindow {
             })
         };
         let pill = match self.current_view.get() {
-            View::Compact | View::Dashboard => Some(self.compact.clone().upcast::<gtk::Widget>()),
+            View::Compact | View::Dashboard | View::Weather => {
+                Some(self.compact.clone().upcast::<gtk::Widget>())
+            }
             View::Media => Some(self.media.clone().upcast::<gtk::Widget>()),
             _ => None,
         };
@@ -34,8 +36,9 @@ impl IslandWindow {
         let panel_inside = self.current_view.get() == View::Compact
             && self.island_hovered.get()
             && rect_contains(&self.dashboard.clone().upcast::<gtk::Widget>());
-        let dashboard_panel_inside = self.current_view.get() == View::Dashboard
-            && rect_contains(&self.dashboard.clone().upcast::<gtk::Widget>());
+        let dashboard_panel_inside =
+            matches!(self.current_view.get(), View::Dashboard | View::Weather)
+                && rect_contains(&self.dashboard.clone().upcast::<gtk::Widget>());
         // Invisible hover bridge immediately above the resting pill prevents
         // the pointer from losing the island during its downward translation.
         let bridge_inside = if self.current_view.get() == View::Compact && self.island_hovered.get()

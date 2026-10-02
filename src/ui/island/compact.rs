@@ -148,7 +148,10 @@ impl IslandWindow {
         // Rebuilds can happen while hover is already rendered.  Repositioning
         // the root above must not erase its offset against the current
         // backdrop, even when the new width produces no new animation.
-        if matches!(self.current_view.get(), View::Compact | View::Dashboard) {
+        if matches!(
+            self.current_view.get(),
+            View::Compact | View::Dashboard | View::Weather
+        ) {
             self.sync_pill_content_geometry(self.geometry.get());
         }
     }
@@ -187,7 +190,7 @@ impl IslandWindow {
 
     pub(super) fn set_pointer_in_hover_region(self: &Rc<Self>, inside: bool) {
         self.pointer_in_hover_region.set(inside);
-        if self.current_view.get() == View::Dashboard {
+        if matches!(self.current_view.get(), View::Dashboard | View::Weather) {
             // An open dashboard is pinned until its explicit close affordance
             // or the persistent header is clicked again.
             self.island_hovered.set(true);
@@ -324,7 +327,7 @@ impl IslandWindow {
     /// content stays centered within its own animated backdrop.
     pub(super) fn sync_pill_content_geometry(&self, geometry: Geometry) {
         let (widget, base_width, base_height) = match self.current_view.get() {
-            View::Compact | View::Dashboard => (
+            View::Compact | View::Dashboard | View::Weather => (
                 &self.compact,
                 self.compact_width.get(),
                 self.metrics.compact_height,
@@ -336,7 +339,10 @@ impl IslandWindow {
             ),
             _ => return,
         };
-        if matches!(self.current_view.get(), View::Compact | View::Dashboard) {
+        if matches!(
+            self.current_view.get(),
+            View::Compact | View::Dashboard | View::Weather
+        ) {
             // Compact is an overlay sibling of the scrolling page surface so
             // it stays above the rolling panel and retains its GTK pick path.
             let width = geometry.width.round() as i32;

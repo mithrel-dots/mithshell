@@ -157,7 +157,7 @@ impl IslandWindow {
             compact_overlay.set_child(Some(&self.battery_waves.area));
         }
         self.battery_waves
-            .set_active(pill_view || view == View::Dashboard);
+            .set_active(pill_view || matches!(view, View::Dashboard | View::Weather));
         let desired_hover = pill_view && self.pointer_in_hover_region.get();
         let hover_changed = self.tray_hovered.get() != desired_hover;
         self.tray_hovered.set(desired_hover);
@@ -203,11 +203,12 @@ impl IslandWindow {
         }
         let previous_view = self.current_view.get();
         let section_start = self.dashboard_expansion.get();
-        let section_opacity_start = if view == View::Dashboard && section_start == 0.0 {
-            1.0
-        } else {
-            self.dashboard_section_opacity.get()
-        };
+        let section_opacity_start =
+            if matches!(view, View::Dashboard | View::Weather) && section_start == 0.0 {
+                1.0
+            } else {
+                self.dashboard_section_opacity.get()
+            };
         let search_start_opacity = self.search.opacity();
         let date_start_opacity = if self.compact_date.is_visible() {
             self.compact_date.opacity()
@@ -215,7 +216,7 @@ impl IslandWindow {
             0.0
         };
         self.current_view.set(view);
-        if view == View::Dashboard {
+        if matches!(view, View::Dashboard | View::Weather) {
             self.dashboard.set_visible(true);
             self.dashboard.set_opacity(1.0);
             self.apply_dashboard_sections(
@@ -264,7 +265,11 @@ impl IslandWindow {
             widget.set_visible(true);
             // Input follows the incoming CONTENT_IN track; never expose a
             // page while the outgoing page is still fading out.
-            widget.set_can_target(view == View::Dashboard && widget == &self.compact);
+            widget.set_can_target(
+                matches!(view, View::Dashboard | View::Weather)
+                    && (widget == &self.compact
+                        || widget == self.dashboard.upcast_ref::<gtk::Widget>()),
+            );
         }
         self.refresh_keyboard_mode();
         let start = self.geometry.get();
@@ -328,7 +333,7 @@ impl IslandWindow {
             let linear = profile.progress(elapsed);
             let eased = linear;
             let geometry = start.interpolate(target, eased);
-            let sections_open = view == View::Dashboard;
+            let sections_open = matches!(view, View::Dashboard | View::Weather);
             let section_opacity = if sections_open {
                 // New content is already opaque before expansion; only an
                 // interrupted exit needs its partial opacity restored smoothly.
@@ -409,8 +414,10 @@ impl IslandWindow {
             sequential_fade_progress(previous, target, elapsed, outgoing, incoming)
         };
         for ((widget, widget_view), start_opacity) in self.view_widgets().into_iter().zip(start) {
-            if (matches!(target, View::Compact | View::Dashboard) && widget_view == View::Compact)
-                || (target == View::Dashboard && widget_view == View::Dashboard)
+            if (matches!(target, View::Compact | View::Dashboard | View::Weather)
+                && widget_view == View::Compact)
+                || (matches!(target, View::Dashboard | View::Weather)
+                    && widget_view == View::Dashboard)
             {
                 widget.set_opacity(1.0);
             } else if widget_view == View::Dashboard && target == View::Compact {
@@ -437,10 +444,10 @@ impl IslandWindow {
         start: f64,
         geometry_duration: Duration,
     ) {
-        if !matches!(target, View::Dashboard | View::Compact) {
+        if !matches!(target, View::Dashboard | View::Weather | View::Compact) {
             return;
         }
-        let show = target == View::Dashboard || self.island_hovered.get();
+        let show = matches!(target, View::Dashboard | View::Weather) || self.island_hovered.get();
         if !show && self.current_view.get() != View::Compact {
             return;
         }
@@ -516,23 +523,30 @@ impl IslandWindow {
         self.view_transition_active.set(false);
         self.view_animation_target.set(None);
         let geometry = self.presentation_target_geometry(view);
-        let amount = if view == View::Dashboard { 1.0 } else { 0.0 };
+        let amount = if matches!(view, View::Dashboard | View::Weather) {
+            1.0
+        } else {
+            0.0
+        };
         self.apply_dashboard_sections(amount, amount, geometry.width);
         self.apply_geometry(geometry);
         self.sync_pill_content_geometry(geometry);
         for (widget, widget_view) in self.view_widgets() {
             let active = widget_view == view
-                || (view == View::Dashboard && widget_view == View::Compact)
+                || (matches!(view, View::Dashboard | View::Weather)
+                    && matches!(widget_view, View::Compact | View::Dashboard))
                 || (view == View::Compact
                     && self.island_hovered.get()
                     && widget_view == View::Dashboard);
             widget.set_visible(active);
             widget.set_can_target(active);
-            if !(view == View::Dashboard && widget_view == View::Compact) {
+            if !(matches!(view, View::Dashboard | View::Weather) && widget_view == View::Compact) {
                 widget.set_opacity(if active { 1.0 } else { 0.0 });
             }
         }
-        if view == View::Dashboard || (view == View::Compact && self.island_hovered.get()) {
+        if matches!(view, View::Dashboard | View::Weather)
+            || (view == View::Compact && self.island_hovered.get())
+        {
             self.dashboard.set_visible(true);
             self.compact_date.set_visible(true);
             self.compact_date.set_opacity(1.0);
@@ -580,7 +594,7 @@ impl IslandWindow {
         // The legacy density classes have a readable font-size floor. Keep the
         // reference's minimum content width even when the idle pill is tiny.
         let peek = self.motion.get().map(|motion| motion.peek);
-        let width_scale = if view == View::Dashboard {
+        let width_scale = if matches!(view, View::Dashboard | View::Weather) {
             1.1
         } else {
             peek.map_or(1.1, |peek| peek.width_scale)
@@ -590,22 +604,36 @@ impl IslandWindow {
         };
         let lift = self.island_lift();
         let max_height = self.island_height_limit();
-        if view == View::Dashboard || (view == View::Compact && self.island_hovered.get()) {
+        if matches!(view, View::Dashboard | View::Weather)
+            || (view == View::Compact && self.island_hovered.get())
+        {
             // GTK reports zero for an invisible widget. Measure the incoming
             // panel before starting the track, including direct Idle -> Open.
             let was_visible = self.dashboard.is_visible();
             self.dashboard.set_visible(true);
-            let width = scale_width(if view == View::Dashboard { 640 } else { 500 })
-                .max(f64::from(
-                    self.dashboard.measure(Orientation::Horizontal, -1).0
-                        + self.metrics.spacing(44)
-                        + 12,
-                ))
-                .min(f64::from(
-                    self.metrics.window_width - self.metrics.spacing(80),
-                ));
+            let width = scale_width(if matches!(view, View::Dashboard | View::Weather) {
+                640
+            } else {
+                500
+            })
+            .max(f64::from(
+                self.dashboard.measure(Orientation::Horizontal, -1).0
+                    + self.metrics.spacing(44)
+                    + 12,
+            ))
+            .min(f64::from(
+                self.metrics.window_width - self.metrics.spacing(80),
+            ));
             let panel_width = width.round() as i32 - self.metrics.spacing(44);
-            self.layout_dashboard_sections(if view == View::Dashboard { 1.0 } else { 0.0 }, width);
+            self.layout_dashboard_page(
+                if matches!(view, View::Dashboard | View::Weather) {
+                    1.0
+                } else {
+                    0.0
+                },
+                width,
+                view == View::Weather,
+            );
             let natural = self
                 .dashboard
                 .measure(Orientation::Vertical, panel_width - 12)
@@ -662,13 +690,17 @@ impl IslandWindow {
     fn sync_island_panel_geometry(&self, geometry: Geometry) {
         self.surface.set_visible(!matches!(
             self.current_view.get(),
-            View::Compact | View::Dashboard
+            View::Compact | View::Dashboard | View::Weather
         ));
-        if !matches!(self.current_view.get(), View::Compact | View::Dashboard) {
+        if !matches!(
+            self.current_view.get(),
+            View::Compact | View::Dashboard | View::Weather
+        ) {
             self.panel_scroll.set_visible(false);
             return;
         }
-        let expanded = self.current_view.get() == View::Dashboard || self.island_hovered.get();
+        let expanded = matches!(self.current_view.get(), View::Dashboard | View::Weather)
+            || self.island_hovered.get();
         let header_height = self.persistent_header_height(geometry);
         let pill_width = geometry.width.round() as i32;
         self.compact.set_size_request(pill_width, header_height);
@@ -683,6 +715,12 @@ impl IslandWindow {
     }
 
     fn layout_dashboard_sections(&self, amount: f64, width: f64) {
+        self.layout_dashboard_page(amount, width, self.current_view.get() == View::Weather);
+    }
+
+    fn layout_dashboard_page(&self, amount: f64, width: f64, weather: bool) {
+        // Weather replaces only the dashboard body. Section zero is the
+        // original action/system header, kept in the same GTK parent/pick tree.
         #[allow(deprecated)]
         let padding = self.dashboard.style_context().padding();
         let inner_width = width.round() as i32
@@ -690,13 +728,38 @@ impl IslandWindow {
             - 4
             - i32::from(padding.left())
             - i32::from(padding.right());
-        self.size_notification_history(
-            inner_width,
-            i32::from(padding.top()) + i32::from(padding.bottom()),
-        );
+        if !weather {
+            self.size_notification_history(
+                inner_width,
+                i32::from(padding.top()) + i32::from(padding.bottom()),
+            );
+        }
         let gap = (f64::from(self.metrics.spacing(8)) * amount).round() as i32;
+        self.hardware.root.set_visible(!weather);
+        self.weather_scroll.set_visible(weather);
+        if weather {
+            let header = &self.dashboard_sections[0].content;
+            let header_height = header.measure(Orientation::Vertical, inner_width).1;
+            let was_visible = self.weather.is_visible();
+            self.weather.set_visible(true);
+            let natural = self.weather.measure(Orientation::Vertical, inner_width).1;
+            self.weather.set_visible(was_visible);
+            let available = self.island_height_limit()
+                - (f64::from(self.metrics.compact_height) * 0.55).ceil() as i32
+                - i32::from(padding.top())
+                - i32::from(padding.bottom())
+                - header_height
+                - gap
+                - 4;
+            self.weather_scroll
+                .set_height_request(natural.min(available.max(1)));
+        }
         self.hardware.root.set_margin_bottom(gap);
-        for section in &self.dashboard_sections {
+        for (index, section) in self.dashboard_sections.iter().enumerate() {
+            if weather && index > 0 {
+                section.viewport.set_visible(false);
+                continue;
+            }
             if amount <= 0.0 {
                 // Pre-map incoming dashboard content behind the zero-height
                 // clip; the first revealed pixels must already contain it.
@@ -781,21 +844,27 @@ impl IslandWindow {
         self.dashboard_expansion.set(amount);
         self.dashboard_section_opacity.set(opacity);
         self.layout_dashboard_sections(amount, width);
-        for section in &self.dashboard_sections {
-            section.viewport.set_opacity(opacity);
+        for (index, section) in self.dashboard_sections.iter().enumerate() {
+            let shared_header = self.current_view.get() == View::Weather && index == 0;
             section
                 .viewport
-                .set_can_target(self.current_view.get() == View::Dashboard && opacity > 0.0);
+                .set_opacity(if shared_header { 1.0 } else { opacity });
+            section.viewport.set_can_target(
+                (self.current_view.get() == View::Dashboard && opacity > 0.0) || shared_header,
+            );
         }
     }
 
     pub(super) fn sync_island_surface_style(&self) {
-        if matches!(self.current_view.get(), View::Compact | View::Dashboard) {
+        if matches!(
+            self.current_view.get(),
+            View::Compact | View::Dashboard | View::Weather
+        ) {
             self.surface_shell.add_css_class("island-persistent");
         } else {
             self.surface_shell.remove_css_class("island-persistent");
         }
-        let expanded = self.current_view.get() == View::Dashboard
+        let expanded = matches!(self.current_view.get(), View::Dashboard | View::Weather)
             || (self.current_view.get() == View::Compact
                 && (self.island_hovered.get()
                     || self.geometry.get().height > f64::from(self.metrics.compact_height + 1)));
@@ -822,7 +891,7 @@ impl IslandWindow {
         let y = geometry.y.round() as i32;
         if !matches!(
             self.current_view.get(),
-            View::Compact | View::Media | View::Dashboard
+            View::Compact | View::Media | View::Dashboard | View::Weather
         ) {
             return gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
                 x,
@@ -831,7 +900,10 @@ impl IslandWindow {
                 height.max(1),
             ));
         }
-        let pill_width = if matches!(self.current_view.get(), View::Compact | View::Dashboard) {
+        let pill_width = if matches!(
+            self.current_view.get(),
+            View::Compact | View::Dashboard | View::Weather
+        ) {
             width
         } else {
             self.metrics.media_max_width
@@ -857,14 +929,14 @@ impl IslandWindow {
             let _ = region.union_rectangle(&bridge);
         }
         if self.current_view.get() == View::Compact && self.island_hovered.get()
-            || self.current_view.get() == View::Dashboard
+            || matches!(self.current_view.get(), View::Dashboard | View::Weather)
         {
             let inset = self.metrics.spacing(22);
             let panel_x = x + inset;
             let panel_y = y + header_height / 2;
             let panel_w = (width - inset * 2).max(1);
             let panel_h = (height - header_height / 2).max(1);
-            let radius = if self.current_view.get() == View::Dashboard {
+            let radius = if matches!(self.current_view.get(), View::Dashboard | View::Weather) {
                 self.metrics.spacing(30)
             } else {
                 self.metrics.spacing(22)

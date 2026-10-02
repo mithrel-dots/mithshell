@@ -26,6 +26,10 @@
 .notification-history-scroll, .notification-history-scroll > viewport {
   background: transparent; border: none; box-shadow: none; padding: 0;
 }
+.island-weather-scroll, .island-weather-scroll > viewport {
+  background: transparent; border: none; box-shadow: none; padding: 0;
+}
+.island-panel-viewport .weather-content { padding: 0; background: transparent; }
 .island-panel-viewport .hardware-stat { min-height: 0; padding: 12px 14px; }
 .island-panel-viewport .hardware-network { min-height: 0; padding: 10px 14px; }
 .island-panel-viewport .hardware-value { color: @ms_primary; font-size: 14px; }

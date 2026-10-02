@@ -27,6 +27,181 @@ fn hover_geometry_is_forward_and_reversible() {
 }
 
 #[test]
+#[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
+fn weather_retains_dashboard_chrome_across_scales_and_transitions() {
+    use std::time::Duration;
+    gtk::init().expect("GTK display");
+    let _styles = crate::ui::install_styles(&crate::theme::generate_gtk());
+    let app = gtk::Application::new(
+        Some("org.mithshell.weather-header-test"),
+        gtk::gio::ApplicationFlags::NON_UNIQUE,
+    );
+    app.connect_activate(|_| {});
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let monitor = gtk::gdk::Display::default()
+        .unwrap()
+        .monitors()
+        .item(0)
+        .and_downcast::<gtk::gdk::Monitor>()
+        .unwrap();
+    let actions = IslandActions {
+        switch_workspace: Rc::new(|_, _| {}),
+        set_volume: Rc::new(|_| {}),
+        toggle_mute: Rc::new(|| {}),
+        search: Rc::new(|_| {}),
+        select: Rc::new(|_| {}),
+        tarragon_status: Rc::new(|| {}),
+        tarragon_reload: Rc::new(|| {}),
+        load_preview: Rc::new(|_, _, _| {}),
+        media_play_pause: Rc::new(|_| {}),
+        media_next: Rc::new(|_| {}),
+        media_previous: Rc::new(|_| {}),
+        notification_expired: Rc::new(|_, _| {}),
+        notification_dismiss: Rc::new(|_| {}),
+        notification_invoke: Rc::new(|_, _| {}),
+        notification_clear_all: Rc::new(|| {}),
+        notification_inhibit: Rc::new(|_| {}),
+        tray_activate: Rc::new(|_, _, _, _| {}),
+        tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+        tray_context_menu: Rc::new(|_, _, _, _| {}),
+        tray_scroll: Rc::new(|_, _, _, _| {}),
+        tray_menu_event: Rc::new(|_, _, _| {}),
+    };
+    let pump = |millis| {
+        let main_loop = gtk::glib::MainLoop::new(None, false);
+        let quit = main_loop.clone();
+        gtk::glib::timeout_add_local_once(Duration::from_millis(millis), move || quit.quit());
+        main_loop.run();
+    };
+    for scale in [0.75, 1.0, 1.4, 1.9] {
+        for animated in [false, true] {
+            let mut config = AppConfig::default();
+            config.shell.scale = scale;
+            let island = IslandWindow::new_for_test(
+                &app,
+                &monitor,
+                "weather-test".into(),
+                &config,
+                actions.clone(),
+                animated,
+            );
+            app.activate();
+            island.open();
+            pump(600);
+            let header = &island.dashboard_sections[0];
+            let header_parent = header.content.parent();
+            island.open_weather();
+            // The existing widgets remain mapped, opaque and interactive even
+            // before the first frame of the forecast transition.
+            assert!(island.compact.is_visible());
+            assert!(island.compact.can_target());
+            assert_eq!(island.compact.opacity(), 1.0);
+            assert!(header.viewport.is_visible());
+            assert!(header.viewport.can_target());
+            assert_eq!(header.viewport.opacity(), 1.0);
+            pump(80);
+            assert_eq!(island.compact.opacity(), 1.0);
+            assert_eq!(island.dashboard.opacity(), 1.0);
+            island.update_weather(Some(&crate::state::WeatherState {
+                provider: WeatherProvider::Wttr,
+                location: "Forecast regression city".into(),
+                current_c: 20,
+                condition: crate::state::WeatherCondition::Clear,
+                description: "Sunny".into(),
+                days: (0..7)
+                    .map(|day| crate::state::WeatherDay {
+                        date: format!("2026-10-{:02}", day + 2),
+                        weekday: "Friday".into(),
+                        max_c: Some(24),
+                        min_c: Some(12),
+                        condition: crate::state::WeatherCondition::Clear,
+                        description: "Sunny".into(),
+                    })
+                    .collect(),
+            }));
+            pump(600);
+            assert!(!island.view_transition_active.get());
+            assert_eq!(header.content.parent(), header_parent);
+            assert!(island.weather.is_visible());
+            assert_eq!(island.weather.opacity(), 1.0);
+            assert!(!island.hardware.root.is_visible());
+            assert!(
+                island.dashboard_sections[1..]
+                    .iter()
+                    .all(|section| !section.viewport.is_visible())
+            );
+            let header_bounds = header.content.compute_bounds(&island.fixed).unwrap();
+            let forecast_bounds = island.weather_scroll.compute_bounds(&island.fixed).unwrap();
+            let pill_bounds = island.compact.compute_bounds(&island.fixed).unwrap();
+            assert!(
+                forecast_bounds.y() >= header_bounds.y() + header_bounds.height(),
+                "forecast overlaps dashboard actions at {scale}"
+            );
+            assert!(
+                header_bounds.y() >= pill_bounds.y() + pill_bounds.height(),
+                "dashboard actions overlap pill at {scale}"
+            );
+            assert!(
+                f64::from(forecast_bounds.y() + forecast_bounds.height())
+                    <= island.geometry.get().y + island.geometry.get().height + 1.0
+            );
+            assert!(island.weather_forecast_row.width() <= island.weather_scroll.width());
+            // Oversized content must scroll below the fixed chrome rather
+            // than expand beyond the layer's available height.
+            island
+                .weather
+                .last_child()
+                .unwrap()
+                .set_height_request(island.metrics.monitor_height);
+            island.reconcile_view();
+            pump(600);
+            let adjustment = island.weather_scroll.vadjustment();
+            assert!(adjustment.upper() > adjustment.page_size());
+            adjustment.set_value(adjustment.upper() - adjustment.page_size());
+            pump(40);
+            assert_eq!(
+                header.content.compute_bounds(&island.fixed).unwrap().y(),
+                header_bounds.y()
+            );
+            let scroll_bounds = island.weather_scroll.compute_bounds(&island.fixed).unwrap();
+            assert!(
+                f64::from(scroll_bounds.y() + scroll_bounds.height())
+                    <= island.geometry.get().y + island.geometry.get().height + 1.0
+            );
+            // Back remains wired to the dashboard, and its original close
+            // action remains available while weather is expanded.
+            let back = island
+                .weather
+                .first_child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::Button>()
+                .unwrap();
+            back.emit_clicked();
+            pump(600);
+            assert_eq!(island.current_view.get(), View::Dashboard);
+            assert!(island.hardware.root.is_visible());
+            assert!(!island.weather_scroll.is_visible());
+            island.open_weather();
+            pump(80);
+            let close = header
+                .content
+                .last_child()
+                .unwrap()
+                .downcast::<gtk::Button>()
+                .unwrap();
+            close.emit_clicked();
+            pump(600);
+            assert_eq!(island.current_view.get(), View::Compact);
+            assert!(!island.weather_scroll.is_visible());
+            island.destroy();
+            pump(20);
+        }
+    }
+}
+
+#[test]
 fn default_animation_value_selects_named_profile() {
     let profile = crate::ui::motion::Transition::HoverEnter.resolve(None, true, 280);
     assert_eq!(
