@@ -41,6 +41,16 @@ fn transition_duration(
         .max(outgoing.duration.saturating_add(incoming.duration))
 }
 
+fn main_keyboard_mode(view: View, tray_menu_open: bool, circle_full_active: bool) -> KeyboardMode {
+    match view {
+        // The opening click starts while the compact layer ignores keyboards.
+        // OnDemand would require another click before Escape could arrive.
+        View::Dashboard | View::Weather | View::Search => KeyboardMode::Exclusive,
+        _ if tray_menu_open || circle_full_active => KeyboardMode::OnDemand,
+        _ => KeyboardMode::None,
+    }
+}
+
 impl IslandWindow {
     /// Presents the outside-click catcher below the interactive island.
     ///
@@ -73,13 +83,11 @@ impl IslandWindow {
     /// `set_view` so showing/dismissing a tray menu can borrow the surface's
     /// focus without having to know what the active view expects.
     pub(super) fn refresh_keyboard_mode(&self) {
-        let mode = match self.current_view.get() {
-            View::Weather => KeyboardMode::Exclusive,
-            View::Search => KeyboardMode::Exclusive,
-            _ if self.tray_menu_open.get() => KeyboardMode::OnDemand,
-            _ if self.circle_full_active() => KeyboardMode::OnDemand,
-            _ => KeyboardMode::None,
-        };
+        let mode = main_keyboard_mode(
+            self.current_view.get(),
+            self.tray_menu_open.get(),
+            self.circle_full_active(),
+        );
         self.window.set_keyboard_mode(mode);
         self.search_window.set_keyboard_mode(
             if self.search_open.get()
@@ -1011,6 +1019,29 @@ fn finalize_integrated_search(search: &gtk::Box, active: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_focus_is_owned_only_by_expanded_pages_or_interactive_popups() {
+        for view in [View::Dashboard, View::Weather, View::Search] {
+            for (tray, circle) in [(false, false), (true, false), (false, true)] {
+                assert_eq!(
+                    main_keyboard_mode(view, tray, circle),
+                    KeyboardMode::Exclusive
+                );
+            }
+        }
+        for view in [View::Compact, View::Media, View::Notification, View::Osd] {
+            assert_eq!(main_keyboard_mode(view, false, false), KeyboardMode::None);
+            assert_eq!(
+                main_keyboard_mode(view, true, false),
+                KeyboardMode::OnDemand
+            );
+            assert_eq!(
+                main_keyboard_mode(view, false, true),
+                KeyboardMode::OnDemand
+            );
+        }
+    }
 
     #[test]
     fn replacement_fades_out_before_fading_in() {

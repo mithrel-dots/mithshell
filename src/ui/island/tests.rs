@@ -13,6 +13,117 @@ use gtk::prelude::*;
 use std::{cell::RefCell, rc::Rc};
 
 #[test]
+#[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
+fn dashboard_escape_captures_keys_with_focused_child_controls() {
+    gtk::init().expect("GTK display");
+    let application = gtk::Application::new(
+        Some("org.mithshell.dashboard-escape-test"),
+        gtk::gio::ApplicationFlags::NON_UNIQUE,
+    );
+    application.connect_activate(|_| {});
+    application
+        .register(None::<&gtk::gio::Cancellable>)
+        .expect("register GTK application");
+    let monitor = gtk::gdk::Display::default()
+        .expect("GTK display")
+        .monitors()
+        .item(0)
+        .and_downcast::<gtk::gdk::Monitor>()
+        .expect("Broadway monitor");
+    let actions = IslandActions {
+        switch_workspace: Rc::new(|_, _| {}),
+        set_volume: Rc::new(|_| {}),
+        toggle_mute: Rc::new(|| {}),
+        search: Rc::new(|_| {}),
+        select: Rc::new(|_: TarragonSelection| {}),
+        tarragon_status: Rc::new(|| {}),
+        tarragon_reload: Rc::new(|| {}),
+        load_preview: Rc::new(|_, _, _| {}),
+        media_play_pause: Rc::new(|_| {}),
+        media_next: Rc::new(|_| {}),
+        media_previous: Rc::new(|_| {}),
+        notification_expired: Rc::new(|_, _| {}),
+        notification_dismiss: Rc::new(|_| {}),
+        notification_invoke: Rc::new(|_, _| {}),
+        notification_clear_all: Rc::new(|| {}),
+        notification_inhibit: Rc::new(|_| {}),
+        tray_activate: Rc::new(|_, _, _, _| {}),
+        tray_secondary_activate: Rc::new(|_, _, _, _| {}),
+        tray_context_menu: Rc::new(|_, _, _, _| {}),
+        tray_scroll: Rc::new(|_, _, _, _| {}),
+        tray_menu_event: Rc::new(|_, _, _| {}),
+    };
+    for presentation in [
+        LauncherPresentation::Integrated,
+        LauncherPresentation::Independent,
+    ] {
+        let mut config = AppConfig::default();
+        config.launcher.presentation = presentation;
+        let island = IslandWindow::new_for_test(
+            &application,
+            &monitor,
+            "broadway-test".to_owned(),
+            &config,
+            actions.clone(),
+            false,
+        );
+        let controllers = island.window.observe_controllers();
+        // The launcher controller precedes the overlay controller in integrated
+        // mode. Outside Search it must pass through to the overlay owner.
+        let key_controllers: Vec<_> = (0..controllers.n_items())
+            .filter_map(|index| {
+                controllers
+                    .item(index)
+                    .and_downcast::<gtk::EventControllerKey>()
+            })
+            .collect();
+        assert!(!key_controllers.is_empty());
+        for child in [
+            island.volume_scale.upcast_ref::<gtk::Widget>(),
+            island.mute_button.upcast_ref(),
+        ] {
+            island.open();
+            assert_eq!(island.current_view.get(), View::Dashboard);
+            assert!(child.grab_focus());
+            assert_eq!(
+                child.root().expect("GTK focus root").focus().as_ref(),
+                Some(child)
+            );
+            assert!(island.dismiss_window.is_visible());
+            // Broadway has no layer-shell keyboard protocol, and the test
+            // constructor reparents content to a plain focus root. Emit the
+            // production capture controllers directly; the keyboard policy is
+            // tested separately, but compositor delivery requires Wayland.
+            let emit = |key| {
+                key_controllers.iter().any(|controller| {
+                    assert_eq!(
+                        controller.propagation_phase(),
+                        gtk::PropagationPhase::Capture
+                    );
+                    controller.emit_by_name::<bool>(
+                        "key-pressed",
+                        &[&key, &0_u32, &gtk::gdk::ModifierType::empty()],
+                    )
+                })
+            };
+            assert!(!emit(gtk::gdk::Key::a));
+            assert_eq!(island.current_view.get(), View::Dashboard);
+            assert!(emit(gtk::gdk::Key::Escape));
+            assert!(!island.dashboard_open.get());
+            assert_eq!(island.current_view.get(), View::Compact);
+            assert!(!island.dismiss_window.is_visible());
+            assert!(
+                !island
+                    .dashboard_sections
+                    .iter()
+                    .any(|section| section.viewport.can_target())
+            );
+        }
+        island.destroy();
+    }
+}
+
+#[test]
 fn hover_geometry_is_forward_and_reversible() {
     let resting = Geometry {
         width: 200.0,
