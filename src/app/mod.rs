@@ -750,7 +750,7 @@ impl Controller {
                         if !controller.config.borrow().notifications.enabled {
                             let _ = controller.notification_command_sender.try_send(
                                 NotificationCommand::Close {
-                                    id: notification.id,
+                                    target: notification.identity(),
                                     reason: CloseReason::Expired,
                                 },
                             );
@@ -797,12 +797,8 @@ impl Controller {
                             }
                         }
                     }
-                    NotificationEvent::Closed { id, .. } => {
-                        controller.notification_epochs.borrow_mut().remove(id);
-                        for island in controller.islands.borrow().values() {
-                            island.close_notification(id);
-                        }
-                        controller.remove_notification_record(id);
+                    NotificationEvent::Closed { target, .. } => {
+                        controller.forget_notification(target);
                     }
                 }
             }
@@ -846,16 +842,10 @@ impl Controller {
             .borrow()
             .live
             .get(&id)
-            .is_some_and(|notification| notification.transient);
-        if transient {
-            self.notification_epochs.borrow_mut().remove(id);
-            let _ = self
-                .notification_command_sender
-                .try_send(NotificationCommand::Close {
-                    id,
-                    reason: CloseReason::Expired,
-                });
-            self.remove_notification_record(id);
+            .filter(|notification| notification.transient)
+            .map(Notification::identity);
+        if let Some(target) = transient {
+            self.close_notification_record(target, CloseReason::Expired);
         }
         for island in self.islands.borrow().values() {
             island.close_notification(id);
@@ -866,20 +856,29 @@ impl Controller {
     /// the front of the history and trims it back to
     /// `notifications.max_history`.
     fn record_notification(self: &Rc<Self>, notification: Notification) {
-        let mut evicted = Vec::new();
         {
             let mut history = self.notifications.borrow_mut();
             history.retain(|existing| existing.id != notification.id);
-            history.insert(0, notification);
-            let max_history = self.config.borrow().notifications.max_history;
-            if history.len() > max_history.max(1) {
-                evicted.extend(history.drain(max_history.max(1)..).map(|item| item.id));
+            if !notification.transient {
+                history.insert(0, notification);
             }
         }
-        for id in evicted {
-            self.dismiss_notification(id);
-        }
+        self.trim_notification_history();
         self.refresh_notification_dashboard();
+    }
+
+    fn trim_notification_history(self: &Rc<Self>) {
+        let capacity = self.config.borrow().notifications.max_history.max(1);
+        let evicted: Vec<_> = self
+            .notifications
+            .borrow()
+            .iter()
+            .skip(capacity)
+            .map(Notification::identity)
+            .collect();
+        for target in evicted {
+            self.dismiss_notification(target);
+        }
     }
 
     fn remove_notification_record(self: &Rc<Self>, id: u32) {
@@ -897,29 +896,15 @@ impl Controller {
     }
 
     fn clear_notification_history(self: &Rc<Self>) {
-        let ids: Vec<u32> = self
+        let targets: Vec<_> = self
             .notifications
             .borrow()
             .iter()
-            .map(|notification| notification.id)
+            .map(Notification::identity)
             .collect();
-        for id in &ids {
-            if self.notification_epochs.borrow_mut().remove(*id) {
-                let _ = self
-                    .notification_command_sender
-                    .try_send(NotificationCommand::Close {
-                        id: *id,
-                        reason: CloseReason::Dismissed,
-                    });
-            }
+        for target in targets {
+            self.dismiss_notification(target);
         }
-        for island in self.islands.borrow().values() {
-            for id in &ids {
-                island.close_notification(*id);
-            }
-        }
-        self.notifications.borrow_mut().clear();
-        self.refresh_notification_dashboard();
     }
 
     fn set_notification_inhibition(
@@ -1000,34 +985,58 @@ impl Controller {
         })
     }
 
-    /// User-initiated dismissal (a toast's or the dashboard history's close
-    /// button): tells the D-Bus server to announce `NotificationClosed`,
-    /// and -- unlike a timer expiring -- also drops it from history and
-    /// closes it on every island right away, rather than waiting on the
-    /// round trip back through `attach_notifications`.
-    fn dismiss_notification(self: &Rc<Self>, id: u32) {
-        if self.notification_epochs.borrow_mut().remove(id) {
+    /// Reconcile an exact delivery only. A late worker closure must never
+    /// remove a newer Show with the same protocol ID.
+    fn forget_notification(self: &Rc<Self>, target: crate::state::NotificationIdentity) -> bool {
+        if !self
+            .notification_epochs
+            .borrow()
+            .live
+            .get(&target.id)
+            .is_some_and(|notification| notification.identity() == target)
+        {
+            return false;
+        }
+        self.notification_epochs.borrow_mut().remove(target.id);
+        for island in self.islands.borrow().values() {
+            island.close_notification(target.id);
+        }
+        self.remove_notification_record(target.id);
+        true
+    }
+
+    fn close_notification_record(
+        self: &Rc<Self>,
+        target: crate::state::NotificationIdentity,
+        reason: CloseReason,
+    ) {
+        if self.forget_notification(target) {
             let _ = self
                 .notification_command_sender
-                .try_send(NotificationCommand::Close {
-                    id,
-                    reason: CloseReason::Dismissed,
-                });
+                .try_send(NotificationCommand::Close { target, reason });
         }
-        for island in self.islands.borrow().values() {
-            island.close_notification(id);
-        }
-        self.remove_notification_record(id);
+    }
+
+    fn dismiss_notification(self: &Rc<Self>, target: crate::state::NotificationIdentity) {
+        self.close_notification_record(target, CloseReason::Dismissed);
     }
 
     /// Only offered actions on live notifications may be invoked. Resident
     /// notifications remain available; other notifications close after the
     /// action signal, never before it (clients retire their action handlers
     /// on NotificationClosed).
-    fn invoke_notification_action(self: &Rc<Self>, id: u32, action_key: String) {
-        let resident = {
+    fn invoke_notification_action(
+        self: &Rc<Self>,
+        target: crate::state::NotificationIdentity,
+        action_key: String,
+    ) {
+        {
             let registry = self.notification_epochs.borrow();
-            let Some(notification) = registry.live.get(&id) else {
+            let Some(notification) = registry
+                .live
+                .get(&target.id)
+                .filter(|notification| notification.identity() == target)
+            else {
                 return;
             };
             if !notification
@@ -1037,18 +1046,12 @@ impl Controller {
             {
                 return;
             }
-            notification.resident
-        };
-        if self
+        }
+        let _ = self
             .notification_command_sender
-            .try_send(NotificationCommand::InvokeAction { id, action_key })
-            .is_err()
-        {
-            return;
-        }
-        if !resident {
-            self.dismiss_notification(id);
-        }
+            .try_send(NotificationCommand::InvokeAction { target, action_key });
+        // The worker owns non-resident closure atomically with invocation;
+        // its revision-tagged Closed event reconciles the UI afterwards.
     }
 
     fn attach_theme(self: &Rc<Self>, receiver: Receiver<Result<Palette, String>>) {
@@ -1565,6 +1568,18 @@ impl Controller {
         }
         *self.config.borrow_mut() = config;
         *self.theme_config.borrow_mut() = theme_config.clone();
+        let transient: Vec<_> = self
+            .notification_epochs
+            .borrow()
+            .live
+            .values()
+            .filter(|notification| notification.transient)
+            .map(Notification::identity)
+            .collect();
+        for target in transient {
+            self.dismiss_notification(target);
+        }
+        self.trim_notification_history();
         // Rebuilding the surfaces hides popups, but does not close protocol
         // records or invalidate the actions of retained history.
         self.notification_epochs.borrow_mut().clear_presentations();
@@ -1726,17 +1741,20 @@ impl Controller {
                 }
             });
             let weak = Rc::downgrade(self);
-            let notification_dismiss = Rc::new(move |id: u32| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.dismiss_notification(id);
-                }
-            });
+            let notification_dismiss =
+                Rc::new(move |target: crate::state::NotificationIdentity| {
+                    if let Some(controller) = weak.upgrade() {
+                        controller.dismiss_notification(target);
+                    }
+                });
             let weak = Rc::downgrade(self);
-            let notification_invoke = Rc::new(move |id: u32, action_key: String| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.invoke_notification_action(id, action_key);
-                }
-            });
+            let notification_invoke = Rc::new(
+                move |target: crate::state::NotificationIdentity, action_key: String| {
+                    if let Some(controller) = weak.upgrade() {
+                        controller.invoke_notification_action(target, action_key);
+                    }
+                },
+            );
             let weak = Rc::downgrade(self);
             let notification_clear_all = Rc::new(move || {
                 if let Some(controller) = weak.upgrade() {
@@ -2040,8 +2058,30 @@ mod tests {
     /// direct execution must do the same. Never contact the desktop daemon.
     #[test]
     #[ignore = "requires isolated GTK and D-Bus; see test source"]
-    #[allow(deprecated)]
     fn notification_history_actions_reach_dbus_after_popup_timeout() {
+        run_notification_bus_regression(NotificationRegression::Actions);
+    }
+
+    #[test]
+    #[ignore = "requires isolated GTK and D-Bus; run the GTK runner"]
+    fn notification_revisions_survive_burst_eviction_and_queued_commands() {
+        run_notification_bus_regression(NotificationRegression::Replacements);
+    }
+
+    #[test]
+    #[ignore = "requires isolated GTK and D-Bus; run the GTK runner"]
+    fn notification_reload_reconciles_transients_and_history_bound() {
+        run_notification_bus_regression(NotificationRegression::Reload);
+    }
+
+    enum NotificationRegression {
+        Actions,
+        Replacements,
+        Reload,
+    }
+
+    #[allow(deprecated)]
+    fn run_notification_bus_regression(scenario: NotificationRegression) {
         use std::time::Instant;
         assert_eq!(
             std::env::var("MITHSHELL_PRIVATE_NOTIFICATION_BUS").as_deref(),
@@ -2159,6 +2199,188 @@ mod tests {
                 .unwrap()
                 .0
         };
+        let identity = |id| controller.notification_epochs.borrow().live[&id].identity();
+        if matches!(scenario, NotificationRegression::Replacements) {
+            // All four Notify calls complete on the worker before GTK drains
+            // any Show event. C will evict A's old revision, not A'.
+            let a = notify(0, false, false, "default");
+            let b = notify(0, false, false, "default");
+            let c = notify(0, false, false, "default");
+            assert_eq!(notify(a, false, false, "default"), a);
+            drain_until(|| {
+                controller
+                    .notifications
+                    .borrow()
+                    .first()
+                    .is_some_and(|item| item.id == a)
+                    && controller
+                        .notification_epochs
+                        .borrow()
+                        .live
+                        .contains_key(&c)
+                    && signals.borrow().len() == 1
+            });
+            assert_eq!(&*signals.borrow(), &[format!("closed:{b}:2")]);
+            assert_eq!(
+                controller
+                    .notifications
+                    .borrow()
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                [a, c]
+            );
+            let old = identity(a);
+            let epoch = controller.notification_epochs.borrow().active[&a];
+            // Same key offered by the replacement: validating just the key
+            // is insufficient. Invoke while GTK still knows only the old A'.
+            assert_eq!(notify(a, false, false, "default"), a);
+            controller.invoke_notification_action(old, "default".into());
+            controller
+                .notification_command_sender
+                .try_send(NotificationCommand::Close {
+                    target: old,
+                    reason: CloseReason::Dismissed,
+                })
+                .unwrap();
+            drain_until(|| identity(a).revision != old.revision);
+            let current = identity(a);
+            assert!(
+                !controller.forget_notification(old),
+                "late worker Closed must not forget a replacement"
+            );
+            controller.dismiss_notification(old); // stale dismiss button
+            controller.invoke_notification_action(old, "default".into()); // stale action button
+            controller.notification_expired(a, epoch); // stale popup timer
+            assert_eq!(identity(a), current);
+            controller.invoke_notification_action(current, "default".into());
+            drain_until(|| {
+                signals.borrow().len() >= 3
+                    && !controller
+                        .notification_epochs
+                        .borrow()
+                        .live
+                        .contains_key(&a)
+            });
+            assert_eq!(
+                &*signals.borrow(),
+                &[
+                    format!("closed:{b}:2"),
+                    format!("action:{a}:default"),
+                    format!("closed:{a}:2")
+                ]
+            );
+            assert_eq!(
+                controller.notifications.borrow().len(),
+                1,
+                "atomic worker closure must reconcile GTK history"
+            );
+            let old_c = identity(c);
+            assert_eq!(notify(c, false, false, "default"), c);
+            controller.clear_notification_history(); // queues old Close(C)
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .get(&c)
+                    .is_some_and(|item| item.revision != old_c.revision)
+            });
+            let new_c = identity(c);
+            controller.invoke_notification_action(new_c, "default".into());
+            drain_until(|| {
+                signals.borrow().len() >= 5 && controller.notifications.borrow().is_empty()
+            });
+            assert_eq!(
+                &signals.borrow()[3..],
+                &[format!("action:{c}:default"), format!("closed:{c}:2")]
+            );
+            return;
+        }
+        if matches!(scenario, NotificationRegression::Reload) {
+            let first = notify(0, true, false, "default");
+            let second = notify(0, true, false, "default");
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&second)
+            });
+            let first_target = identity(first);
+            let second_target = identity(second);
+            let transient = notify(0, false, true, "default");
+            drain_until(|| {
+                controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&transient)
+            });
+            let transient_epoch = controller.notification_epochs.borrow().active[&transient];
+            assert_eq!(
+                controller
+                    .notifications
+                    .borrow()
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                [second, first]
+            );
+            assert!(
+                signals.borrow().is_empty(),
+                "transients must not evict retained history"
+            );
+            let mut config = controller.config.borrow().clone();
+            config.notifications.max_history = 1;
+            std::fs::write(&controller.config_path, toml::to_string(&config).unwrap()).unwrap();
+            controller
+                .reload_config()
+                .expect("exercise the actual config reload path");
+            assert_eq!(
+                controller
+                    .notifications
+                    .borrow()
+                    .iter()
+                    .map(Notification::identity)
+                    .collect::<Vec<_>>(),
+                [second_target]
+            );
+            assert_eq!(controller.notification_epochs.borrow().live.len(), 1);
+            assert!(
+                !controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&transient)
+            );
+            assert!(
+                !controller
+                    .notification_epochs
+                    .borrow()
+                    .live
+                    .contains_key(&first)
+            );
+            drain_until(|| signals.borrow().len() == 2);
+            assert_eq!(
+                &*signals.borrow(),
+                &[format!("closed:{transient}:2"), format!("closed:{first}:2")]
+            );
+            controller.notification_expired(transient, transient_epoch);
+            controller.invoke_notification_action(first_target, "default".into());
+            controller.invoke_notification_action(second_target, "default".into());
+            drain_until(|| signals.borrow().len() == 3);
+            assert_eq!(signals.borrow()[2], format!("action:{second}:default"));
+            assert_eq!(
+                identity(second),
+                second_target,
+                "retained resident history survives reload"
+            );
+            controller.clear_notification_history();
+            drain_until(|| signals.borrow().len() == 4);
+            assert_eq!(signals.borrow()[3], format!("closed:{second}:2"));
+            return;
+        }
         let id = notify(0, false, false, "default");
         drain_until(|| {
             controller
@@ -2168,6 +2390,7 @@ mod tests {
                 .contains_key(&id)
         });
         let epoch = controller.notification_epochs.borrow().active[&id];
+        let original = identity(id);
         controller.notification_expired(id, epoch);
         controller
             .notification_epochs
@@ -2178,7 +2401,7 @@ mod tests {
             "popup timeout must not retire client action handlers"
         );
         assert_eq!(controller.notifications.borrow().len(), 1);
-        controller.invoke_notification_action(id, "not-offered".into());
+        controller.invoke_notification_action(original, "not-offered".into());
         assert!(
             controller
                 .notification_epochs
@@ -2228,7 +2451,7 @@ mod tests {
             &*signals.borrow(),
             &[format!("action:{id}:default"), format!("closed:{id}:2")]
         );
-        controller.invoke_notification_action(id, "default".into());
+        controller.invoke_notification_action(original, "default".into());
         assert!(controller.notifications.borrow().is_empty());
 
         let resident = notify(0, true, false, "reply");
@@ -2260,11 +2483,11 @@ mod tests {
                 .live
                 .contains_key(&resident)
         );
-        // Replacements invalidate formerly offered actions and old timers.
-        assert_eq!(notify(resident, true, false, "new"), resident);
-        drain_until(|| {
-            controller.notification_epochs.borrow().live[&resident].actions[0].key == "new"
-        });
+        // Even a replacement offering the same key invalidates old buttons
+        // and timers: the old GTK button must carry its delivery revision.
+        let old_resident = identity(resident);
+        assert_eq!(notify(resident, true, false, "reply"), resident);
+        drain_until(|| identity(resident).revision != old_resident.revision);
         controller.notification_expired(resident, epoch);
         assert!(
             controller
@@ -2290,11 +2513,12 @@ mod tests {
                 .contains_key(&transient)
         });
         let epoch = controller.notification_epochs.borrow().active[&transient];
+        let transient_target = identity(transient);
         controller.notification_expired(transient, epoch);
         drain_until(|| signals.borrow().len() == 7);
         assert_eq!(signals.borrow()[6], format!("closed:{transient}:1"));
         assert!(controller.notifications.borrow().is_empty());
-        controller.invoke_notification_action(transient, "default".into());
+        controller.invoke_notification_action(transient_target, "default".into());
 
         let closed = notify(0, false, false, "default");
         drain_until(|| {
@@ -2304,6 +2528,7 @@ mod tests {
                 .live
                 .contains_key(&closed)
         });
+        let closed_target = identity(closed);
         connection
             .call_sync(
                 Some("org.freedesktop.Notifications"),
@@ -2324,14 +2549,14 @@ mod tests {
                 .live
                 .contains_key(&closed)
         });
-        controller.invoke_notification_action(closed, "default".into());
+        controller.invoke_notification_action(closed_target, "default".into());
         drain_until(|| signals.borrow().len() == 8);
         assert_eq!(signals.borrow()[7], format!("closed:{closed}:3"));
         // The worker independently rejects dead IDs and invented keys.
         controller
             .notification_command_sender
             .try_send(NotificationCommand::InvokeAction {
-                id: closed,
+                target: closed_target,
                 action_key: "default".into(),
             })
             .unwrap();
@@ -2366,7 +2591,7 @@ mod tests {
         controller
             .notification_command_sender
             .try_send(NotificationCommand::InvokeAction {
-                id: third,
+                target: identity(third),
                 action_key: "invented".into(),
             })
             .unwrap();

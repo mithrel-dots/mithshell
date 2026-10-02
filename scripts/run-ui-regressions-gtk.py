@@ -155,7 +155,11 @@ with tempfile.TemporaryDirectory(prefix="ui-", dir=ROOT / "target") as name:
                     raise RuntimeError("Broadway rendering client exited: " + browser_log.read_text())
                 command = [binary, test, "--ignored", "--exact", "--test-threads=1", "--nocapture"]
                 test_env = env.copy()
-                if test == "app::tests::notification_history_actions_reach_dbus_after_popup_timeout":
+                if test in (
+                    "app::tests::notification_history_actions_reach_dbus_after_popup_timeout",
+                    "app::tests::notification_revisions_survive_burst_eviction_and_queued_commands",
+                    "app::tests::notification_reload_reconciles_transients_and_history_bound",
+                ):
                     # This test serves notifications; it must never acquire
                     # the real desktop's notification service name.
                     command = ["dbus-run-session", "--", *command]

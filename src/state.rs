@@ -450,6 +450,9 @@ pub struct TrayMenuItem {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Notification {
     pub id: u32,
+    /// Worker-assigned identity of this delivery, distinct across replacements.
+    #[serde(skip_serializing)]
+    pub revision: u64,
     pub app_name: String,
     /// Either a themed icon name, or an absolute path to an image file.
     pub app_icon: Option<String>,
@@ -467,11 +470,23 @@ pub struct Notification {
 }
 
 impl Notification {
+    pub fn identity(&self) -> NotificationIdentity {
+        NotificationIdentity {
+            id: self.id,
+            revision: self.revision,
+        }
+    }
     /// The action invoked when the notification itself (rather than one of
     /// its labeled buttons) is activated, if the sender declared one.
     pub fn default_action(&self) -> Option<&NotificationAction> {
         self.actions.iter().find(|action| action.key == "default")
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotificationIdentity {
+    pub id: u32,
+    pub revision: u64,
 }
 
 #[cfg(test)]

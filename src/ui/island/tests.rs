@@ -937,11 +937,11 @@ fn circle_integration_real_widgets_and_callbacks() {
     let notification_events = Rc::new(RefCell::new(Vec::new()));
     let invoked = notification_events.clone();
     actions.notification_invoke = Rc::new(move |id, key| {
-        invoked.borrow_mut().push(format!("invoke:{id}:{key}"));
+        invoked.borrow_mut().push(format!("invoke:{}:{key}", id.id));
     });
     let dismissed = notification_events.clone();
     actions.notification_dismiss = Rc::new(move |id| {
-        dismissed.borrow_mut().push(format!("dismiss:{id}"));
+        dismissed.borrow_mut().push(format!("dismiss:{}", id.id));
     });
     let mut config = AppConfig::default();
     config.shell.animation_ms = 0;
@@ -1025,6 +1025,7 @@ fn circle_integration_real_widgets_and_callbacks() {
     };
     let notification = Notification {
         id: 1,
+        revision: 0,
         received_at_unix_seconds: 0,
         app_name: "Test".into(),
         app_icon: None,
@@ -2563,6 +2564,7 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
         );
         let history: Vec<_> = (0..8).map(|id| crate::state::Notification {
             id,
+            revision: 0,
             received_at_unix_seconds: 0,
             app_name: "GTK fixture".into(),
             app_icon: None,

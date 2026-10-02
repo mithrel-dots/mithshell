@@ -29,7 +29,9 @@ use glib::variant::ToVariant;
 use gtk::{gio, glib};
 use log::{debug, warn};
 
-use crate::state::{Notification, NotificationAction, NotificationTimeout, Urgency};
+use crate::state::{
+    Notification, NotificationAction, NotificationIdentity, NotificationTimeout, Urgency,
+};
 
 const BUS_NAME: &str = "org.freedesktop.Notifications";
 const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
@@ -86,16 +88,78 @@ pub enum CloseReason {
 #[derive(Debug, Clone)]
 pub enum NotificationEvent {
     Show(Notification),
-    Closed { id: u32, reason: CloseReason },
+    Closed {
+        target: NotificationIdentity,
+        reason: CloseReason,
+    },
 }
 
 /// Requests sent from the GTK main thread back to the D-Bus worker thread,
-/// validated against live notifications before emitting signals. The UI
-/// updates its own state directly rather than waiting for a round trip.
+/// validated against the exact live delivery before emitting signals.
+/// Closures are reconciled back to GTK with the same revision, including
+/// non-resident action closures owned atomically by the worker.
 #[derive(Debug, Clone)]
 pub enum NotificationCommand {
-    Close { id: u32, reason: CloseReason },
-    InvokeAction { id: u32, action_key: String },
+    Close {
+        target: NotificationIdentity,
+        reason: CloseReason,
+    },
+    InvokeAction {
+        target: NotificationIdentity,
+        action_key: String,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+enum CommandEffect {
+    Action(NotificationIdentity, String),
+    Closed(NotificationIdentity, CloseReason),
+}
+
+struct NotificationIds {
+    next_id: Cell<u32>,
+    revision: Cell<u64>,
+}
+
+/// Resolve and mutate one command atomically on the worker context. No
+/// callback or queued UI command can close a replacement between invocation
+/// and closure, and stale commands cannot act on a reused notification ID.
+fn apply_command(
+    live: &mut HashMap<u32, Notification>,
+    command: NotificationCommand,
+) -> Vec<CommandEffect> {
+    let target = match &command {
+        NotificationCommand::Close { target, .. }
+        | NotificationCommand::InvokeAction { target, .. } => *target,
+    };
+    let Some(notification) = live
+        .get(&target.id)
+        .filter(|notification| notification.identity() == target)
+    else {
+        return Vec::new();
+    };
+    match command {
+        NotificationCommand::Close { reason, .. } => {
+            live.remove(&target.id);
+            vec![CommandEffect::Closed(target, reason)]
+        }
+        NotificationCommand::InvokeAction { action_key, .. } => {
+            if !notification
+                .actions
+                .iter()
+                .any(|action| action.key == action_key)
+            {
+                return Vec::new();
+            }
+            let resident = notification.resident;
+            let mut effects = vec![CommandEffect::Action(target, action_key)];
+            if !resident {
+                live.remove(&target.id);
+                effects.push(CommandEffect::Closed(target, CloseReason::Dismissed));
+            }
+            effects
+        }
+    }
 }
 
 /// Starts the notification server thread and returns a sender for
@@ -139,7 +203,10 @@ fn run_server(
         .lookup_interface(INTERFACE)
         .context("notifications interface missing from introspection XML")?;
 
-    let next_id = Rc::new(Cell::new(1u32));
+    let ids = Rc::new(NotificationIds {
+        next_id: Cell::new(1),
+        revision: Cell::new(0),
+    });
     let live = Rc::new(RefCell::new(HashMap::<u32, Notification>::new()));
     let method_live = live.clone();
     let method_events = events.clone();
@@ -153,7 +220,7 @@ fn run_server(
                     &parameters,
                     invocation,
                     &method_events,
-                    &next_id,
+                    &ids,
                     &method_live,
                 );
             },
@@ -176,28 +243,22 @@ fn run_server(
     let signal_connection = connection.clone();
     context.spawn_local(async move {
         while let Ok(command) = commands.recv().await {
-            match command {
-                NotificationCommand::Close { id, reason } => {
-                    if live.borrow_mut().remove(&id).is_some() {
-                        emit_closed(&signal_connection, id, reason);
+            let effects = apply_command(&mut live.borrow_mut(), command);
+            for effect in effects {
+                match effect {
+                    CommandEffect::Closed(target, reason) => {
+                        emit_closed(&signal_connection, target.id, reason);
+                        let _ = events.try_send(NotificationEvent::Closed { target, reason });
                     }
-                }
-                NotificationCommand::InvokeAction { id, action_key } => {
-                    if !live.borrow().get(&id).is_some_and(|notification| {
-                        notification
-                            .actions
-                            .iter()
-                            .any(|action| action.key == action_key)
-                    }) {
-                        continue;
+                    CommandEffect::Action(target, action_key) => {
+                        let _ = signal_connection.emit_signal(
+                            None,
+                            OBJECT_PATH,
+                            INTERFACE,
+                            "ActionInvoked",
+                            Some(&(target.id, action_key).to_variant()),
+                        );
                     }
-                    let _ = signal_connection.emit_signal(
-                        None,
-                        OBJECT_PATH,
-                        INTERFACE,
-                        "ActionInvoked",
-                        Some(&(id, action_key).to_variant()),
-                    );
                 }
             }
         }
@@ -225,11 +286,11 @@ fn handle_method_call(
     parameters: &glib::Variant,
     invocation: gio::DBusMethodInvocation,
     events: &Sender<NotificationEvent>,
-    next_id: &Rc<Cell<u32>>,
+    ids: &NotificationIds,
     live: &RefCell<HashMap<u32, Notification>>,
 ) {
     match method {
-        "Notify" => handle_notify(parameters, invocation, events, next_id, live),
+        "Notify" => handle_notify(parameters, invocation, events, ids, live),
         "CloseNotification" => {
             let Some((id,)) = parameters.get::<(u32,)>() else {
                 invocation.return_dbus_error(
@@ -239,12 +300,12 @@ fn handle_method_call(
                 return;
             };
             invocation.return_value(None);
-            if live.borrow_mut().remove(&id).is_none() {
+            let Some(notification) = live.borrow_mut().remove(&id) else {
                 return;
-            }
+            };
             emit_closed(connection, id, CloseReason::ClosedByCall);
             let _ = events.try_send(NotificationEvent::Closed {
-                id,
+                target: notification.identity(),
                 reason: CloseReason::ClosedByCall,
             });
         }
@@ -274,7 +335,7 @@ fn handle_notify(
     parameters: &glib::Variant,
     invocation: gio::DBusMethodInvocation,
     events: &Sender<NotificationEvent>,
-    next_id: &Rc<Cell<u32>>,
+    ids: &NotificationIds,
     live: &RefCell<HashMap<u32, Notification>>,
 ) {
     type NotifyArgs = (
@@ -300,8 +361,8 @@ fn handle_notify(
     let id = if replaces_id != 0 && live.borrow().contains_key(&replaces_id) {
         replaces_id
     } else {
-        let id = next_id.get();
-        next_id.set(id.wrapping_add(1).max(1));
+        let id = ids.next_id.get();
+        ids.next_id.set(id.wrapping_add(1).max(1));
         id
     };
 
@@ -325,6 +386,11 @@ fn handle_notify(
 
     let notification = Notification {
         id,
+        revision: ids
+            .revision
+            .get()
+            .checked_add(1)
+            .expect("notification revision exhausted"),
         app_name,
         app_icon,
         summary,
@@ -347,6 +413,7 @@ fn handle_notify(
     };
 
     invocation.return_value(Some(&(id,).to_variant()));
+    ids.revision.set(notification.revision);
     live.borrow_mut().insert(id, notification.clone());
     let _ = events.try_send(NotificationEvent::Show(notification));
 }
@@ -367,6 +434,88 @@ fn parse_actions(raw: &[String]) -> Vec<NotificationAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn notification(revision: u64, resident: bool) -> Notification {
+        Notification {
+            id: 7,
+            revision,
+            app_name: "test".into(),
+            app_icon: None,
+            summary: "summary".into(),
+            body: String::new(),
+            urgency: Urgency::Normal,
+            actions: parse_actions(&["default".into(), "Open".into()]),
+            timeout: NotificationTimeout::Default,
+            resident,
+            transient: false,
+            received_at_unix_seconds: 0,
+        }
+    }
+
+    #[test]
+    fn worker_rejects_old_revision_close_and_same_key_invoke() {
+        let old = notification(1, false);
+        let replacement = notification(2, false);
+        let mut live = HashMap::from([(7, replacement.clone())]);
+        for command in [
+            NotificationCommand::Close {
+                target: old.identity(),
+                reason: CloseReason::Dismissed,
+            },
+            NotificationCommand::Close {
+                target: old.identity(),
+                reason: CloseReason::Expired,
+            },
+            NotificationCommand::InvokeAction {
+                target: old.identity(),
+                action_key: "default".into(),
+            },
+        ] {
+            assert!(apply_command(&mut live, command).is_empty());
+            assert_eq!(live[&7], replacement);
+        }
+    }
+
+    #[test]
+    fn worker_nonresident_action_and_close_are_one_revision_atomic_operation() {
+        let old = notification(1, false);
+        let mut live = HashMap::from([(7, old.clone())]);
+        let invoke = NotificationCommand::InvokeAction {
+            target: old.identity(),
+            action_key: "default".into(),
+        };
+        assert_eq!(
+            apply_command(&mut live, invoke.clone()),
+            vec![
+                CommandEffect::Action(old.identity(), "default".into()),
+                CommandEffect::Closed(old.identity(), CloseReason::Dismissed),
+            ]
+        );
+        assert!(live.is_empty());
+        let replacement = notification(2, false);
+        live.insert(7, replacement.clone());
+        assert!(apply_command(&mut live, invoke).is_empty());
+        assert_eq!(live[&7], replacement);
+    }
+
+    #[test]
+    fn worker_resident_actions_repeat_only_on_the_current_revision() {
+        let resident = notification(1, true);
+        let mut live = HashMap::from([(7, resident.clone())]);
+        for _ in 0..2 {
+            assert_eq!(
+                apply_command(
+                    &mut live,
+                    NotificationCommand::InvokeAction {
+                        target: resident.identity(),
+                        action_key: "default".into(),
+                    }
+                ),
+                vec![CommandEffect::Action(resident.identity(), "default".into())]
+            );
+            assert_eq!(live[&7], resident);
+        }
+    }
 
     #[test]
     fn pairs_actions_and_drops_a_trailing_unpaired_key() {

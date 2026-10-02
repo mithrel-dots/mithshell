@@ -18,8 +18,8 @@ use crate::{
 use super::circle::{CircleContent, CircleHost, Event};
 
 pub(crate) struct NotificationCircleCallbacks {
-    pub invoke: Rc<dyn Fn(u32, String)>,
-    pub dismiss: Rc<dyn Fn(u32)>,
+    pub invoke: Rc<dyn Fn(crate::state::NotificationIdentity, String)>,
+    pub dismiss: Rc<dyn Fn(crate::state::NotificationIdentity)>,
     pub clear: Rc<dyn Fn()>,
     pub inhibit: Rc<dyn Fn(bool)>,
     /// Called by the explicit compact/preview affordance.  Row controls do
@@ -287,14 +287,14 @@ fn row(
     if let Some(action) = notification.default_action() {
         let button = gtk::Button::with_label(action.display_label());
         let invoke = callbacks.invoke.clone();
-        let target = action_target(notification.id, &action.key);
+        let target = action_target(notification, &action.key);
         button.connect_clicked(move |_| invoke(target.0, target.1.clone()));
         text.append(&button);
     }
     for action in notification.actions.iter().filter(|a| a.key != "default") {
         let button = gtk::Button::with_label(action.display_label());
         let invoke = callbacks.invoke.clone();
-        let target = action_target(notification.id, &action.key);
+        let target = action_target(notification, &action.key);
         button.connect_clicked(move |_| invoke(target.0, target.1.clone()));
         text.append(&button);
     }
@@ -303,8 +303,8 @@ fn row(
     dismiss.add_css_class("notification-row-dismiss");
     dismiss.set_tooltip_text(Some("Dismiss notification"));
     let callback = callbacks.dismiss.clone();
-    let id = notification.id;
-    dismiss.connect_clicked(move |_| callback(id));
+    let target = notification.identity();
+    dismiss.connect_clicked(move |_| callback(target));
     row.append(&dismiss);
     row
 }
@@ -313,8 +313,11 @@ fn preview_history(history: &[Notification], limit: usize) -> Vec<&Notification>
     history.iter().take(limit).collect()
 }
 
-fn action_target(id: u32, key: &str) -> (u32, String) {
-    (id, key.to_owned())
+fn action_target(
+    notification: &Notification,
+    key: &str,
+) -> (crate::state::NotificationIdentity, String) {
+    (notification.identity(), key.to_owned())
 }
 
 fn full_history(history: &[Notification]) -> Vec<&Notification> {
@@ -337,6 +340,7 @@ mod tests {
     fn notification(id: u32, body: &str) -> Notification {
         Notification {
             id,
+            revision: 0,
             received_at_unix_seconds: 0,
             app_name: format!("app-{id}"),
             app_icon: None,
@@ -388,12 +392,12 @@ mod tests {
         let first_action = first.actions[0].key.clone();
         let second_action = second.actions[0].key.clone();
         assert_eq!(
-            action_target(first.id, &first_action),
-            (7, "action-7".to_owned())
+            action_target(&first, &first_action),
+            (first.identity(), "action-7".to_owned())
         );
         assert_eq!(
-            action_target(second.id, &second_action),
-            (42, "action-42".to_owned())
+            action_target(&second, &second_action),
+            (second.identity(), "action-42".to_owned())
         );
     }
 
@@ -403,6 +407,19 @@ mod tests {
         // header's View all button remains the only affordance.
         assert!(preview_history(&[notification(1, "x")], 0).is_empty());
         assert!(!has_content(&[]));
+    }
+
+    #[test]
+    fn action_targets_distinguish_replacements_with_identical_ids_and_keys() {
+        let mut first = notification(7, "first");
+        first.revision = 1;
+        let mut replacement = first.clone();
+        replacement.revision = 2;
+        let old_button = action_target(&first, "default");
+        let new_button = action_target(&replacement, "default");
+        assert_eq!(old_button.0.id, new_button.0.id);
+        assert_eq!(old_button.1, new_button.1);
+        assert_ne!(old_button.0, new_button.0);
     }
 
     /// Full production-widget coverage. Run through the project-local
@@ -428,11 +445,17 @@ mod tests {
             let callbacks = NotificationCircleCallbacks {
                 invoke: {
                     let events = events.clone();
-                    Rc::new(move |id, key| events.borrow_mut().push(format!("invoke:{id}:{key}")))
+                    Rc::new(move |target, key| {
+                        events
+                            .borrow_mut()
+                            .push(format!("invoke:{}:{key}", target.id))
+                    })
                 },
                 dismiss: {
                     let events = events.clone();
-                    Rc::new(move |id| events.borrow_mut().push(format!("dismiss:{id}")))
+                    Rc::new(move |target| {
+                        events.borrow_mut().push(format!("dismiss:{}", target.id))
+                    })
                 },
                 clear: {
                     let events = events.clone();

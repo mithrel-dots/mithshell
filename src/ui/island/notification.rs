@@ -412,14 +412,14 @@ impl IslandWindow {
         click.set_button(0);
         let invoke = self.actions.notification_invoke.clone();
         let dismiss_from_history = self.actions.notification_dismiss.clone();
-        let id = notification.id;
+        let target = notification.identity();
         click.connect_released(move |gesture, _, _, _| match gesture.current_button() {
             gdk::BUTTON_PRIMARY => {
                 if let Some(action) = &default_action {
-                    invoke(id, action.key.clone());
+                    invoke(target, action.key.clone());
                 }
             }
-            gdk::BUTTON_SECONDARY => dismiss_from_history(id),
+            gdk::BUTTON_SECONDARY => dismiss_from_history(target),
             _ => {}
         });
         text.add_controller(click);
@@ -435,7 +435,7 @@ impl IslandWindow {
             button.add_css_class("close-button");
             let invoke = self.actions.notification_invoke.clone();
             let key = action.key.clone();
-            button.connect_clicked(move |_| invoke(id, key.clone()));
+            button.connect_clicked(move |_| invoke(target, key.clone()));
             content.append(&button);
         }
         if notification.default_action().is_some() {
@@ -448,7 +448,7 @@ impl IslandWindow {
         dismiss.set_tooltip_text(Some("Dismiss notification"));
         dismiss.set_valign(Align::Start);
         let action = self.actions.notification_dismiss.clone();
-        dismiss.connect_clicked(move |_| action(id));
+        dismiss.connect_clicked(move |_| action(target));
         row.append(&dismiss);
 
         row
@@ -594,9 +594,9 @@ impl IslandWindow {
             return;
         };
         if let Some(action) = notification.default_action() {
-            (self.actions.notification_invoke)(notification.id, action.key.clone());
+            (self.actions.notification_invoke)(notification.identity(), action.key.clone());
         } else {
-            (self.actions.notification_dismiss)(notification.id);
+            (self.actions.notification_dismiss)(notification.identity());
         }
     }
 
@@ -611,7 +611,7 @@ impl IslandWindow {
         else {
             return;
         };
-        (self.actions.notification_dismiss)(notification.id);
+        (self.actions.notification_dismiss)(notification.identity());
     }
 
     fn show_notification_toast(self: &Rc<Self>, pending: PendingNotification) {
@@ -684,8 +684,8 @@ impl IslandWindow {
         close.add_css_class("notification-toast-close");
         close.set_valign(Align::Start);
         let dismiss_action = self.actions.notification_dismiss.clone();
-        let id = notification.id;
-        close.connect_clicked(move |_| dismiss_action(id));
+        let target = notification.identity();
+        close.connect_clicked(move |_| dismiss_action(target));
 
         row.append(&icon);
         row.append(&text);
@@ -698,7 +698,7 @@ impl IslandWindow {
             let click = GestureClick::new();
             click.connect_released(move |gesture, _, _, _| {
                 if gesture.current_button() == 1 {
-                    invoke_action(id, "default".to_owned());
+                    invoke_action(target, "default".to_owned());
                 }
             });
             text.add_controller(click);

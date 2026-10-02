@@ -15,11 +15,11 @@ pub type UnitAction = Rc<dyn Fn()>;
 pub type PreviewAction = Rc<dyn Fn(u64, String, (i32, i32))>;
 /// Argument is the target MPRIS player's full D-Bus service name.
 pub type MediaAction = Rc<dyn Fn(String)>;
-pub type NotificationCloseAction = Rc<dyn Fn(u32)>;
+pub type NotificationCloseAction = Rc<dyn Fn(crate::state::NotificationIdentity)>;
 pub type NotificationExpireAction = Rc<dyn Fn(u32, u64)>;
 pub type NotificationInhibitAction = Rc<dyn Fn(bool)>;
-/// Arguments are a notification id and the invoked action's key.
-pub type NotificationInvokeAction = Rc<dyn Fn(u32, String)>;
+/// Arguments are an exact notification delivery and the invoked action key.
+pub type NotificationInvokeAction = Rc<dyn Fn(crate::state::NotificationIdentity, String)>;
 /// Arguments are a tray item's `service`/`object_path` and pointer
 /// coordinates, for `Activate`/`SecondaryActivate`/`ContextMenu`.
 pub type TrayPointAction = Rc<dyn Fn(String, String, i32, i32)>;
