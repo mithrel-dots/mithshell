@@ -10,6 +10,7 @@ use crate::tarragon::TarragonSelection;
 use crate::ui::resolved_scale;
 use crate::weather::WeatherProvider;
 use gtk::prelude::*;
+use gtk4_layer_shell::{Layer, LayerShell};
 use std::{cell::RefCell, rc::Rc};
 
 fn assert_outside_dismiss_idle(island: &IslandWindow) {
@@ -33,6 +34,9 @@ fn assert_outside_dismiss_idle(island: &IslandWindow) {
     assert!(!island.weather_scroll.is_visible());
     assert!(!island.weather_scroll.can_target());
     assert!(!island.dismiss_window.is_visible());
+    if island.window.is_layer_window() {
+        assert_eq!(island.window.layer(), Layer::Top);
+    }
 }
 
 #[test]
@@ -240,6 +244,7 @@ fn exclusive_outside_click_routes_through_native_input() {
                     View::Dashboard
                 };
                 assert_eq!(island.current_view.get(), expected);
+                assert_eq!(island.window.layer(), Layer::Overlay);
                 // Interior hardware content is not a dismissal target.
                 click(1920, 250);
                 assert_eq!(
@@ -324,6 +329,7 @@ fn exclusive_outside_click_routes_through_native_input() {
                 assert!(!island.island_hovered.get());
                 assert!(!island.pointer_in_hover_region.get());
                 assert!(!island.dismiss_window.is_visible());
+                assert_eq!(island.window.layer(), Layer::Top);
                 for far_x in [100, 3700] {
                     if weather {
                         island.open_weather();
@@ -340,6 +346,7 @@ fn exclusive_outside_click_routes_through_native_input() {
                         View::Compact,
                         "far outside click failed"
                     );
+                    assert_eq!(island.window.layer(), Layer::Top);
                     assert!(!island.island_hovered.get());
                     assert!(!island.weather_body_active.get());
                 }
@@ -347,9 +354,11 @@ fn exclusive_outside_click_routes_through_native_input() {
             island.open_search();
             pump(Duration::from_millis(800));
             assert!(island.search_open.get());
+            assert_eq!(island.window.layer(), Layer::Overlay);
             click(3700, 2050);
             pump(Duration::from_millis(800));
             assert!(!island.search_open.get(), "launcher outside click failed");
+            assert_eq!(island.window.layer(), Layer::Top);
             island.open_weather();
             pump(Duration::from_millis(800));
             let pill = island.compact.compute_bounds(&island.fixed).unwrap();
@@ -364,6 +373,7 @@ fn exclusive_outside_click_routes_through_native_input() {
                 View::Compact,
                 "persistent pill must dismiss"
             );
+            assert_eq!(island.window.layer(), Layer::Top);
             island.destroy();
             pump(Duration::from_millis(100));
         }

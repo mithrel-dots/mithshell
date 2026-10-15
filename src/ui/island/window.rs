@@ -879,13 +879,22 @@ impl IslandWindow {
         self.dismiss_window.queue_draw();
     }
 
-    pub(super) fn restore_main_layer_after_full_circle(&self) {
+    /// Projects every main-surface overlay owner, including a launcher that is
+    /// opening or still mapped during its close animation. Returns whether the
+    /// outside-click catcher is needed for the same state.
+    pub(super) fn refresh_main_layer(&self, view: View) -> bool {
         let layer = desired_main_layer(
-            self.current_view.get(),
+            view,
             self.launcher_presentation == crate::config::LauncherPresentation::Independent
-                && self.search_window.is_visible(),
+                && (self.search_open.get() || self.search_window.is_visible()),
+            self.circle_full_active(),
         );
         self.window.set_layer(layer);
+        layer == Layer::Overlay
+    }
+
+    pub(super) fn restore_main_layer_after_full_circle(&self) {
+        self.refresh_main_layer(self.current_view.get());
         self.window.present();
     }
 
@@ -921,8 +930,14 @@ pub(super) fn trace_catcher() -> bool {
     std::env::var_os("MITHSHELL_TRACE_CATCHER").is_some()
 }
 
-fn desired_main_layer(view: View, independent_search_visible: bool) -> Layer {
-    if independent_search_visible || matches!(view, View::Dashboard | View::Weather | View::Search)
+fn desired_main_layer(
+    view: View,
+    independent_search_active: bool,
+    full_circle_active: bool,
+) -> Layer {
+    if independent_search_active
+        || full_circle_active
+        || matches!(view, View::Dashboard | View::Weather | View::Search)
     {
         Layer::Overlay
     } else {
@@ -935,12 +950,17 @@ mod layer_tests {
     use super::*;
 
     #[test]
-    fn full_circle_restores_top_only_without_another_overlay_owner() {
-        assert_eq!(desired_main_layer(View::Compact, false), Layer::Top);
-        assert_eq!(desired_main_layer(View::Media, false), Layer::Top);
-        assert_eq!(desired_main_layer(View::Compact, true), Layer::Overlay);
-        assert_eq!(desired_main_layer(View::Dashboard, false), Layer::Overlay);
-        assert_eq!(desired_main_layer(View::Weather, false), Layer::Overlay);
-        assert_eq!(desired_main_layer(View::Search, false), Layer::Overlay);
+    fn main_layer_returns_to_top_only_without_an_overlay_owner() {
+        for view in [View::Compact, View::Media, View::Osd, View::Notification] {
+            assert_eq!(desired_main_layer(view, false, false), Layer::Top);
+            for (search, circle) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(desired_main_layer(view, search, circle), Layer::Overlay);
+            }
+        }
+        for view in [View::Dashboard, View::Weather, View::Search] {
+            for (search, circle) in [(false, false), (true, false), (false, true), (true, true)] {
+                assert_eq!(desired_main_layer(view, search, circle), Layer::Overlay);
+            }
+        }
     }
 }

@@ -10,7 +10,6 @@ use std::{
 };
 
 use gtk::{Align, Orientation, glib};
-use gtk4_layer_shell::Layer;
 
 use super::{IslandWindow, Metrics};
 use crate::preview::{HIGHLIGHT_NAMES, PreviewContent, PreviewData};
@@ -940,7 +939,6 @@ impl IslandWindow {
         self.search.set_opacity(if animate { 0.0 } else { 1.0 });
         self.search.set_can_target(true);
         self.apply_search_geometry(if animate { start } else { target });
-        self.window.set_layer(Layer::Overlay);
         self.refresh_keyboard_mode();
         // Map the outside-click catcher first, then raise the actual search
         // host above it. This ordering is required for IPC-opened launchers:
@@ -1099,12 +1097,6 @@ impl IslandWindow {
         }
         self.release_search_content();
         self.search.set_opacity(1.0);
-        self.window
-            .set_layer(if self.dashboard_open.get() || self.weather_open.get() {
-                Layer::Overlay
-            } else {
-                Layer::Top
-            });
         self.refresh_keyboard_mode();
     }
 

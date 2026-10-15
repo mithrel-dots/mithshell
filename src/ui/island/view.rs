@@ -69,20 +69,11 @@ impl IslandWindow {
         self.refresh_dismiss_input_region();
     }
 
-    fn dismiss_catcher_needed(&self) -> bool {
-        self.circle_full_active()
-            || matches!(
-                self.current_view.get(),
-                View::Dashboard | View::Weather | View::Search
-            )
-            || (self.launcher_presentation == crate::config::LauncherPresentation::Independent
-                && self.search_window.is_visible())
-    }
-
-    /// Re-applies the keyboard mode the current state wants. Split out of
-    /// `set_view` so showing/dismissing a tray menu can borrow the surface's
-    /// focus without having to know what the active view expects.
+    /// Re-applies layer, keyboard, and catcher ownership for the current state.
+    /// Popups and independent search can release an overlay without changing
+    /// the main view, so they must reconcile its layer here too.
     pub(super) fn refresh_keyboard_mode(&self) {
+        let overlay = self.refresh_main_layer(self.current_view.get());
         let mode = main_keyboard_mode(
             self.current_view.get(),
             self.tray_menu_open.get(),
@@ -98,7 +89,7 @@ impl IslandWindow {
                 KeyboardMode::None
             },
         );
-        if self.dismiss_catcher_needed() {
+        if overlay {
             self.present_dismiss_catcher_behind_main();
         } else {
             self.hide_dismiss_catcher();
@@ -188,8 +179,10 @@ impl IslandWindow {
         {
             self.ensure_integrated_search_host();
         }
+        // Layer ownership must follow the incoming view: current_view still
+        // names the outgoing page until the transition is initialized below.
+        let overlay = self.refresh_main_layer(view);
         if matches!(view, View::Dashboard | View::Weather | View::Search) {
-            self.window.set_layer(gtk4_layer_shell::Layer::Overlay);
             self.present_dismiss_catcher_behind_main();
         } else if self.search_open.get()
             && self.launcher_presentation == crate::config::LauncherPresentation::Independent
@@ -200,8 +193,7 @@ impl IslandWindow {
             // Search promotes the island to Overlay while mapped, keeping its
             // animated origin behind the persistent pill.
             self.window.present();
-        } else if !self.dismiss_catcher_needed() {
-            self.window.set_layer(gtk4_layer_shell::Layer::Top);
+        } else if !overlay {
             self.hide_dismiss_catcher();
         }
         if self.current_view.get() == view && self.geometry.get() == target {
