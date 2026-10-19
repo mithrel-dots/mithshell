@@ -249,6 +249,7 @@ impl IslandWindow {
     pub(crate) fn test_notification_window(
         application: &Application,
         monitor: &gdk::Monitor,
+        monitor_name: &str,
         config: &crate::config::AppConfig,
         expired: super::actions::NotificationExpireAction,
         dismiss: super::actions::NotificationCloseAction,
@@ -257,7 +258,7 @@ impl IslandWindow {
         Self::new_for_test(
             application,
             monitor,
-            "notification-test".into(),
+            monitor_name.into(),
             config,
             IslandActions {
                 switch_workspace: Rc::new(|_, _| {}),

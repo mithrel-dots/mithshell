@@ -13,7 +13,7 @@ use super::compact::compact_view;
 use super::dashboard::dashboard_view;
 use super::media::media_view;
 use super::notification::{build_notification_toasts, build_pill_overlay, notification_view};
-use super::osd::osd_view;
+use super::osd::{build_osd_overlay, osd_view};
 use super::search::search_view;
 use super::weather::{draw_weather_condition, weather_view};
 use super::{Geometry, IslandWindow, Metrics, OverlayButtons, View};
@@ -344,6 +344,11 @@ impl IslandWindow {
         );
         osd.set_opacity(0.0);
         osd.set_visible(false);
+        let osd_overlay = (config.osd.follow_notifications
+            && config
+                .notifications
+                .overlay_applies(crate::state::Urgency::Normal, true))
+        .then(|| build_osd_overlay(application, monitor, shell, metrics, layer_shell));
 
         let (notification, notification_icon, notification_app, notification_body) =
             notification_view(metrics);
@@ -528,6 +533,8 @@ impl IslandWindow {
             )),
             search_animation_generation: Cell::new(0),
             osd_active: Cell::new(false),
+            osd_in_overlay: Cell::new(false),
+            osd_overlay,
             media_playing: Cell::new(false),
             media_width: Cell::new(metrics.compact_width),
             geometry: Cell::new(Geometry::for_view(
@@ -689,6 +696,7 @@ impl IslandWindow {
             "weather_visible": self.weather.is_visible(),
             "osd_visible": self.osd.is_visible(),
             "osd_opacity": self.osd.opacity(),
+            "osd_overlay_visible": self.osd_overlay.as_ref().is_some_and(|overlay| overlay.window.is_visible()),
             "notification_visible": self.notification.is_visible(),
             "notification_queued": self.notification_queue.borrow().len(),
             "notification_toasts": self
@@ -781,6 +789,11 @@ impl IslandWindow {
                 .window
                 .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
         }
+        if let Some(overlay) = &self.osd_overlay {
+            overlay
+                .window
+                .set_margin(Edge::Top, self.metrics.spacing(config.top_margin));
+        }
         self.window
             .set_exclusive_zone(self.metrics.spacing(config.exclusive_zone));
         self.animation_ms.set(config.animation_ms);
@@ -809,6 +822,7 @@ impl IslandWindow {
     }
 
     pub fn destroy(&self) {
+        self.clear_osd();
         self.cancel_notification_timeouts();
         #[cfg(test)]
         if let Ok(window) = self.focus_root.borrow().clone().downcast::<gtk::Window>() {
@@ -821,6 +835,9 @@ impl IslandWindow {
             toasts.window.close();
         }
         if let Some(overlay) = &self.pill_overlay {
+            overlay.window.close();
+        }
+        if let Some(overlay) = &self.osd_overlay {
             overlay.window.close();
         }
     }

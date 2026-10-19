@@ -131,6 +131,49 @@ window.mithshell-notifications > contents {
   color: @ms_on_surface;
 }
 
+.voice-surface {
+  margin: 24px;
+  padding: 2px 6px;
+  background: alpha(@ms_surface, 0.97);
+  border: 1px solid alpha(@ms_outline_variant, 0.4);
+  border-radius: 999px;
+  box-shadow: 0 16px 38px alpha(black, 0.55), inset 0 1px alpha(white, 0.045);
+  transition: border-color 200ms ease;
+}
+
+.voice-surface.recording { border-color: alpha(@ms_error, 0.55); }
+.voice-surface.processing { border-color: alpha(@ms_primary, 0.55); }
+.voice-surface.saved { border-color: alpha(@ms_tertiary, 0.55); }
+.voice-surface.failed { border-color: alpha(@ms_error, 0.8); }
+
+.voice-orb { color: @ms_primary; }
+.voice-surface.recording .voice-orb { color: @ms_error; }
+.voice-surface.processing .voice-orb { color: @ms_primary; }
+.voice-surface.saved .voice-orb { color: @ms_tertiary; }
+.voice-surface.canceled .voice-orb { color: @ms_on_surface_variant; }
+.voice-surface.failed .voice-orb { color: @ms_error; }
+
+.voice-text { padding: 0 40px 0 6px; }
+.voice-text.trailing { padding: 0 6px 0 40px; }
+
+.voice-status {
+  color: @ms_on_surface_variant;
+  font-family: "Monocraft", "JetBrainsMono Nerd Font", monospace;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.voice-surface.recording .voice-status { color: @ms_error; }
+.voice-surface.processing .voice-status { color: @ms_primary; }
+.voice-surface.saved .voice-status { color: @ms_tertiary; }
+.voice-surface.failed .voice-status { color: @ms_error; }
+
+.voice-transcript {
+  color: @ms_on_surface;
+  font-size: 30px;
+}
+
 .compact-content {
   padding: 0 15px;
 }

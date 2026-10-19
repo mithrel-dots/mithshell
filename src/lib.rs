@@ -17,4 +17,5 @@ pub mod telemetry;
 pub mod theme;
 pub mod tray;
 pub mod ui;
+pub mod voice;
 pub mod weather;

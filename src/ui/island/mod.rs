@@ -272,6 +272,8 @@ pub struct IslandWindow {
     search_geometry: Cell<Geometry>,
     search_animation_generation: Cell<u64>,
     osd_active: Cell<bool>,
+    osd_in_overlay: Cell<bool>,
+    osd_overlay: Option<osd::OsdOverlay>,
     media_playing: Cell<bool>,
     media_width: Cell<i32>,
     geometry: Cell<Geometry>,

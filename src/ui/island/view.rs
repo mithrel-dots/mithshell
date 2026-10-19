@@ -97,6 +97,7 @@ impl IslandWindow {
     }
 
     pub(super) fn reconcile_view(self: &Rc<Self>) {
+        self.reconcile_osd_overlay();
         let view = if self.notification_active.get()
             && self
                 .notification_current
@@ -105,7 +106,7 @@ impl IslandWindow {
                 .is_some_and(|current| !current.overlay)
         {
             View::Notification
-        } else if self.osd_active.get() {
+        } else if self.osd_active.get() && !self.osd_in_overlay.get() {
             View::Osd
         } else if self.search_open.get()
             && self.launcher_presentation == crate::config::LauncherPresentation::Integrated

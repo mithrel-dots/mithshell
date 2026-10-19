@@ -76,7 +76,7 @@ impl Controller {
             if suppress_osd {
                 return;
             }
-            match controller.target_islands(&MonitorTarget::Focused) {
+            match controller.osd_target_islands(&MonitorTarget::Focused) {
                 Ok(islands) => {
                     for island in islands {
                         island.show_osd(OsdState {

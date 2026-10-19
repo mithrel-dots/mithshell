@@ -32,8 +32,10 @@ pub struct AppConfig {
     pub weather: WeatherConfig,
     pub lock: LockConfig,
     pub notifications: NotificationConfig,
+    pub osd: OsdConfig,
     pub tray: TrayConfig,
     pub icons: IconConfig,
+    pub voice: VoiceConfig,
 }
 
 impl AppConfig {
@@ -260,6 +262,23 @@ impl LockConfig {
     }
 }
 
+/// Volume, brightness, and workspace feedback placement.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct OsdConfig {
+    /// Inherit notification monitor routing and fullscreen overlay eligibility
+    /// at normal urgency. Explicit IPC connector/all targets override routing.
+    pub follow_notifications: bool,
+}
+
+impl Default for OsdConfig {
+    fn default() -> Self {
+        Self {
+            follow_notifications: true,
+        }
+    }
+}
+
 /// Desktop notification (`org.freedesktop.Notifications`) popup behavior.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -383,6 +402,61 @@ impl NotificationPosition {
             Self::TopLeft | Self::TopRight | Self::BottomLeft | Self::BottomRight
         )
     }
+}
+
+/// Visual feedback for ginkgo voice notes.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct VoiceConfig {
+    /// When `false`, mithshell does not subscribe to ginkgo voice events.
+    pub enabled: bool,
+    /// Screen corner the voice bubble is anchored to.
+    pub position: VoicePosition,
+    /// How the bubble enters and leaves.
+    pub animation: VoiceAnimation,
+    /// Distance from the screen edges.
+    pub margin: i32,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            position: VoicePosition::default(),
+            animation: VoiceAnimation::default(),
+            margin: 12,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VoicePosition {
+    #[default]
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl VoicePosition {
+    pub fn is_top(self) -> bool {
+        matches!(self, Self::TopLeft | Self::TopRight)
+    }
+
+    pub fn is_left(self) -> bool {
+        matches!(self, Self::TopLeft | Self::BottomLeft)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VoiceAnimation {
+    /// Fade in and out in place.
+    #[default]
+    Fade,
+    /// Slide in from, and back out to, the anchored screen side.
+    Slide,
 }
 
 /// System tray (`org.kde.StatusNotifierItem`) support.
@@ -596,7 +670,7 @@ mod tests {
 
     #[test]
     fn optional_presentation_defaults_preserve_legacy_placement() {
-        for source in ["", "[circles]\n[launcher]\n[tray]\n[notifications]"] {
+        for source in ["", "[circles]\n[launcher]\n[tray]\n[notifications]\n[osd]"] {
             let config: AppConfig = toml::from_str(source).unwrap();
             assert_eq!(config.circles, CirclesConfig::default());
             assert_eq!(config.circles.left, CircleModule::None);
@@ -610,6 +684,7 @@ mod tests {
             assert_eq!(config.tray.compact_style, TrayCompactStyle::Count);
             assert_eq!(config.tray.max_compact_icons, 4);
             assert_eq!(config.notifications.hover_preview_count, 3);
+            assert!(config.osd.follow_notifications);
         }
         let config: AppConfig = toml::from_str("[circles]\nright = 'media'").unwrap();
         assert_eq!(config.circles.left, CircleModule::None);
@@ -658,6 +733,8 @@ mod tests {
             max_compact_icons = 7
             [notifications]
             hover_preview_count = 6
+            [osd]
+            follow_notifications = false
         "#;
         let config: AppConfig = toml::from_str(source).unwrap();
         assert_eq!(
@@ -667,6 +744,7 @@ mod tests {
         assert_eq!(config.tray.compact_style, TrayCompactStyle::CountWithIcons);
         assert_eq!(config.tray.max_compact_icons, 7);
         assert_eq!(config.notifications.hover_preview_count, 6);
+        assert!(!config.osd.follow_notifications);
         let serialized = toml::to_string(&config).unwrap();
         assert!(serialized.contains("compact_style = \"count-with-icons\""));
         let restored: AppConfig = toml::from_str(&serialized).unwrap();
@@ -674,6 +752,7 @@ mod tests {
         assert_eq!(restored.launcher, config.launcher);
         assert_eq!(restored.tray, config.tray);
         assert_eq!(restored.notifications, config.notifications);
+        assert_eq!(restored.osd, config.osd);
     }
 
     #[test]
@@ -703,6 +782,8 @@ mod tests {
             "[tray]\nmax_icons = 4",
             "[notifications]\nhover_preview_count = -1",
             "[notifications]\nhover_previews = 3",
+            "[osd]\nfollow_notifications = 'true'",
+            "[osd]\nfollow_notification = true",
         ] {
             assert!(toml::from_str::<AppConfig>(source).is_err(), "{source}");
         }

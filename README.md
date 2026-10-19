@@ -281,9 +281,29 @@ arguments. The runner requires `gtk4-broadwayd` and `chromium`.
 ### Automatic OSD and media
 
 Volume and mute changes are detected through PipeWire's PulseAudio-compatible
-service. The focused monitor's pill becomes the volume OSD automatically and
+service. The selected monitor's pill becomes the volume OSD automatically and
 returns to its previous state after the timeout. The example Hyprland volume
 binds therefore only run `wpctl`; they do not invoke `mithshell osd`.
+
+```toml
+[osd]
+follow_notifications = true
+```
+
+By default, volume, brightness, and workspace OSDs share the
+[notification monitor-selection rules](#notifications): `fullscreen_strategy`,
+`fallback_monitors`, and `overlay_over_fullscreen`. OSDs count as **normal
+urgency**, so an overlay threshold of `low` or `normal` keeps them above a
+fullscreen window in a dedicated OSD surface. Otherwise fullscreen feedback
+uses the configured fallback outputs, including `all-non-fullscreen`.
+Automatic volume feedback and `mithshell osd --monitor focused` start from the
+focused output; workspace feedback starts from the output being switched.
+
+Set `follow_notifications = false` to keep OSDs on their original output on the
+Top layer. Explicit `mithshell osd --monitor DP-1` or `--monitor all` always
+select exactly those outputs. OSDs use the pill location and their own timeout;
+notification inhibition and `notifications.enabled` do not suppress them.
+Run `mithshell reload` after changing these settings.
 
 Mithshell discovers MPRIS players directly on the session D-Bus, without
 requiring `playerctl`. While a player reports `Playing` and provides a title,
@@ -465,6 +485,27 @@ appear in the same UI once corresponding TarraGon plugins are installed.
 See [`docs/tarragon.md`](docs/tarragon.md) for controls, every represented
 protocol field, plugin lifecycle semantics, previews, reload/detach behavior,
 and current backend limitations.
+
+### Ginkgo voice notes
+
+Mithshell subscribes to ginkgo's read-only voice event socket
+(`$XDG_RUNTIME_DIR/ginkgo-voice.sock`, or `GINKGO_VOICE_SOCKET`) and
+reconnects automatically. A bubble appears once the trigger word arms a note:
+it follows the microphone level while recording, spins while the note is
+processed, and briefly shows the outcome (saved, canceled, or failed) before
+leaving. Ambient captions never show the bubble.
+
+```toml
+[voice]
+enabled = true
+position = "top-left"   # top-left, top-right, bottom-left, bottom-right
+animation = "fade"      # fade, slide
+margin = 12
+```
+
+The animation timing follows `[shell.motion]`: `fade` uses the island fade
+profiles and `slide` the peek profiles. Restart the daemon after changing
+these settings.
 
 ### Lock screen
 

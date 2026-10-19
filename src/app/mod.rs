@@ -1,6 +1,7 @@
 mod client;
 mod events;
 mod memory;
+mod routing;
 
 use std::{
     cell::{Cell, RefCell},
@@ -18,7 +19,7 @@ use log::{debug, error, info, warn};
 
 use crate::{
     cli::{Cli, Command, SetupCommand},
-    config::{self, AppConfig, FullscreenStrategy, PaletteEngine},
+    config::{self, AppConfig, PaletteEngine},
     hyprland,
     ipc::{self, IncomingRequest, IpcCommand, MonitorTarget, OsdKind, Response},
     latency,
@@ -31,7 +32,8 @@ use crate::{
     preview::{self, PreviewEvent, PreviewRequest},
     setup,
     state::{
-        HyprlandSnapshot, MediaState, Notification, OsdState, Palette, TrayItem, WeatherState,
+        HyprlandSnapshot, MediaState, Notification, OsdState, Palette, TrayItem, Urgency,
+        WeatherState,
     },
     system,
     tarragon::{self, TarragonCommand, TarragonEvent, TarragonSnapshot, TarragonStatus},
@@ -119,6 +121,9 @@ fn run_daemon(
         ) {
             Ok(controller) => {
                 controller.clone().start();
+                if !no_global_services {
+                    crate::voice::start(application, &config, animations);
+                }
                 *activate_holder.borrow_mut() = Some(controller);
             }
             Err(error) => {
@@ -801,7 +806,10 @@ impl Controller {
                             controller.schedule_inhibited_notification_expiry(&notification, epoch);
                             continue;
                         }
-                        match controller.notification_target_islands(&notification) {
+                        match controller.popup_target_islands(
+                            &MonitorTarget::Focused,
+                            Some(notification.urgency),
+                        ) {
                             Ok(islands) => {
                                 if replacing {
                                     let target_names: HashSet<_> = islands
@@ -1259,7 +1267,12 @@ impl Controller {
                         .snapshot()
                         .audio
                         .is_some_and(|audio| audio.muted);
-                for island in self.target_islands(&monitor)? {
+                let islands = if monitor == MonitorTarget::Focused {
+                    self.osd_target_islands(&monitor)?
+                } else {
+                    self.target_islands(&monitor)?
+                };
+                for island in islands {
                     island.show_osd(OsdState {
                         kind,
                         value,
@@ -1527,90 +1540,35 @@ impl Controller {
     }
 
     fn target_islands(&self, target: &MonitorTarget) -> Result<Vec<Rc<IslandWindow>>> {
-        let islands = self.islands.borrow();
-        let names: Vec<String> = match target {
-            MonitorTarget::All => islands.keys().cloned().collect(),
-            MonitorTarget::Named(name) => vec![name.clone()],
-            MonitorTarget::Focused => {
-                let name = self
-                    .hyprland
-                    .borrow()
-                    .focused_monitor()
-                    .map(|monitor| monitor.name.clone())
-                    .or_else(|| islands.keys().next().cloned())
-                    .context("no island output is available")?;
-                vec![name]
-            }
-        };
-        let targets: Vec<_> = names
-            .iter()
-            .filter_map(|name| islands.get(name).cloned())
-            .collect();
-        if targets.is_empty() {
-            bail!("no configured island matches target {target:?}");
-        }
-        Ok(targets)
+        self.popup_target_islands(target, None)
     }
 
-    fn notification_target_islands(
+    /// Automatic feedback follows notification routing, with its source output
+    /// as the preferred target. Explicit IPC monitor overrides bypass this.
+    fn osd_target_islands(&self, target: &MonitorTarget) -> Result<Vec<Rc<IslandWindow>>> {
+        let urgency = self
+            .config
+            .borrow()
+            .osd
+            .follow_notifications
+            .then_some(Urgency::Normal);
+        self.popup_target_islands(target, urgency)
+    }
+
+    fn popup_target_islands(
         &self,
-        notification: &Notification,
+        target: &MonitorTarget,
+        urgency: Option<Urgency>,
     ) -> Result<Vec<Rc<IslandWindow>>> {
-        let notifications = self.config.borrow().notifications.clone();
+        let config = self.config.borrow();
         let snapshot = self.hyprland.borrow();
-        let Some(focused) = snapshot.focused_monitor() else {
-            drop(snapshot);
-            return self.target_islands(&MonitorTarget::Focused);
-        };
-        if !focused.fullscreen
-            || notifications.fullscreen_strategy == FullscreenStrategy::Ignore
-            || notifications.overlay_applies(notification.urgency, true)
-        {
-            drop(snapshot);
-            return self.target_islands(&MonitorTarget::Focused);
-        }
-
         let islands = self.islands.borrow();
-        let mut usable: Vec<_> = snapshot
-            .monitors
-            .iter()
-            .filter(|monitor| !monitor.fullscreen && islands.contains_key(&monitor.name))
-            .collect();
-        usable.sort_by_key(|monitor| monitor.id);
-
-        let names: Vec<String> = match notifications.fullscreen_strategy {
-            FullscreenStrategy::Fallback => notifications
-                .fallback_monitors
-                .iter()
-                .find(|name| {
-                    usable
-                        .iter()
-                        .any(|monitor| monitor.name.as_str() == name.as_str())
-                })
-                .cloned()
-                .or_else(|| usable.first().map(|monitor| monitor.name.clone()))
-                .into_iter()
-                .collect(),
-            FullscreenStrategy::AllNonFullscreen => usable
-                .into_iter()
-                .map(|monitor| monitor.name.clone())
-                .collect(),
-            FullscreenStrategy::Ignore => unreachable!("handled above"),
-        };
-
-        if names.is_empty() {
-            warn!(
-                "no non-fullscreen notification output is available; using focused monitor `{}`",
-                focused.name
-            );
-            let focused_name = focused.name.clone();
-            let target = islands
-                .get(&focused_name)
-                .cloned()
-                .context("focused monitor has no configured island")?;
-            return Ok(vec![target]);
-        }
-
+        let names = routing::target_names(
+            &snapshot,
+            &islands,
+            target,
+            urgency.map(|urgency| (&config.notifications, urgency)),
+        )?;
         Ok(names
             .iter()
             .filter_map(|name| islands.get(name).cloned())
@@ -1709,13 +1667,18 @@ impl Controller {
                 });
                 if let Some(controller) = weak.upgrade() {
                     let percent = workspace.clamp(0, 100) as u8;
-                    if let Some(island) = controller.islands.borrow().get(&monitor) {
-                        island.show_osd(OsdState {
-                            kind: OsdKind::Workspace,
-                            value: percent,
-                            muted: false,
-                            timeout_ms: 900,
-                        });
+                    match controller.osd_target_islands(&MonitorTarget::Named(monitor)) {
+                        Ok(islands) => {
+                            for island in islands {
+                                island.show_osd(OsdState {
+                                    kind: OsdKind::Workspace,
+                                    value: percent,
+                                    muted: false,
+                                    timeout_ms: 900,
+                                });
+                            }
+                        }
+                        Err(error) => warn!("cannot show workspace OSD: {error:#}"),
                     }
                 }
             });
@@ -2114,6 +2077,165 @@ mod tests {
         assert!(!registry.expire(42, replacement));
     }
 
+    #[test]
+    #[ignore = "requires an isolated GTK display; run scripts/run-ui-regressions-gtk.py"]
+    fn osd_ipc_and_audio_follow_notification_routing_and_explicit_overrides() {
+        use crate::{
+            config::FullscreenStrategy,
+            state::{AudioState, HyprlandMonitor, WorkspaceRef},
+        };
+
+        gtk::init().unwrap();
+        let application = Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        application.connect_activate(|_| {});
+        application.register(None::<&gio::Cancellable>).unwrap();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join("target/tmp")
+            .join(format!("osd-routing-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = AppConfig::default();
+        config.shell.monitors = vec!["osd-test-no-output".into()];
+        let controller = Controller::new(
+            &application,
+            directory.join("config.toml"),
+            config.clone(),
+            directory.join("control.sock"),
+            false,
+            None,
+            true,
+            isolated_startup_hooks(),
+        )
+        .unwrap();
+        let monitor = gdk::Display::default()
+            .unwrap()
+            .monitors()
+            .item(0)
+            .and_downcast::<gdk::Monitor>()
+            .unwrap();
+        let snapshot = HyprlandSnapshot {
+            monitors: [(1, "DP-1"), (2, "DP-2"), (3, "DP-3")]
+                .into_iter()
+                .map(|(id, name)| HyprlandMonitor {
+                    id,
+                    name: name.into(),
+                    focused: id == 1,
+                    fullscreen: id == 1,
+                    active_workspace: WorkspaceRef::default(),
+                    special_workspace: WorkspaceRef::default(),
+                })
+                .collect(),
+            ..HyprlandSnapshot::default()
+        };
+        for output in &snapshot.monitors {
+            let island = IslandWindow::test_notification_window(
+                &application,
+                &monitor,
+                &output.name,
+                &config,
+                Rc::new(|_, _| {}),
+                Rc::new(|_| {}),
+                Rc::new(|_, _| {}),
+            );
+            island.update_hyprland(&snapshot);
+            controller
+                .islands
+                .borrow_mut()
+                .insert(output.name.clone(), island);
+        }
+        *controller.hyprland.borrow_mut() = snapshot;
+        let active_outputs = || {
+            let mut names: Vec<_> = controller
+                .islands
+                .borrow()
+                .iter()
+                .filter(|(_, island)| island.debug_state()["view"] == "osd")
+                .map(|(name, _)| name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        let close = || {
+            assert!(
+                controller
+                    .handle_command(IpcCommand::Close {
+                        monitor: MonitorTarget::All
+                    })
+                    .ok
+            );
+        };
+        let show = |kind, monitor| {
+            controller.handle_command(IpcCommand::Osd {
+                monitor,
+                kind,
+                value: Some(43),
+                timeout_ms: 60_000,
+            })
+        };
+        for kind in [OsdKind::Volume, OsdKind::Brightness, OsdKind::Workspace] {
+            assert!(show(kind, MonitorTarget::Focused).ok);
+            assert_eq!(active_outputs(), ["DP-2"]);
+            close();
+        }
+        controller
+            .config
+            .borrow_mut()
+            .notifications
+            .fallback_monitors = vec!["DP-3".into()];
+        assert!(show(OsdKind::Brightness, MonitorTarget::Focused).ok);
+        assert_eq!(active_outputs(), ["DP-3"]);
+        close();
+        assert!(show(OsdKind::Volume, MonitorTarget::Named("DP-1".into())).ok);
+        assert_eq!(active_outputs(), ["DP-1"]);
+        close();
+        assert!(show(OsdKind::Volume, MonitorTarget::All).ok);
+        assert_eq!(active_outputs(), ["DP-1", "DP-2", "DP-3"]);
+        close();
+        assert!(!show(OsdKind::Volume, MonitorTarget::Named("missing".into())).ok);
+        assert!(active_outputs().is_empty());
+
+        let (sender, receiver) = async_channel::unbounded();
+        controller.attach_audio(receiver);
+        controller
+            .config
+            .borrow_mut()
+            .notifications
+            .fullscreen_strategy = FullscreenStrategy::AllNonFullscreen;
+        controller.config.borrow_mut().notifications.enabled = false;
+        controller.set_notification_inhibition(NotificationInhibition::Indefinite);
+        sender
+            .send_blocking(AudioState {
+                percent: 58,
+                muted: false,
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while active_outputs().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "audio OSD not delivered"
+            );
+            while glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(active_outputs(), ["DP-2", "DP-3"]);
+        close();
+        controller.config.borrow_mut().osd.follow_notifications = false;
+        assert!(show(OsdKind::Volume, MonitorTarget::Focused).ok);
+        assert_eq!(active_outputs(), ["DP-1"]);
+        close();
+        for island in controller
+            .islands
+            .borrow_mut()
+            .drain()
+            .map(|(_, island)| island)
+        {
+            island.destroy();
+        }
+        drop(controller);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     /// Real history button -> controller -> worker -> D-Bus regression.
     /// The GTK runner supplies a private dbus-run-session and opt-in marker;
     /// direct execution must do the same. Never contact the desktop daemon.
@@ -2329,6 +2451,7 @@ mod tests {
             let island = IslandWindow::test_notification_window(
                 &application,
                 &monitor,
+                "notification-test",
                 &config,
                 expired,
                 dismiss,
