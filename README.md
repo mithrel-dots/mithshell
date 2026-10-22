@@ -490,10 +490,29 @@ and current backend limitations.
 
 Mithshell subscribes to ginkgo's read-only voice event socket
 (`$XDG_RUNTIME_DIR/ginkgo-voice.sock`, or `GINKGO_VOICE_SOCKET`) and
-reconnects automatically. A bubble appears once the trigger word arms a note:
-it follows the microphone level while recording, spins while the note is
-processed, and briefly shows the outcome (saved, canceled, or failed) before
-leaving. Ambient captions never show the bubble.
+reconnects automatically with a bounded 1–16 second backoff. The NDJSON v1
+subscription never writes to the socket or starts capture. A bubble shows
+initialization, helper renewal, stopping, and capture failures distinctly. Once
+the trigger word arms a note it follows the microphone level, spins while work
+is pending, and shows saved/appended, canceled, or failed outcomes. Ambient
+captions never show the bubble.
+
+Transcript revisions replace earlier text by utterance ID. Delayed transcripts
+and results retain their originating session ID, even while another session is
+recording. Search, read, summary, cancellation responses, and prominent
+clarification questions are displayed separately from transcripts; they are
+never saved by Mithshell. Responses remain until another selected session or
+outcome replaces them, and long responses can be scrolled. Referenced note IDs
+appear in server-provided order. Saved results include acknowledgments and
+available processing/fallback/image metadata.
+
+Helper renewal preserves the conversation while resetting audio-meter state
+when the capture epoch changes. A new stream, daemon epoch, or reconnect
+snapshot clears stale local history and pending work. Snapshots contain only
+current capture state: missed transcripts and outcomes cannot be recovered from
+this socket. Durable results must be retrieved through Ginkgo's note APIs;
+the bubble does not fetch note contents or provide a history browser. Older
+servers may omit lifecycle and conversational metadata. No TTS is provided.
 
 ```toml
 [voice]
