@@ -2935,6 +2935,59 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
         island.set_pointer_in_hover_region(true);
         assert!(island.dashboard.is_visible());
         assert!(island.dashboard.can_target());
+        let empty_peek_height = island.geometry.get().height;
+        assert!(!island.hardware.phones.root.is_visible());
+        let mut phone = crate::state::PhoneState {
+            id: "fixture-phone".into(),
+            name: "OnePlus 13".into(),
+            reachable: true,
+            percent: Some(73),
+            charging: true,
+            can_ring: true,
+            cellular: Some(crate::state::CellularSignal {
+                strength: 2,
+                network_type: Some("LTE".into()),
+            }),
+        };
+        island.update_phones(&[phone.clone()]);
+        assert!(island.geometry.get().height > empty_peek_height);
+        pump(Duration::from_millis(80));
+        let phone_row = island.hardware.phones.root.first_child().unwrap();
+        let ring = phone_row
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        let status = ring
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert_eq!(status.label(), "73% · Charging");
+        let signal = status.prev_sibling().unwrap();
+        assert!(signal.has_css_class("phone-signal") && signal.is_visible());
+        assert_eq!(
+            signal.tooltip_text().as_deref(),
+            Some("Cellular signal: 2/4 · LTE")
+        );
+        assert!(ring.is_sensitive() && ring.is_drawable());
+        let bounds = phone_row.compute_bounds(&island.panel_scroll).unwrap();
+        assert!(
+            bounds.y() + bounds.height() <= island.panel_scroll.height() as f32 + 2.0,
+            "phone row must fit inside the hover preview"
+        );
+        capture_island_fixture(&island, "phone-peek");
+        phone.reachable = false;
+        island.update_phones(&[phone.clone()]);
+        assert_eq!(status.label(), "Offline");
+        assert!(!signal.is_visible());
+        assert!(!ring.is_sensitive());
+        assert_eq!(island.hardware.phones.root.first_child(), Some(phone_row));
+        island.update_phones(&[]);
+        assert!(!island.hardware.phones.root.is_visible());
+        assert_eq!(island.geometry.get().height, empty_peek_height);
+        phone.reachable = true;
+        island.update_phones(&[phone]);
         assert_eq!(island.hardware.cpu.label(), "38%");
         assert_eq!(island.hardware.temperature.label(), "61°C");
         assert_eq!(island.hardware.memory.label(), "8.8");
@@ -2977,6 +3030,7 @@ fn persistent_header_peek_open_geometry_input_and_reversal() {
         pump(Duration::from_millis(40));
         assert!(island.compact.is_visible() && island.compact.can_target());
         assert!(island.dashboard.is_visible() && island.dashboard.can_target());
+        assert!(island.hardware.phones.root.is_drawable());
         assert!(island.battery_waves.area.opacity() > 0.0);
         assert_eq!(
             island.battery_waves.header_height,

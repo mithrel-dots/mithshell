@@ -15,6 +15,18 @@ use crate::{
 };
 
 impl Controller {
+    pub(super) fn attach_phones(
+        self: &Rc<Self>,
+        receiver: Receiver<Vec<crate::state::PhoneState>>,
+    ) {
+        self.subscribe(receiver, |controller, phones| {
+            for island in controller.islands.borrow().values() {
+                island.update_phones(&phones);
+            }
+            *controller.phones.borrow_mut() = phones;
+        });
+    }
+
     fn subscribe<T: 'static>(
         self: &Rc<Self>,
         receiver: Receiver<T>,

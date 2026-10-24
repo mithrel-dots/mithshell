@@ -107,6 +107,7 @@ pub(crate) enum Icon {
     Loading,
     Executable,
     WeatherClear,
+    Phone,
     /// Battery at a percentage, rendered as one of five charge steps.
     ///
     /// `charging` only affects the themed fallback, which has real charging
@@ -149,6 +150,7 @@ const SIMPLE_ICONS: &[Icon] = &[
     Icon::Loading,
     Icon::Executable,
     Icon::WeatherClear,
+    Icon::Phone,
 ];
 
 /// The five battery charge steps, ordered from empty to full, as
@@ -198,6 +200,7 @@ impl Icon {
             Self::Addon => '\u{f12e}',
             Self::Loading => '\u{f110}',
             Self::Executable => '\u{f15b}',
+            Self::Phone => '\u{f10b}',
             Self::Battery { percent, .. } => battery_glyph(percent),
         }
     }
@@ -254,6 +257,7 @@ impl Icon {
             Self::Loading => "content-loading-symbolic",
             Self::Executable => "application-x-executable-symbolic",
             Self::WeatherClear => "weather-clear-symbolic",
+            Self::Phone => "phone-symbolic",
             Self::Battery { .. } => "battery-symbolic",
         }
     }
@@ -293,6 +297,7 @@ impl Icon {
             Self::Loading => "Loading",
             Self::Executable => "Application",
             Self::WeatherClear => "Weather",
+            Self::Phone => "Phone",
             Self::Battery { .. } => "Battery",
         }
     }

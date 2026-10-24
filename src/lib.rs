@@ -4,6 +4,7 @@ pub mod config;
 pub mod http;
 pub mod hyprland;
 pub mod ipc;
+pub mod kdeconnect;
 pub mod latency;
 pub mod lock;
 pub mod media;

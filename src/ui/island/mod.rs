@@ -25,6 +25,7 @@ mod metrics;
 mod notification;
 pub(crate) mod notification_circle;
 mod osd;
+mod phone;
 mod search;
 mod tray;
 pub(crate) mod tray_circle;

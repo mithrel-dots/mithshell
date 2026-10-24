@@ -80,6 +80,24 @@ pub struct SystemSnapshot {
     pub hardware: HardwareSnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PhoneState {
+    pub id: String,
+    pub name: String,
+    pub reachable: bool,
+    pub percent: Option<u8>,
+    pub charging: bool,
+    pub can_ring: bool,
+    pub cellular: Option<CellularSignal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CellularSignal {
+    /// KDE Connect reports -1 for no service, otherwise 0 through 4.
+    pub strength: i32,
+    pub network_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct HardwareSnapshot {
     pub cpu_percent: Option<f64>,

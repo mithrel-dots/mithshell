@@ -32,6 +32,17 @@ black backdrop.
 available, the daemon reads `/sys/class/backlight` for brightness state and OSD
 feedback.
 
+KDE Connect is optional. While `kdeconnectd` is running, paired phones and tablets
+appear below NET in both the hover preview and expanded dashboard. Each row
+shows battery/charging status (or Offline), cellular signal bars when available,
+and a Ring button when the device's Find My Phone plugin is available.
+Pair devices in KDE Connect first; Mithshell
+listens for changes automatically without starting the daemon. Missing battery
+data is shown as unavailable, and disconnected devices never show stale charge.
+Device state is also available under `phones` in `mithshell status --json`.
+Hover the four signal bars for the strength and network type (such as LTE or 5G).
+No-service reports leave all bars dim; unavailable reports hide the indicator.
+
 [TarraGon](https://github.com/iMithrellas/tarragon) is optional. When its user
 service is running, Mithshell exposes its configured search plugins through an
 independent launcher window.

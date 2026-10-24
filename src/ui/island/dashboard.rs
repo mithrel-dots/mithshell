@@ -77,6 +77,7 @@ fn dashboard_section(root: &gtk::Box, content: &gtk::Box, trailing_gap: bool) ->
 
 pub(super) struct HardwarePanel {
     pub(super) root: gtk::Box,
+    pub(super) phones: super::phone::PhonePanel,
     pub(super) cpu: gtk::Label,
     pub(super) temperature: gtk::Label,
     pub(super) memory: gtk::Label,
@@ -204,8 +205,11 @@ pub(super) fn hardware_panel(metrics: Metrics) -> HardwarePanel {
     network.append(&up);
     root.append(&stats);
     root.append(&network);
+    let phones = super::phone::PhonePanel::new(metrics);
+    root.append(&phones.root);
     HardwarePanel {
         root,
+        phones,
         cpu,
         temperature,
         memory,

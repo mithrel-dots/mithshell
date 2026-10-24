@@ -236,6 +236,21 @@ window.mithshell-notifications > contents {
   font-size: 10px;
 }
 .hardware-rate { padding: 0 5px; }
+.phone-row.phone-offline .hardware-value { color: @ms_on_surface_variant; }
+.phone-signal-bar { background: alpha(@ms_on_surface_variant, 0.25); border-radius: 1px; }
+.phone-signal-bar.active { background: @ms_primary; }
+.phone-ring {
+  background: alpha(@ms_primary, 0.12);
+  color: @ms_primary;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 4px 8px;
+  min-height: 0;
+  min-width: 0;
+}
+.phone-ring:hover { background: alpha(@ms_primary, 0.22); }
+.phone-ring:disabled { color: @ms_on_surface_variant; background: transparent; }
 .hardware-network separator { background: alpha(@ms_outline_variant, 0.7); }
 .hardware-progress {
   min-height: 5px;

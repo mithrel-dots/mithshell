@@ -156,6 +156,7 @@ struct Controller {
     media: RefCell<Option<MediaState>>,
     weather: RefCell<Option<WeatherState>>,
     tray: RefCell<Vec<TrayItem>>,
+    phones: RefCell<Vec<crate::state::PhoneState>>,
     visualizer: RefCell<media::VisualizerLevels>,
     tarragon_connected: Cell<bool>,
     tarragon_snapshot: RefCell<Option<TarragonSnapshot>>,
@@ -190,6 +191,7 @@ struct Controller {
     _telemetry_listener: thread::JoinHandle<()>,
     _weather_listener: thread::JoinHandle<()>,
     _tray_listener: Option<thread::JoinHandle<()>>,
+    _phone_listener: Option<thread::JoinHandle<()>>,
     _notification_listener: Option<thread::JoinHandle<()>>,
     tarragon_listener: Option<thread::JoinHandle<()>>,
     preview_listener: Option<thread::JoinHandle<()>>,
@@ -410,6 +412,9 @@ impl Controller {
             )
         };
         let (tray_sender, tray_receiver) = async_channel::unbounded();
+        let (phone_sender, phone_receiver) = async_channel::unbounded();
+        let phone_listener = (!no_global_services && !hooks.skip_passive_workers)
+            .then(|| crate::kdeconnect::start_listener(phone_sender));
         let tray_listener =
             (startup_services.tray && config.tray.enabled).then(|| (hooks.tray)(tray_sender));
         let (tarragon_event_sender, tarragon_event_receiver) = async_channel::unbounded();
@@ -473,6 +478,7 @@ impl Controller {
             media: RefCell::new(None),
             weather: RefCell::new(None),
             tray: RefCell::new(Vec::new()),
+            phones: RefCell::new(Vec::new()),
             visualizer: RefCell::new([0; media::VISUALIZER_BARS]),
             tarragon_connected: Cell::new(false),
             tarragon_snapshot: RefCell::new(None),
@@ -500,6 +506,7 @@ impl Controller {
             _telemetry_listener: telemetry_listener,
             _weather_listener: weather_listener,
             _tray_listener: tray_listener,
+            _phone_listener: phone_listener,
             _notification_listener: notification_listener,
             tarragon_listener,
             preview_listener: Some(preview_listener),
@@ -531,6 +538,7 @@ impl Controller {
         controller.attach_media(media_receiver);
         controller.attach_weather(weather_receiver);
         controller.attach_tray(tray_receiver);
+        controller.attach_phones(phone_receiver);
         controller.attach_visualizer(visualizer_receiver);
         controller.attach_telemetry(telemetry_receiver);
         if startup_services.tarragon {
@@ -1341,6 +1349,7 @@ impl Controller {
                     "system": self.system.borrow().snapshot(),
                     "media": &*self.media.borrow(),
                     "weather": &*self.weather.borrow(),
+                    "phones": &*self.phones.borrow(),
                     "notifications": &*self.notifications.borrow(),
                     "notification_inhibition": self.notification_inhibition_status(),
                     "tarragon": {
@@ -1874,6 +1883,7 @@ impl Controller {
             island.update_media(self.media.borrow().as_ref());
             island.update_weather(self.weather.borrow().as_ref());
             island.update_tray(self.tray.borrow().as_slice());
+            island.update_phones(self.phones.borrow().as_slice());
             island.update_visualizer(*self.visualizer.borrow());
             island.update_palette();
             island.update_tarragon_connection(self.tarragon_connected.get(), None);
