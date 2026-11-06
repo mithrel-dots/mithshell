@@ -49,9 +49,8 @@ pub fn snapshot() -> Result<HyprlandSnapshot> {
 
 fn monitor_has_fullscreen_client(monitor: &HyprlandMonitor, clients: &[HyprlandClient]) -> bool {
     clients.iter().any(|client| {
-        let workspace_visible = client.workspace.id == monitor.active_workspace.id
-            || (monitor.special_workspace.id != 0
-                && client.workspace.id == monitor.special_workspace.id);
+        let workspace_visible = client.workspace.matches(&monitor.active_workspace)
+            || client.workspace.matches(&monitor.special_workspace);
         client.monitor == monitor.id && workspace_visible && client.fullscreen & 0b10 != 0
     })
 }
@@ -239,6 +238,63 @@ mod tests {
         assert!(monitor_has_fullscreen_client(&monitor, &[client(4, 3)]));
         assert!(monitor_has_fullscreen_client(&monitor, &[client(-99, 2)]));
         assert!(!monitor_has_fullscreen_client(&monitor, &[client(8, 2)]));
+    }
+
+    #[test]
+    fn decodes_workspaces_without_numeric_ids_and_preserves_monitor_focus() {
+        let monitors = serde_json::from_value(serde_json::json!([
+            {
+                "id": 1, "name": "DP-1", "focused": true,
+                "activeWorkspace": {"address": "16", "id": 16, "type": "normal", "name": "16"},
+                "specialWorkspace": {"address": "", "type": "", "name": ""}
+            },
+            {
+                "id": 2, "name": "DP-2", "focused": false,
+                "activeWorkspace": {"address": "19", "id": 19, "type": "normal", "name": "19"},
+                "specialWorkspace": {"address": "", "type": "", "name": ""}
+            }
+        ]))
+        .unwrap();
+        let workspaces = serde_json::from_value(serde_json::json!([
+            {"address": "16", "id": 16, "type": "normal", "name": "16", "monitor": "DP-1", "windows": 1},
+            {"address": "special:chat", "type": "special", "name": "special:chat", "monitor": "DP-1", "windows": 1}
+        ])).unwrap();
+        let clients: Vec<HyprlandClient> = serde_json::from_value(serde_json::json!([
+            {"monitor": 1, "workspace": {"address": "special:chat", "type": "special", "name": "special:chat"}, "fullscreen": 2}
+        ])).unwrap();
+        let active_window = serde_json::from_value(serde_json::json!({
+            "class": "kitty", "title": "chat", "monitor": 1,
+            "workspace": {"address": "special:chat", "type": "special", "name": "special:chat"}
+        }))
+        .unwrap();
+        let snapshot = HyprlandSnapshot {
+            monitors,
+            workspaces,
+            active_window: Some(active_window),
+        };
+        assert_eq!(snapshot.focused_monitor().unwrap().name, "DP-1");
+        assert_eq!(snapshot.workspaces_for("DP-1").len(), 1);
+        assert!(!monitor_has_fullscreen_client(
+            &snapshot.monitors[0],
+            &clients
+        ));
+    }
+
+    #[test]
+    fn matches_idless_special_workspaces_by_name_for_fullscreen_detection() {
+        let mut monitor: HyprlandMonitor = serde_json::from_value(serde_json::json!({
+            "id": 1, "name": "DP-1", "focused": true,
+            "activeWorkspace": {"id": 16, "name": "16"},
+            "specialWorkspace": {"address": "special:chat", "type": "special", "name": "special:chat"}
+        })).unwrap();
+        let clients: Vec<HyprlandClient> = serde_json::from_value(serde_json::json!([
+            {"monitor": 1, "workspace": {"address": "special:chat", "type": "special", "name": "special:chat"}, "fullscreen": 2}
+        ])).unwrap();
+        assert!(monitor_has_fullscreen_client(&monitor, &clients));
+        monitor.special_workspace.name = "special:other".into();
+        assert!(!monitor_has_fullscreen_client(&monitor, &clients));
+        monitor.special_workspace = crate::state::WorkspaceRef::default();
+        assert!(!monitor_has_fullscreen_client(&monitor, &clients));
     }
 
     #[test]

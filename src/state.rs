@@ -44,8 +44,20 @@ pub struct HyprlandMonitor {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct WorkspaceRef {
+    // Newer Hyprland versions omit IDs for special/named and empty workspaces.
+    #[serde(default)]
     pub id: i64,
     pub name: String,
+}
+
+impl WorkspaceRef {
+    pub fn matches(&self, other: &Self) -> bool {
+        if self.id != 0 && other.id != 0 {
+            self.id == other.id
+        } else {
+            !self.name.is_empty() && self.name == other.name
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -57,6 +69,7 @@ pub struct HyprlandClient {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Workspace {
+    #[serde(default)]
     pub id: i64,
     pub name: String,
     pub monitor: String,
